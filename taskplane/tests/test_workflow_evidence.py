@@ -7,6 +7,27 @@ import pytest
 from taskplane import workflow as w, workflow_evidence as e
 
 
+@pytest.mark.parametrize('nonce', [None, '../outside', 'A'*32, '0'*31])
+def test_fresh_package_projection_requires_a_bounded_controller_nonce(tmp_path, nonce):
+    state, _, _ = prepare(tmp_path, 'evaluate')
+    check = {'command': [sys.executable, '-B', 'scripts/package_openai.py', '--output-dir', 'old'],
+             'evidence_outputs': ['old/candidate.zip', 'old/candidate.zip.json', 'check.log']}
+    with pytest.raises(w.Refusal, match='controller-allocated'):
+        e.check_execution(tmp_path, state, check, nonce=nonce)
+    assert not (tmp_path/'old').exists()
+
+
+def test_check_projection_refuses_an_unowned_literal_output_and_incomplete_package_pair(tmp_path):
+    state, _, _ = prepare(tmp_path, 'evaluate')
+    with pytest.raises(w.Refusal, match='outside its current phase'):
+        e.check_execution(tmp_path, state, {'command': ['python3', 'writer.py', 'outside.txt'],
+                                           'evidence_outputs': ['outside.txt']})
+    with pytest.raises(w.Refusal, match='archive and provenance pair'):
+        e.check_execution(tmp_path, state,
+            {'command': [sys.executable, '-B', 'scripts/package_openai.py', '--output-dir', 'old'],
+             'evidence_outputs': ['old/candidate.zip']}, nonce='0'*32)
+
+
 @pytest.mark.parametrize('relative', ['.taskplane/workflow-root.json', '.taskplane/harness-root.json',
     '.taskplane/workspace-binding.json', '.taskplane/context-v1/objects/object.json'])
 def test_controller_metadata_is_readable_but_never_a_task_write(tmp_path, relative):

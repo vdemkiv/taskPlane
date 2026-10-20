@@ -30,6 +30,152 @@ def test_same_unknown_dependency_fingerprint_cannot_be_reused(tmp_path):
     assert not reusable(prior, deepcopy(prior['key']))
 
 
+def test_bare_interpreter_records_actual_executable_and_reuses(tmp_path, monkeypatch):
+    import os
+    options = fixture(tmp_path)
+    executable = Path(sys.executable).resolve()
+    monkeypatch.setenv('PATH', str(executable.parent))
+    options['command'][0] = executable.name
+    before = key(tmp_path, **options)
+    assert before['eligible'] and before['runtime']['executable'] == str(executable)
+    assert before['runtime']['sha256'] != 'unknown'
+    reference = run_check(tmp_path, before, producer='bare-interpreter')
+    assert inherited(tmp_path, reference)['status'] == 'reused'
+    monkeypatch.setenv('PATH', str(tmp_path/'missing') + os.pathsep + str(executable.parent))
+    assert inherited(tmp_path, reference)['status'] == 'miss'
+
+
+def installed_provider(site, name, *, requires=()):
+    package = site/name
+    package.mkdir(parents=True)
+    (package/'__init__.py').write_text('value = 3\n')
+    metadata = site/(name+'-1.0.dist-info')
+    metadata.mkdir()
+    (metadata/'METADATA').write_text('Metadata-Version: 2.1\nName: '+name+'\nVersion: 1.0\n'
+        + ''.join('Requires-Dist: '+item+'\n' for item in requires))
+    (metadata/'top_level.txt').write_text(name+'\n')
+    files = [name+'/__init__.py', metadata.name+'/METADATA', metadata.name+'/top_level.txt', metadata.name+'/RECORD']
+    (metadata/'RECORD').write_text(''.join(file+',,\n' for file in files))
+    return package
+
+
+def test_provider_markers_normalize_release_padding_and_extra_names(monkeypatch):
+    from taskplane import context_reuse as reuse
+    monkeypatch.setattr(reuse.platform, 'python_version', lambda: '3.11.0')
+    assert reuse._marker_applies('python_version >= "3.11.0"', set())
+    assert not reuse._marker_applies('python_version < "3.11.0"', set())
+    assert reuse._marker_applies('extra == "feature-name"', {'Feature_Name'})
+    with pytest.raises(ValueError):
+        reuse._marker_applies('__import__("os")', set())
+
+
+@pytest.mark.parametrize('change', ['implementation', 'new-file', 'transitive', 'missing-file'])
+def test_installed_provider_census_and_transitive_contents_bind_reuse(tmp_path, monkeypatch, change):
+    workspace, site = tmp_path/'workspace', tmp_path/'site'
+    workspace.mkdir(); site.mkdir()
+    options = fixture(workspace)
+    package = installed_provider(site, 'verified_rules', requires=[
+        'verified_leaf>=1.0; python_version >= "3.0"', 'missing_extra; extra == "optional"'])
+    leaf = installed_provider(site, 'verified_leaf')
+    (workspace/'pkg/app.py').write_text('from verified_rules import value\n')
+    monkeypatch.setenv('PYTHONPATH', str(site))
+    monkeypatch.setenv('PYTHONDONTWRITEBYTECODE', '1')
+    depgraph.scan(str(workspace), decompose=True, strict=True)
+    before = key(workspace, **options)
+    assert before['eligible'] and before['unverified_dependencies'] == [], before
+    assert set(before['provider_fingerprints']) == {'verified-rules', 'verified-leaf'}
+    reference = run_check(workspace, before, producer='covered-provider')
+    assert inherited(workspace, reference)['status'] == 'reused'
+    if change == 'implementation': (package/'__init__.py').write_text('value = 400\n')
+    elif change == 'new-file': (package/'new.py').write_text('new = True\n')
+    elif change == 'transitive': (leaf/'__init__.py').write_text('value = 400\n')
+    else: (package/'__init__.py').unlink()
+    assert inherited(workspace, reference)['status'] == 'miss'
+
+
+def test_shadowed_transitive_provider_remains_unknown(tmp_path, monkeypatch):
+    import os
+    workspace, site, shadow = tmp_path/'workspace', tmp_path/'site', tmp_path/'shadow'
+    workspace.mkdir(); site.mkdir(); shadow.mkdir()
+    options = fixture(workspace)
+    installed_provider(site, 'verified_rules', requires=['verified_leaf'])
+    installed_provider(site, 'verified_leaf')
+    (workspace/'pkg/app.py').write_text('from verified_rules import value\n')
+    (shadow/'verified_leaf.py').write_text('value = 999\n')
+    monkeypatch.setenv('PYTHONPATH', str(shadow)+os.pathsep+str(site))
+    depgraph.scan(str(workspace), decompose=True, strict=True)
+    current = key(workspace, **options)
+    assert not current['eligible'] and 'ext:verified_rules' in current['unverified_dependencies']
+
+
+def test_shared_bytecode_directory_is_not_an_importable_provider(tmp_path, monkeypatch):
+    import importlib.util
+    # Exercise pip's default shared cache independently of CI's private prefix.
+    monkeypatch.setattr(sys, 'pycache_prefix', None)
+    monkeypatch.delenv('PYTHONPYCACHEPREFIX', raising=False)
+    workspace, site = tmp_path/'workspace', tmp_path/'site'
+    workspace.mkdir(); site.mkdir()
+    options = fixture(workspace)
+    package = installed_provider(site, 'verified_top')
+    (package/'__init__.py').unlink(); package.rmdir()
+    module = site/'verified_top.py'
+    module.write_text('value = 3\n')
+    cache = Path(importlib.util.cache_from_source(str(module)))
+    cache.parent.mkdir()
+    unrelated = cache.parent/'unrelated.cpython-test.pyc'
+    unrelated.write_bytes(b'unrelated provider')
+    inventory = site/'verified_top-1.0.dist-info/RECORD'
+    inventory.write_text(inventory.read_text().replace('verified_top/__init__.py', 'verified_top.py')
+                         + cache.relative_to(site).as_posix()+',,\n')
+    (workspace/'pkg/app.py').write_text('from verified_top import value\n')
+    monkeypatch.setenv('PYTHONPATH', str(site))
+    monkeypatch.setenv('PYTHONDONTWRITEBYTECODE', '1')
+    depgraph.scan(str(workspace), decompose=True, strict=True)
+    before = key(workspace, **options)
+    assert before['eligible'], before.get('provider_diagnostics')
+    reference = run_check(workspace, before, producer='top-level-provider')
+    unrelated.write_bytes(b'changed unrelated provider')
+    assert inherited(workspace, reference)['status'] == 'reused'
+    cache.write_bytes(b'changed owned bytecode')
+    assert inherited(workspace, reference)['status'] == 'miss'
+
+
+def test_actual_pytest_installation_can_be_reused_until_provider_resolution_changes(tmp_path, monkeypatch):
+    import os
+    workspace, shadow, site = tmp_path/'workspace', tmp_path/'shadow', tmp_path/'site'
+    workspace.mkdir(); shadow.mkdir(); site.mkdir()
+    options = fixture(workspace)
+    (workspace/'pkg/app.py').write_text('import pytest\nvalue = 3\n')
+    (workspace/'tests/check.py').write_text('from pkg.app import value\ndef test_value():\n    assert value == 3\n')
+    plugin = installed_provider(site, 'verified_plugin')/'__init__.py'
+    metadata = site/'verified_plugin-1.0.dist-info'
+    (metadata/'entry_points.txt').write_text('[pytest11]\nverified = verified_plugin\n')
+    with (metadata/'RECORD').open('a') as stream:
+        stream.write(metadata.name+'/entry_points.txt,,\n')
+    options['command'] = [sys.executable, '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider', 'tests/check.py']
+    monkeypatch.setenv('PYTHONPATH', str(site))
+    monkeypatch.setenv('PYTHONDONTWRITEBYTECODE', '1')
+    for name in ('PYTEST_DISABLE_PLUGIN_AUTOLOAD', 'PYTEST_PLUGINS', 'PYTEST_ADDOPTS'):
+        monkeypatch.delenv(name, raising=False)
+    depgraph.scan(str(workspace), decompose=True, strict=True)
+    before = key(workspace, **options)
+    if not before['eligible']:
+        (tmp_path/'provider-coverage.json').write_text(json.dumps(before))
+    assert before['eligible'], before.get('provider_diagnostics')
+    assert 'pytest' in before['provider_fingerprints']
+    assert 'verified-plugin' in before['provider_fingerprints']
+    reference = run_check(workspace, before, producer='actual-pytest-provider')
+    assert inherited(workspace, reference)['status'] == 'reused'
+    original = plugin.read_bytes()
+    plugin.write_text('value = 400\n')
+    assert inherited(workspace, reference)['status'] == 'miss'
+    plugin.write_bytes(original)
+    assert inherited(workspace, reference)['status'] == 'reused'
+    (shadow/'pytest.py').write_text('shadow = True\n')
+    monkeypatch.setenv('PYTHONPATH', str(shadow)+os.pathsep+os.environ.get('PYTHONPATH', ''))
+    assert inherited(workspace, reference)['status'] == 'miss'
+
+
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process-group assertion; Windows uses taskkill tree cleanup')
 def test_timeout_kills_descendant_before_it_can_write(tmp_path):
     import time

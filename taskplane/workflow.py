@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from typing import Any
 import uuid
 
@@ -40,6 +41,34 @@ class Refusal(ValueError):
 def require(condition: object, reason: str, detail: str) -> None:
     if not condition:
         raise Refusal(reason, detail)
+
+
+def package_check_outputs(check: dict[str, Any]) -> list[str] | None:
+    """Recognize the declared pair for the supported package builders."""
+    command = check['command']
+    scripts = {'scripts/package_openai.py': '.zip', 'scripts/package_claude.py': '.plugin'}
+    if not (len(command) == 5 and command[1] == '-B' and command[2] in scripts
+            and command[3] == '--output-dir'):
+        return None
+    outputs = [relative for relative in check['evidence_outputs']
+               if str(PurePosixPath(relative).parent) == command[4]]
+    archives = [relative for relative in outputs if relative.endswith(scripts[command[2]])]
+    require(len(outputs) == 2 and len(archives) == 1 and archives[0]+'.json' in outputs,
+            'invalid_evidence', 'Package check needs its exact declared archive and provenance pair.')
+    return outputs
+
+
+def generated_check_outputs(state: dict[str, Any], stage: dict[str, Any], check: dict[str, Any],
+                            nonce: str | None) -> dict[str, str]:
+    """One pure derivation for allocation and protected-state readback."""
+    outputs = package_check_outputs(check)
+    require(outputs is not None and stage['phase'] in {'build', 'evaluate'}
+            and isinstance(nonce, str) and len(nonce) == 32
+            and all(c in '0123456789abcdef' for c in nonce), 'scope_violation',
+            'A fresh phase package check needs a controller-allocated output projection.')
+    assert outputs is not None
+    destination = f".taskplane/runs/{state['run']}/{stage['id']}/{stage['phase']}/generated/{nonce}"
+    return {relative: destination+'/'+PurePosixPath(relative).name for relative in outputs}
 
 
 def visit(phase: str) -> dict[str, Any]:
@@ -224,8 +253,20 @@ def validate_state(state: dict[str, Any]) -> None:
                 "state_unavailable", "Invalid protected visit.")
         if "artifact_paths" in stage:
             prefix = f".taskplane/runs/{state['run']}/{stage['id']}/{stage['phase']}"
+            artifacts = stage['artifact_paths']
+            require(isinstance(artifacts, list) and all(isinstance(path, str) for path in artifacts)
+                    and len(artifacts) == len(set(artifacts)),
+                    'state_unavailable', 'Invalid current Build result metadata paths.')
+            generated: dict[str, set[str]] = {}
+            fixed = []
+            for path in artifacts:
+                if path.startswith(prefix+'/generated/'):
+                    nonce = path[len(prefix+'/generated/'):].split('/')[0]
+                    generated.setdefault(nonce, set()).add(path)
+                else:
+                    fixed.append(path)
             standard = [prefix + '/output.json', prefix + '/tasks.json']
-            ordinary = stage['phase'] == 'build' and stage['artifact_paths'] == standard
+            ordinary = stage['phase'] == 'build' and fixed == standard
             repair_artifacts: list[str] = []
             if not ordinary:
                 require(isinstance(plan_checks, list) and all(isinstance(check, dict)
@@ -234,8 +275,17 @@ def validate_state(state: dict[str, Any]) -> None:
                 repair_artifacts = [*standard, prefix + '/verification.json', prefix + '/report.md',
                     *(prefix + '/check-' + content_fingerprint(check['id'])[:16] + '.log' for check in plan_checks)]
             require(state.get("schema") == "taskplane.workflow/v2" and stage["phase"] in PHASES[3:]
-                    and (ordinary or stage["artifact_paths"] == repair_artifacts),
+                    and (ordinary or fixed == repair_artifacts
+                         or stage['phase'] == 'evaluate' and not fixed and bool(generated)),
                     "state_unavailable", "Invalid current Build result metadata paths.")
+            for nonce, paths in generated.items():
+                matches = []
+                for check in plan_checks:
+                    try:
+                        matches.append(set(generated_check_outputs(state, stage, check, nonce).values()) == paths)
+                    except (Refusal, KeyError, TypeError):
+                        continue
+                require(any(matches), 'state_unavailable', 'Invalid generated package result paths.')
         ids.add(stage["id"])
         packet = stage["packet"]
         if packet is None:

@@ -757,6 +757,14 @@ def publish_pair(workspace: str | Path, model: dict[str, Any], document: str, *,
                                  "presentation": "generated; opening and visible verification are host observations"}
                     _write(target_fd, selection_name, primitives.canonical_bytes(selection, trailing_newline=True))
                     selected = True
+        if selected and item and pin_reason and pin_reason.startswith('phase/'):
+            # Only the selected current phase view owns this moving pin.
+            # Checkpoint, presentation and external-reference pins are retained.
+            for previous_item in catalog['pairs'].values():
+                if (previous_item is not item
+                        and (previous_item.get('root'), previous_item.get('run')) ==
+                            (item.get('root'), item.get('run'))):
+                    previous_item['pins'] = [pin for pin in previous_item['pins'] if pin != pin_reason]
         if item and not selected and not pin_reason:
             item["active_latest"] = bool(active)
         _save(fd, catalog)

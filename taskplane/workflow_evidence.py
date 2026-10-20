@@ -518,6 +518,38 @@ def validate_build_outputs(root: Path, state: dict[str, Any], output: dict[str, 
                       "invalid_evidence", "Build needs its planned report with matching task ownership.")
 
 
+def check_execution(root: Path, state: dict[str, Any], check: dict[str, Any], *,
+                    nonce: str | None = None) -> dict[str, Any]:
+    """Project known generated outputs, never change a check's logical command.
+
+    Only the repository package builders' declared archive/sidecar pair has a
+    directory projection. Other commands retain their approved arguments; an
+    explicit reference to an unowned declared output refuses before execution.
+    """
+    command = list(check['command'])
+    owned = set(w.phase_write_paths(state))
+    declared = check['evidence_outputs']
+    outputs = w.package_check_outputs(check)
+    result: dict[str, Any] = {'command': command, 'outputs': [], 'mapping': {}, 'nonce': None}
+    if outputs is None:
+        for relative in declared:
+            if relative in command or any(arg.endswith('='+relative) for arg in command):
+                w.require(relative in owned, 'scope_violation', 'Check command targets an output outside its current phase.')
+        return result
+    directory = command[4]
+    path(root, directory)
+    stage = w.current(state)
+    if (stage['phase'] == 'build' and stage['id'] != state.get('repair_scope', {}).get('build_visit')
+            and set(outputs) <= owned):
+        result['outputs'] = outputs
+        return result
+    mapping = w.generated_check_outputs(state, stage, check, nonce)
+    destination = str(Path(next(iter(mapping.values()))).parent)
+    path(root, destination)
+    command[4] = destination
+    return {'command': command, 'outputs': list(mapping.values()), 'mapping': mapping, 'nonce': nonce}
+
+
 def finding_paths(output: dict[str, Any]) -> list[str]:
     paths: set[str] = set()
     for field in ("finding_references", "findings", "finding_updates"):
@@ -1018,6 +1050,22 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
                   and claim.get("status") == attempt["status"] and claim.get("evidence") == attempt["evidence"],
                   "invalid_evidence", "Final check must select its latest attempt with the same observed status and log.")
         record = attempt.pop("_record")
+        execution = record.get('result', {}).get('execution')
+        if execution is not None:
+            producing_state = deepcopy(state)
+            producing_state['index'] = next(index for index, stage in enumerate(state['visits'])
+                                             if stage['id'] == attempt['visit'])
+            expected = check_execution(root, producing_state, requirement, nonce=execution.get('nonce'))
+            output_files = record['result'].get('output_files', {})
+            w.require(execution == expected and isinstance(output_files, dict)
+                      and set(output_files) <= set(expected['outputs']), 'invalid_evidence',
+                      'Generated output projection differs from its approved check.')
+            w.require(attempt['status'] != 'pass' or set(output_files) == set(expected['outputs']),
+                      'invalid_evidence', 'Passing package check lacks its complete output pair.')
+            for relative, fingerprint in output_files.items():
+                w.require(hashlib.sha256(read(root, relative)).hexdigest() == fingerprint,
+                          'invalid_evidence', 'A produced verification artifact changed.')
+                files.append(relative)
         saved = record["key"]
         current_key = context_reuse.revalidate(root, record, state=state, output_path=output_path)
         if not context_reuse.same_inputs(current_key, saved):

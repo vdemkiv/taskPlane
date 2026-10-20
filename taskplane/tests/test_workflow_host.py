@@ -22,6 +22,119 @@ def test_real_session_can_write_its_root_alias_task(tmp_path):
         controller.guard({'tool_name': 'Write', 'tool_input': {'path': 'outside.json'}}, state['run'])
 
 
+def package_delivery(tmp_path):
+    import sys
+    from taskplane import depgraph, workflow_evidence as evidence
+    from taskplane.tests.test_workflow_local import decision
+    from taskplane.tests.test_worker_runtime import parent_pair
+    initial, _, _ = prepare(tmp_path)
+    script = 'scripts/package_openai.py'
+    (tmp_path/'scripts').mkdir()
+    (tmp_path/script).write_text(
+        'import sys\nfrom pathlib import Path\n'
+        'target = Path(sys.argv[2]); target.mkdir(parents=True, exist_ok=True)\n'
+        '(target/"candidate.zip").write_bytes(b"fixture archive")\n'
+        '(target/"candidate.zip.json").write_text("{}")\n')
+    generated = ['.taskplane/packages/candidate.zip', '.taskplane/packages/candidate.zip.json']
+    scope = initial['scope']
+    scope['paths']['build'] += [script, *generated]
+    scope['verification_inputs'].append(script)
+    task = dict(id='T1', phase='build', owner='root', dependencies=[], paths=scope['paths']['build'],
+                read_inputs=['app.py', script], criteria=['AC1'], verification='Build archive and sidecar')
+    (tmp_path/'tasks.json').write_text(json.dumps({'tasks': [task]}))
+    check = dict(id='package', name='Package pair', task='T1', criteria=['AC1'], required=True,
+                 kind='roundtrip', environment='local', source_inputs=['app.py', script], test_inputs=['app.py'],
+                 command=[sys.executable, '-B', script, '--output-dir', '.taskplane/packages'],
+                 evidence_outputs=['build-check.txt', *generated])
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    controller = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
+    state = controller.start({'scope': scope, 'request_reference': 'fixture/package-projection'})
+    parent_pair(controller)
+    for phase in ('product', 'design', 'plan'):
+        output = dict(schema='taskplane.phase-output/v1', run=state['run'], visit=w.current(state)['id'],
+                      phase=phase, criteria=['AC1'], **{field: 'Reviewed fixture' for field in w.OUTPUT_FIELDS[phase]})
+        if phase == 'product': output['acceptance_criteria'] = [dict(id='AC1', statement='Archive pair remains isolated')]
+        if phase == 'design': output['acceptance_test_map'] = {'AC1': 'Exercise actual Controller verification'}
+        if phase == 'plan':
+            output.update(task_dag=[task], ownership={'T1': 'root'}, write_scope=task['paths'],
+                          acceptance_coverage={'AC1': ['T1']}, integration_order=['T1'],
+                          verification_strategy={'schema': evidence.VERIFICATION_STRATEGY, 'checks': [check]})
+        (tmp_path/(phase+'.json')).write_text(json.dumps(output))
+        state = controller.apply('submit', state['run'], expected_revision=state['revision'],
+                                 output=phase+'.json', tasks='tasks.json')
+        state = controller.apply('decide', state['run'], expected_revision=state['revision'],
+                                 native_reference=json.dumps(decision(state, event='fixture/'+phase)))
+        state = controller.apply('advance', state['run'], expected_revision=state['revision'],
+                                 phase=w.PHASES[w.PHASES.index(phase)+1])
+    observed = controller.verify(state['run'], revision=state['revision'], check_id='package',
+                                 history='checks.json', log='build-check.txt')
+    assert observed['status'] == 'pass'
+    row = json.loads((tmp_path/'checks.json').read_text())['attempts'][-1]
+    output = dict(schema='taskplane.phase-output/v1', run=state['run'], visit=w.current(state)['id'],
+                  phase='build', criteria=['AC1'], change_inventory=['app.py', script],
+                  task_acceptance_map={'AC1': ['T1']}, known_gaps=[], verification_history='checks.json',
+                  build_checks=[dict(name='Package pair', check_id='package', attempt_id=row['id'],
+                                     status='pass', evidence='build-check.txt')])
+    (tmp_path/'build.json').write_text(json.dumps(output))
+    state = controller.apply('submit', state['run'], expected_revision=state['revision'],
+                             output='build.json', tasks='tasks.json')
+    assert set(generated) <= set(w.current(state)['packet']['manifest'])
+    state = controller.apply('decide', state['run'], expected_revision=state['revision'],
+                             native_reference=json.dumps(decision(state, event='fixture/build')))
+    return controller, state, check, generated
+
+
+@pytest.mark.parametrize('phase', ['evaluate', 'repair'])
+def test_fresh_package_verification_preserves_prior_pairs_and_logical_command(tmp_path, phase):
+    from taskplane.context import Store
+    from taskplane.tests.test_workflow_local import decision
+    controller, state, check, generated = package_delivery(tmp_path)
+    prior = {path: ((tmp_path/path).read_bytes(), (tmp_path/path).stat().st_mtime_ns) for path in generated}
+    if phase == 'evaluate':
+        state = controller.apply('advance', state['run'], expected_revision=state['revision'], phase='evaluate')
+        history, log = 'evaluate-checks.json', 'evaluate-check.txt'
+    else:
+        request = {'tasks': ['T1'], 'decision': decision(state, candidate='changes_requested', event='fixture/repair')}
+        state = controller.apply('repair', state['run'], expected_revision=state['revision'], native_reference=json.dumps(request))
+        paths = w.current(state)['artifact_paths']
+        history, log = paths[2], next(path for path in paths if path.endswith('.log'))
+    pairs = []
+    for _ in range(2):
+        observed = controller.verify(state['run'], revision=state['revision'], check_id='package', history=history, log=log)
+        assert observed['status'] == 'pass'
+        record = Store(tmp_path).resolve(observed['record_ref'])
+        assert record['key']['command'] == check['command']
+        assert record['result']['execution']['command'] != check['command']
+        outputs = record['result']['output_files']
+        assert len(outputs) == 2 and set(outputs) <= set(w.phase_write_paths(controller.report()))
+        pairs.append({path: (tmp_path/path).read_bytes() for path in outputs})
+    assert not set(pairs[0]) & set(pairs[1])
+    assert all((tmp_path/path).read_bytes() == raw for pair in pairs for path, raw in pair.items())
+    assert prior == {path: ((tmp_path/path).read_bytes(), (tmp_path/path).stat().st_mtime_ns) for path in generated}
+    current = controller.report(diagnostics=False)
+    w.validate_state(current)
+    latest = list(pairs[-1])
+    for corruption in ('missing-sidecar', 'foreign-visit', 'wrong-name', 'invalid-nonce', 'duplicate'):
+        changed = deepcopy(current)
+        paths = w.current(changed)['artifact_paths']
+        if corruption == 'missing-sidecar': paths.remove(latest[1])
+        elif corruption == 'foreign-visit': paths[paths.index(latest[0])] = latest[0].replace(w.current(current)['id'], 'foreign')
+        elif corruption == 'wrong-name': paths[paths.index(latest[0])] = latest[0]+'-unowned'
+        elif corruption == 'invalid-nonce': paths[paths.index(latest[0])] = latest[0].replace('/generated/', '/generated/../')
+        else: paths.append(latest[0])
+        with pytest.raises(w.Refusal):
+            w.validate_state(changed)
+    # The real state remains readable after each rejected pure projection.
+    assert controller.report(diagnostics=False) == current
+    from taskplane import workflow_evidence as evidence
+    (tmp_path/latest[0]).write_bytes(b'tampered generated archive')
+    row = json.loads((tmp_path/history).read_text())['attempts'][-1]
+    output = {'verification_history': history, 'build_checks': [
+        dict(name='Package pair', check_id='package', attempt_id=row['id'], status=row['status'], evidence=log)]}
+    with pytest.raises(w.Refusal, match='produced verification artifact changed'):
+        evidence.validate_verification(tmp_path, current, output)
+
+
 @pytest.mark.parametrize('compact', [False, True])
 def test_verify_cli_runs_only_an_owned_accepted_check_and_retains_its_record(tmp_path, capsys, monkeypatch, compact):
     from taskplane import flow, workflow_evidence

@@ -807,7 +807,8 @@ def older_snapshot(previous: dict[str, Any], snapshot: dict[str, Any]) -> bool:
 def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Path | None = None,
                       select: bool = False, governor: workflow_host.Controller | None = None,
                       supplied: dict[str, Any] | None = None, detached: bool = False,
-                      pin_reason: str | None = None, checkpoint_required: bool = False) -> Path:
+                      pin_reason: str | None = None, checkpoint_required: bool = False,
+                      phase_required: bool = False) -> Path:
     """One renderer and immutable generation per explicit/task-bound run."""
     from taskplane import dashboard, flow_dashboard
     workspace = workspace.resolve()
@@ -837,7 +838,7 @@ def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Pat
         publication_pin = pin_reason
         # Explicit checkpoint delivery is required evidence. Derive the pin
         # after each retry's freshness checks, never from a caller's checkpoint.
-        if (checkpoint_required and not publication_pin and governed.get("visits")
+        if ((checkpoint_required or phase_required) and not publication_pin and governed.get("visits")
                 and not model.get("historical") and not model.get("final_observation")
                 and not any(governed.get(key) for key in
                             ("finished", "retired", "superseded_by", "cancellation"))):
@@ -845,6 +846,11 @@ def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Pat
             checkpoint = (stage.get("packet") or {}).get("checkpoint")
             if checkpoint and stage.get("decision") in {"awaiting_human_approval", "approved"}:
                 publication_pin = "checkpoint/" + checkpoint
+            elif (stage.get('phase') in workflow.PHASES and stage.get('id')
+                  and stage.get('decision') in {'not_requested', 'changes_requested', 'rejected'}):
+                # A real phase entry/current-context view is required delivery,
+                # independently of whether its result is ready for a decision.
+                publication_pin = 'phase/' + governed['run'] + '/' + stage['id']
         return publish_pair(workspace, model, document, target=target, select=select,
                             detached=detached, older=older_snapshot, pin_reason=publication_pin)
     raise workflow.Refusal("stale_checkpoint", "Dashboard inputs changed during publication; regenerate the selected run.")
@@ -1755,7 +1761,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                 if args.action != 'submit':
                     refresh_scan(workspace)
                 publish_dashboard(workspace, state['run'], governor=controller,
-                                  checkpoint_required=args.action in {'submit', 'decide'})
+                                  checkpoint_required=args.action in {'submit', 'decide'},
+                                  phase_required=args.action in {'start', 'advance', 'repair'}
+                                      or args.action == 'attach' and args.update_context)
             except Exception:
                 observation_errors.append('Workflow action committed; dashboard publication needs retry.')
         state = {**state, "phase": workflow.current(state)["phase"],

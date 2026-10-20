@@ -1028,6 +1028,20 @@ class Controller:
             w.require(all(worker_runtime.result_valid(self.workspace, state, dependency)
                           for dependency in definition['dependencies']), 'scope_violation', 'Check prerequisites are not accepted and current.')
             owned = set(definition['paths']) if stage['phase'] == 'build' else set(w.phase_write_paths(state))
+            # Visit-local result metadata belongs to the root, separately from
+            # the accepted production task paths (including on scoped repair).
+            owned.update(stage.get('artifact_paths', []))
+            execution = evidence.check_execution(self.workspace, state, check, nonce=uuid.uuid4().hex)
+            generated = set(execution['outputs']) - owned
+            if generated:
+                # Generated result metadata stays in this actual visit's fresh
+                # namespace. Production ownership and the Plan are unchanged.
+                for relative in generated:
+                    w.require(not evidence.path(self.workspace, relative).exists(), 'scope_violation',
+                              'Fresh generated output already exists.')
+                    evidence.write_path(self.workspace, relative)
+                state['visits'][state['index']].setdefault('artifact_paths', []).extend(sorted(generated))
+                owned.update(generated)
             histories = set(owned)
             if stage['phase'] == 'build':
                 tasks = {row['id']: row for row in plan['task_dag']}
@@ -1036,7 +1050,7 @@ class Controller:
             w.require(history != log and history in histories and log in owned,
                       'scope_violation', 'History and log must be exact current owned outputs.')
             admission = {**self.availability(observations=False), **state}
-            for relative in (history, log):
+            for relative in (history, log, *execution['outputs']):
                 self._guard({'tool_name': 'Write', 'tool_input': {'path': relative}}, admission)
             for relative in owned | {history}:
                 evidence.write_path(self.workspace, relative)
@@ -1044,12 +1058,16 @@ class Controller:
                              set(row['paths']) & (owned | set(check['source_inputs'] + check['test_inputs']))
                              for row in state.get('workers', {}).values()),
                       'scope_violation', 'Join conflicting native writers before verification.')
+            if generated:
+                db['runs'][run] = deepcopy(state)
+                self._write(self._path(), db)
         provenance = context_reuse.key(self.workspace, paths=check['source_inputs'], tests=check['test_inputs'],
             criteria=check['criteria'], command=check['command'], tool='taskplane.flow.verify',
             contract='accepted-plan/v1', state=state, check_id=check_id, history_path=history, log_path=log)
         reference = context_reuse.run_check(self.workspace, provenance, producer=self.root, timeout=timeout,
             state=state, history_path=history, log_path=log, run=run, visit=stage['id'], check_id=check_id,
-            kind=check['kind'], environment=check['environment'], coverage_details=coverage, current_projection=True)
+            kind=check['kind'], environment=check['environment'], coverage_details=coverage, current_projection=True,
+            execution=execution)
         record = Store(self.workspace).resolve(reference)
         return {'check_id': check_id, 'status': record['status'], 'record_ref': reference,
                 'history': history, 'log': log, 'run': run, 'visit': stage['id'],
