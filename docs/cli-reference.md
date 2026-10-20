@@ -43,38 +43,49 @@ Approving a checkpoint does not enroll a policy or accept a future phase.
 
 ### Compatible runtime recovery
 
-When an explicitly authorized local repair is needed during an open Build, use
-the installed runtime's `flow recover --runtime-repair` operation. Do not send an
-opaque repair helper to Terminal to get around an agent-side refusal. Diagnose
-the actual installed capability first; an older runtime cannot gain a new command
-just because its candidate source was edited. Use the host plugin updater when
-the installed version lacks this operation. This is distinct from approving Build
-or installing a new release.
+An installed runtime may have a defect that prevents normal same-run recovery.
+Do not patch its cache in place or send a refused helper to Terminal. The host
+must first select a separate, tested compatible installation. Then the new
+runtime's `flow recover --runtime-repair` can resume the existing open Build
+without repeating accepted phases or restarting the conversation.
 
-The request is a hash-pinned JSON file under `.taskplane/bootstrap/`. Its schema
-is `taskplane.runtime-repair/v1`; `binding` contains the exact `workspace`, `root`,
-`run`, `revision`, `visit` and absolute installed `runtime` path. Include the actual
-user repair `request_reference`, and `files`, a map from each existing Plan-owned
-`taskplane/module.py` to its `current_sha256` and `candidate_sha256`. The reference
-is cooperative observation of consent, not independent human authentication.
+The operation installs nothing and edits neither bundle. It changes only the
+run's enforcing runtime identity and revision, records the recovery request in
+the existing controller, and clears callback readiness from the old runtime.
+Existing phase decisions, task ownership and evidence remain preserved. Changed
+package identity invalidates old verification reuse; child readiness must be
+observed again. This run handover requires explicit human authorization separate
+from Build approval and from the host's installation action.
+
+The bounded request is a hash-pinned JSON file under `.taskplane/bootstrap/`,
+with schema `taskplane.runtime-repair/v1`. Its `binding` contains the exact
+`workspace`, `root`, `run`, `revision` and `visit`. Include the actual human
+`request_reference`, the complete `from_runtime` and `to_runtime` identities,
+and `member_sha256`, the incoming installation's code/hook/manifest fingerprint.
+The fingerprint is the canonical content fingerprint of the member-path-to-SHA-256
+map. `flow diagnose` prepares this proposal from the current controller and
+selected installation; supply the actual user request reference before saving it.
+The old installation need not remain on disk after the host update. Its persisted
+identity is historical provenance. This is cooperative observation, not host
+attestation or independent authentication of human consent.
 
 ```sh
-python3 /actual/plugin/taskplane/tp.py flow recover --workspace /actual/workspace \
-  --runtime-repair .taskplane/bootstrap/repair.json --expected-sha256 REQUEST_SHA256 \
+python3 /new/installed/plugin/taskplane/tp.py flow recover --workspace /actual/workspace \
+  --runtime-repair .taskplane/bootstrap/recovery.json --expected-sha256 REQUEST_SHA256 \
   --recovery-mode inspect
 ```
 
-After explicit authorization of the concrete local repair, `--recovery-mode apply`
-uses the same pinned request. No separate phase decision is inferred. Known work
-must be quiescent; hashes and current binding must still match. The operation
-compiles candidate bytes without executing them, stages a complete copy and uses
-an atomic macOS directory exchange with rollback on failed publication or audit.
-The old bundle remains as a backup, and the request's `.result.json` records the
-outcome. Other platforms refuse apply and require the host updater. Hooks,
-manifests, launchers, the repair guard, skills, version labels and controller bytes
-are preserved. This operation supports compatible module repairs, not a contract
-migration or release upgrade. Candidate code still requires its normal checks;
-syntax validation alone does not establish behavioral compatibility.
+After reviewing the concrete handover and receiving its authorization,
+`--recovery-mode apply` uses the same request. It requires a quiescent, unfenced
+Build with an accepted Plan. Both installations must have matching workflow,
+context and ownership contracts and compatible patch versions in the same
+major/minor line. Incoming member bytes and the current binding are rechecked. The
+target must be the runtime already selected by the host; a candidate checkout
+cannot nominate itself. A retry after a committed transition is idempotent.
+
+If the old installation lacks this operation, a supported host update is still
+required to introduce it. Candidate source cannot grant itself live admission.
+The handover does not approve a phase, install a release or weaken file guards.
 
 Use `--workspace PATH`, `--run RUN` and actual current revision where the selected
 operation requires it. Start uses `--goal`, `--scope`, `--request-reference` and,

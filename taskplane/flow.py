@@ -1421,8 +1421,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--recover-from", help="Exact adjacent numbered workflow copy; recover only")
     parser.add_argument("--expected-sha256", help="Expected recovery copy or import request SHA-256")
     parser.add_argument("--recovery-request", help="Absolute hash-pinned state import request file")
-    parser.add_argument("--runtime-repair", help="Workspace bootstrap request for a compatible, explicitly authorized runtime repair")
-    parser.add_argument("--recovery-mode", choices=["inspect", "apply"], help="Preview or apply a same-root state import")
+    parser.add_argument("--runtime-repair", help="Pinned same-run handover to a compatible runtime already selected by the host")
+    parser.add_argument("--recovery-mode", choices=["inspect", "apply"], help="Preview or apply supported state/runtime recovery")
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -1567,7 +1567,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                         args.expected_sha256 or '', mode=args.recovery_mode or 'inspect')
                 except (OSError, primitives.StateError) as exc:
                     raise workflow.Refusal('state_unavailable',
-                        'Runtime recovery did not complete; inspect the preserved outcome and backup: ' + str(exc)) from None
+                        'Runtime recovery did not complete; inspect the controller binding and installation identities: ' + str(exc)) from None
                 print(json.dumps(repaired))
             elif args.recovery_request is not None:
                 from . import state_import
@@ -1583,13 +1583,24 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             diagnostics = workflow_local.diagnose(workspace)
             diagnostics['runtime_recovery'] = {
                 'operation': 'flow recover --runtime-repair REQUEST --expected-sha256 SHA256 --recovery-mode inspect|apply',
-                'request_schema': 'taskplane.runtime-repair/v1', 'available': sys.platform == 'darwin',
-                'scope': 'Existing Plan-owned modules in an open quiescent Build; preserve hooks, launcher, repair guard and manifests.',
+                'request_schema': 'taskplane.runtime-repair/v1', 'available': True,
+                'scope': 'Rebind an open quiescent Build to a compatible patch runtime already selected by the host; preserve approvals and both installations.',
                 'fallback': 'Use the host plugin updater if this installed runtime lacks the operation; do not execute a repair helper outside the hook gate.'}
             diagnostic_controller = governor or _controller(workspace, session_id({}), args.profile)
             try:
                 state = diagnostic_controller.report()
                 diagnostics["workflow"] = {k: state.get(k) for k in ("run", "revision", "phase", "status", "storage")}
+                if diagnostic_controller.adapter.profile == 'native_workflow':
+                    from .host_capabilities import runtime_identity
+                    incoming = runtime_identity()
+                    origin = state.get('runtime_identity')
+                    if isinstance(origin, dict) and origin != incoming:
+                        diagnostics['runtime_recovery']['proposal'] = {
+                            'schema': 'taskplane.runtime-repair/v1',
+                            'binding': {key: state[key] for key in ('workspace', 'root', 'run', 'revision')} | {
+                                'visit': workflow.current(state)['id']},
+                            'request_reference': '', 'from_runtime': origin, 'to_runtime': incoming,
+                            'member_sha256': workflow_local._runtime_members(Path(incoming['root']))}
             except (workflow.Refusal, OSError, ValueError, TypeError, KeyError) as exc:
                 diagnostics["workflow_error"] = str(exc)
             if diagnostic_controller.adapter.profile == 'native_workflow':

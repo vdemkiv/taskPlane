@@ -152,10 +152,12 @@ establish session hook readiness; a selected run or trusted install alone does n
 Editing owned candidate hook source and tests is normal implementation work.
 Disabling, uninstalling, replacing or bypassing the active harness to get past a
 refusal is prohibited. Do not ask the user to execute a refused repair helper in
-Terminal. For an explicitly authorized compatible module repair, use the actual
-installed runtime's `flow recover --runtime-repair` operation with a pinned
-request; preserve its hooks, launcher, repair guard, manifests and controller
-authority. Never infer repair authorization from phase approval. If the loaded
+Terminal. After a trusted host update, an explicitly authorized same-run handover
+uses the new installed runtime's `flow recover --runtime-repair` operation with a
+pinned request. Preserve both immutable installations, phase decisions and task
+ownership; change only the enforcing runtime binding and revision, invalidating
+old runtime reuse and callback readiness. Never infer recovery authorization from
+phase approval. If the loaded
 runtime lacks that operation, report the capability gap and use the host plugin
 updater; candidate source cannot grant itself live admission. Keep the live installation intact while testing separate
 candidates. Verify allowed and rejected actions in fresh Codex and Claude
