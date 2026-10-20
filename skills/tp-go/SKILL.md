@@ -7,8 +7,10 @@ description: Carry delivery through seven explicitly accepted phases with shared
 
 Follow [the shared flow](references/shared-flow.md) through Product → Design →
 Plan → Build → Evaluate → Engineering → Retro. Preserve accepted decisions and
-the user's scope. Each concrete phase result requires separate human approval;
-do not enroll automatic approval or combine checkpoints.
+the user's scope. Manual approval is the default: each concrete phase result
+requires separate human approval. Optional automatic mode requires explicit
+run-bound policy authorization, scoped conditions and named stop phases; one
+phase approval never enrolls a policy or combines checkpoints.
 
 Start with the goal, stable acceptance criteria, material boundaries and current
 output. Design chooses the approach; Plan specifies exact Build paths, owners,
@@ -18,9 +20,9 @@ imports and CI references with removed code.
 
 Initialize in the actual native task workspace before presenting Product. New
 repository runs require a clean dedicated linked worktree and intended base.
-An admitted automatic pre/post pair must match the saved root/run/phase/runtime.
-If missing, complete an ordinary admitted read in that native workspace and retry
-the same checkpoint. Preserve existing work and decisions. Initial and relevant
+Report matching automatic pre/post observations as coverage, not root phase
+authority. Missing callbacks do not require a restart or veto valid root work;
+native worker readiness remains separate. Preserve existing work and decisions. Initial and relevant
 milestone scans use the existing decomposed graph cache; report failed or stale
 views explicitly. Task completion is separate from phase approval.
 

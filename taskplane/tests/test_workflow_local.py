@@ -12,6 +12,32 @@ def binding_runtime_available():
             and hasattr(os, 'O_NOFOLLOW'))
 
 
+@pytest.mark.parametrize('command', ['wc -l source.py', 'head -25 source.py', 'tail -n 45 source.py',
+    'git diff --no-ext-diff --no-textconv --name-only', 'rg -n --max-columns 15000 value source.py'])
+def test_literal_diagnostic_reads_remain_available(command):
+    assert local.readonly_command({'tool_input': {'cmd': command}})
+
+
+@pytest.mark.parametrize('command', ['touch report{,.backup}.txt', 'touch report*.txt',
+    'tail -n 4 source.py > stolen.txt', 'git diff --output=stolen.txt', 'head source.py; touch stolen.txt'])
+def test_expanding_or_mutating_shell_is_not_a_read_or_literal_write(command):
+    event = {'tool_input': {'cmd': command}}
+    assert not local.readonly_command(event)
+    assert local.shell_write_paths(event) is None
+
+
+def test_quoted_brace_filename_is_literal():
+    assert local.shell_write_paths({'tool_input': {'cmd': "touch 'report{,.backup}.txt'"}}) == ['report{,.backup}.txt']
+
+
+@pytest.mark.parametrize('command,expected', [
+    ('git add -- app.py tests/check.py', ['app.py', 'tests/check.py']),
+    ("git commit --only --message 'Fix the owned source' -- app.py", ['app.py']),
+    ('git add -A', None), ('git commit --amend --no-edit', None), ('git reset --hard', None)])
+def test_scoped_git_has_only_literal_reviewed_targets(command, expected):
+    assert local.shell_write_paths({'tool_input': {'cmd': command}}) == expected
+
+
 def setup(workspace, *, entry="product", standalone=False):
     workspace=workspace.resolve()
     state, _, _=prepare(workspace)
@@ -365,6 +391,143 @@ def supported_build(tmp_path, host):
     return c, c.report(state['run'], diagnostics=False)
 
 
+def runtime_repair_fixture(tmp_path, monkeypatch, host='codex'):
+    """Real accepted phases and two immutable host-installation fixtures."""
+    import hashlib
+    from taskplane import host_capabilities
+    original_identity = host_capabilities.runtime_identity()
+    bundles, identities = {}, {}
+    manifest = '.codex-plugin/plugin.json' if host == 'codex' else '.claude-plugin/plugin.json'
+    for side, version in [('from', '2.34.5'), ('to', '2.34.6')]:
+        bundle = tmp_path/('installed-'+side)
+        for name, content in {'taskplane/runtime.py': 'value = '+repr(version)+'\n',
+                              'hooks/hooks.json': '{}', manifest: json.dumps({'name':'taskplane', 'version':version})}.items():
+            path = bundle/name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        identity = {**original_identity, 'root':str(bundle), 'version':version}
+        identity['package_id'] = local.primitives.content_fingerprint({
+            key: identity[key] for key in ('name', 'version', 'workflow', 'context', 'execution')})
+        bundles[side], identities[side] = bundle, identity
+    monkeypatch.setattr(host_capabilities, 'runtime_identity', lambda **kwargs: deepcopy(identities['from']))
+    c, state = supported_build(tmp_path, host)
+    monkeypatch.setattr(host_capabilities, 'runtime_identity', lambda **kwargs: deepcopy(identities['to']))
+    monkeypatch.setattr(local, '_runtime_root', lambda: bundles['to'])
+    request = {'schema':'taskplane.runtime-repair/v1', 'binding': {
+        'workspace':str(tmp_path), 'root':c.root, 'run':state['run'], 'revision':state['revision'],
+        'visit':w.current(state)['id']}, 'request_reference':'conversation/explicit-compatible-runtime-recovery',
+        'from_runtime':identities['from'], 'to_runtime':identities['to'],
+        'member_sha256':local._runtime_members(bundles['to'])}
+    relative = '.taskplane/bootstrap/runtime-recovery.json'
+    path = tmp_path/relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    def save():
+        path.write_text(json.dumps(request))
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    return c, state, bundles, request, relative, save
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_supported_runtime_recovery_inspects_without_changing_authority_or_installations(tmp_path, monkeypatch, host, capsys):
+    from taskplane import flow
+    import shlex, sys
+    from pathlib import Path
+    c, state, bundles, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch, host)
+    checksum = save()
+    before = c._path().read_bytes()
+    contents = {side:local._runtime_members(bundle) for side, bundle in bundles.items()}
+    words = [sys.executable, str(Path(flow.__file__).with_name('tp.py')), 'flow', 'recover',
+             '--workspace', str(tmp_path), '--runtime-repair', relative,
+             '--expected-sha256', checksum, '--recovery-mode', 'inspect']
+    event = {'hook_event_name':'PreToolUse', 'cwd':str(tmp_path), 'session_id':'root',
+             'tool_name':'exec_command' if host == 'codex' else 'Bash',
+             'tool_input':{'cmd' if host == 'codex' else 'command':shlex.join(words)}}
+    assert flow._state_admin(event, tmp_path)
+    assert flow.main(['diagnose', '--workspace', str(tmp_path)], governor=c) == 0
+    proposal = json.loads(capsys.readouterr().out)['runtime_recovery']['proposal']
+    assert proposal == {**request, 'request_reference': ''}
+    assert flow.main(words[3:], governor=c) == 0
+    assert c._path().read_bytes() == before
+    assert {side:local._runtime_members(bundle) for side, bundle in bundles.items()} == contents
+
+
+@pytest.mark.parametrize('bad', ['hash', 'revision', 'root', 'from-pin', 'foreign-target',
+                                'contract', 'minor', 'new-members', 'running', 'child', 'missing-hooks'])
+def test_runtime_recovery_refuses_stale_binding_and_incompatible_installations(tmp_path, monkeypatch, bad):
+    c, state, bundles, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch)
+    if bad in {'revision', 'root'}: request['binding'][bad] = 'foreign'
+    elif bad == 'from-pin': request['from_runtime'] = {**request['from_runtime'], 'package_id':'0'*64}
+    elif bad == 'foreign-target': request['to_runtime'] = {**request['to_runtime'], 'root':'/foreign'}
+    elif bad == 'contract': request['from_runtime'] = {**request['from_runtime'], 'execution':'ownership/v99'}
+    elif bad == 'minor': request['from_runtime'] = {**request['from_runtime'], 'version':'2.35.5'}
+    elif bad == 'new-members':
+        (bundles['to']/'taskplane/runtime.py').write_text('value = "drift"\n')
+    elif bad == 'running': monkeypatch.setattr(c.adapter, 'can_seal', lambda state: False)
+    elif bad == 'child': c.principal = 'child'
+    elif bad == 'missing-hooks': (bundles['to']/'hooks/hooks.json').unlink()
+    checksum = save()
+    if bad == 'hash': checksum = '0'*64
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal):
+        local.recover_runtime(c, relative, checksum, mode='apply')
+    assert c._path().read_bytes() == before
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('old_bundle_present', [True, False])
+def test_runtime_recovery_preserves_approvals_and_ownership_and_invalidates_runtime_reuse(tmp_path, monkeypatch, host, old_bundle_present):
+    import sys
+    from taskplane import host_capabilities, context_reuse
+    c, state, bundles, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch, host)
+    checksum = save()
+    if not old_bundle_present:
+        import shutil
+        shutil.rmtree(bundles.pop('from'))  # Model a host updater pruning an old cache.
+    snapshots = {side:local._runtime_members(bundle) for side, bundle in bundles.items()}
+    with monkeypatch.context() as prior_host:
+        prior_host.setattr(host_capabilities, 'runtime_identity', lambda **kwargs: request['from_runtime'])
+        old_key = context_reuse.key(tmp_path, paths=['app.py'], tests=[], criteria=['AC1'],
+                                    command=[sys.executable, 'app.py'], tool='python', contract='fixture/v1')
+    result = local.recover_runtime(c, relative, checksum, mode='apply')
+    updated = c.report(state['run'], diagnostics=False)
+    assert result['status'] == 'recovered' and updated['revision'] == state['revision']+1
+    assert updated['runtime_identity'] == request['to_runtime']
+    for key in ('run', 'root', 'scope', 'decisions', 'visits', 'index'):
+        assert updated[key] == state[key]
+    assert {side:local._runtime_members(bundle) for side, bundle in bundles.items()} == snapshots
+    assert 'parent_hook_readiness' not in updated
+    new_key = context_reuse.key(tmp_path, paths=['app.py'], tests=[], criteria=['AC1'],
+                                command=[sys.executable, 'app.py'], tool='python', contract='fixture/v1')
+    assert new_key['digest'] != old_key['digest']
+    c.guard({'tool_name':'Edit', 'tool_input':{'file_path':'app.py'}}, state['run'])
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name':'Edit', 'tool_input':{'file_path':'unowned.py'}}, state['run'])
+    before_retry = c._path().read_bytes()
+    assert local.recover_runtime(c, relative, checksum, mode='apply')['status'] == 'already_recovered'
+    assert c._path().read_bytes() == before_retry
+
+
+@pytest.mark.parametrize('when', ['before', 'after'])
+def test_runtime_recovery_commit_failure_is_recoverable_without_editing_either_bundle(tmp_path, monkeypatch, when):
+    c, state, bundles, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch)
+    checksum = save()
+    before = c._path().read_bytes()
+    snapshots = {side:local._runtime_members(bundle) for side, bundle in bundles.items()}
+    original = c._write
+    def failed(*args):
+        if when == 'after': original(*args)
+        raise OSError('fixture controller publication failure')
+    monkeypatch.setattr(c, '_write', failed)
+    with pytest.raises(OSError, match='fixture'):
+        local.recover_runtime(c, relative, checksum, mode='apply')
+    if when == 'before':
+        assert c._path().read_bytes() == before
+    else:
+        monkeypatch.setattr(c, '_write', original)
+        assert c.report(state['run'], diagnostics=False)['runtime_identity'] == request['to_runtime']
+        assert local.recover_runtime(c, relative, checksum, mode='apply')['status'] == 'already_recovered'
+    assert {side:local._runtime_members(bundle) for side, bundle in bundles.items()} == snapshots
+
 @pytest.mark.parametrize('host', ['codex', 'claude'])
 @pytest.mark.parametrize('tool,key', [('Bash', 'command'), ('exec_command', 'cmd')])
 def test_supported_shell_allows_owned_effects_and_refuses_unowned_effects(tmp_path, host, tool, key):
@@ -383,19 +546,22 @@ def test_supported_shell_allows_owned_effects_and_refuses_unowned_effects(tmp_pa
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_hook_readiness_and_structured_scope_are_required_before_build_writes(tmp_path, host):
+def test_structured_scope_stays_enforced_when_callback_coverage_is_missing(tmp_path, host):
     c, state = supported_build(tmp_path, host)
     c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
     with pytest.raises(w.Refusal, match='outside'):
         c.guard({'tool_name': 'Write', 'tool_input': {'path': 'sibling.py'}}, state['run'])
-    # Missing setup is checked outside the tool hook at the Build transition.
+    # Missing callback observations do not replace or veto exact root ownership.
     broken = deepcopy(state)
     broken.pop('parent_hook_readiness', None)
-    with pytest.raises(w.Refusal, match='Preventive hook admission'):
-        c._guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, broken)
+    c._guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, broken)
+    with pytest.raises(w.Refusal, match='outside'):
+        c._guard({'tool_name': 'Write', 'tool_input': {'path': 'sibling.py'}}, broken)
     broken = deepcopy(state)
     broken['parent_hook_readiness']['root'] = 'another-session'
-    assert local.Harness(tmp_path, 'root').readiness(broken)['status'] != 'active'
+    observation = local.Harness(tmp_path, 'root').readiness(broken)
+    assert observation['status'] == 'active'
+    assert observation['parent_hook']['status'] == 'missing'
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
@@ -413,7 +579,7 @@ def test_candidate_hook_source_is_editable_but_live_uninstall_has_no_recovery_es
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_missing_hooks_block_build_transition_outside_the_preventive_hook(tmp_path, host):
+def test_missing_callbacks_preserve_approved_build_transition(tmp_path, host):
     from taskplane.tests.test_worker_runtime import parent_pair
     initial, _, _ = prepare(tmp_path)
     c = h.Controller(tmp_path, 'root', h.installed_adapter(host))
@@ -426,12 +592,12 @@ def test_missing_hooks_block_build_transition_outside_the_preventive_hook(tmp_pa
     state = c.apply('decide', state['run'], expected_revision=state['revision'],
         native_reference=json.dumps(decision(state, event='fixture/accept-plan')))
     before = deepcopy(state['decisions'])
-    with pytest.raises(w.Refusal, match='Build needs an admitted automatic'):
-        c.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
-    assert c.report()['decisions'] == before and w.current(c.report())['decision'] == 'approved'
-    parent_pair(c)
     state = c.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
     assert w.current(state)['phase'] == 'build'
+    assert state['decisions'] == before
+    assert local.Harness(tmp_path,'root').readiness(state)['parent_hook']['status'] == 'missing'
+    parent_pair(c)
+    assert local.Harness(tmp_path,'root').readiness(c.report())['parent_hook']['status'] == 'ready'
 
 
 def test_plain_repair_approval_reopens_build_and_preserves_history(tmp_path):
@@ -491,8 +657,8 @@ def test_scoped_repair_uses_controller_and_preserves_prior_approvals(tmp_path, c
     for phase in ('product', 'design', 'plan'):
         before = next(v for v in original['visits'] if v['phase'] == phase)
         assert next(v for v in state['visits'] if v['id'] == before['id']) == before
-    with pytest.raises(w.Refusal, match='Preventive hook admission'):
-        c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
+    assert local.Harness(tmp_path,'root').readiness(state)['parent_hook']['status'] == 'missing'
+    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
     parent_pair(c)
     state = c.report()
     c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])

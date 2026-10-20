@@ -128,8 +128,13 @@ def resume(controller: Any, *, actor: str, run: str, revision: int | None,
         normalized = excerpt.strip().casefold()
         match = re.fullmatch(r'(?:please\s+)?(?:continue|resume)\s+(?:run\s+)?([0-9a-f]{8,32})'
                              r'(?:\s+at\s+(?:the\s+)?(product|design|plan|build|evaluate|engineering|retro)'
-                             r'(?:\s+phase)?)?[.!]?', normalized)
-        w.require(match is not None and run.startswith(match[1])
+                             r'(?:\s+phase)?)?(?:\s+and\s+keep\s+(?:the\s+)?approvals)?[.!]?', normalized)
+        candidate = request.get('intent')
+        contextual = (isinstance(candidate, dict) and candidate.get('candidate') == 'resume'
+                      and candidate.get('run') == run
+                      and candidate.get('phase', w.current(state)['phase']) == w.current(state)['phase']
+                      and re.search(r'(?<![0-9a-f])' + re.escape(run) + r'(?![0-9a-f])', normalized) is not None)
+        w.require(contextual or match is not None and run.startswith(match[1])
                   and (not match[2] or match[2] == w.current(state)["phase"]),
                   "resume_intent", "Continuation intent is unclear or names another run/phase. Preserve the actual explicit request.")
         w.require(source["conversation"] == actor if mode == "inspect" else actor == state["root"],

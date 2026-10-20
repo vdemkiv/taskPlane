@@ -7,10 +7,12 @@ Standalone Product/Design/Engineering stop at their requested result; a review
 request does not grant implementation.
 
 Full delivery is Product → Design → Plan → Build → Evaluate → Engineering → Retro.
-Every phase has a concrete result and separate human approval. Start with goal,
+Every phase has a concrete result and separate decision. Default manual mode
+uses actual human approval; optional automatic mode requires explicit run-bound
+policy authorization, scoped conditions, stop phases and assessments. Start with goal,
 stable criteria, material boundaries and current output; Plan later fixes exact
 Build ownership, dependencies, paths and checks. No early exhaustive future-path
-inventory or automatic policy enrollment applies.
+inventory is required, and ordinary phase assent never enrolls automatic policy.
 
 Use current source, requirements and relevant dependencies for decisions. Graphs,
 lens catalogs and decomposition are optional aids. There is no all-catalog

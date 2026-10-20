@@ -96,10 +96,30 @@ def manifest(root: Path, paths: list[str], *, allow_missing: bool = False,
 
 def valid_scope(root: Path, scope: dict[str, Any]) -> None:
     w.validate_scope(scope)
-    for paths in [*scope["paths"].values(), scope.get("verification_inputs", [])]:
+    for paths in scope["paths"].values():
         for value in paths:
             w.require(isinstance(value, str), "invalid_evidence", "Scope paths must be strings.")
-            path(root, value)
+            write_path(root, value)
+    for value in scope.get("verification_inputs", []):
+        path(root, value)
+
+
+def write_path(root: Path, relative: str) -> Path:
+    """Task outputs cannot replace the controller's own authority or indexes."""
+    target = path(root, relative)
+    parts = Path(relative).parts
+    if parts[0] == '.taskplane':
+        name = parts[1] if len(parts) > 1 else ''
+        reserved = (name in {'context-v1', 'workspace-claims', 'workspace-binding.json', 'binding.json',
+                             'dashboard.html', 'dashboard.selection.json', 'snapshots.json'}
+                    or name.startswith(('workflow-', 'harness-', 'initialization-', 'snapshot-', 'live-telemetry-', 'native-parent-'))
+                    or name.endswith('.lock'))
+        w.require(not reserved,
+                  'scope_violation', 'Controller metadata is not a task output.')
+    if target.exists():
+        w.require(target.stat().st_nlink == 1, 'scope_violation',
+                  'A multiply-linked file cannot be an in-place task write target.')
+    return target
 
 
 def task_criteria(task: dict[str, Any]) -> list[str]:
@@ -307,12 +327,14 @@ def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> lis
     for row in rows:
         phase = row.get("phase", w.current(state)["phase"])
         w.require(phase in state["scope"]["paths"], "invalid_evidence", "Unknown task phase.")
+        allowed = (w.phase_write_paths(state) if phase == w.current(state)['phase']
+                   else state["scope"]["paths"][phase])
         w.require((w.current(state)["phase"] == "plan" and phase == "build"
-                   or set(row["paths"]) <= set(state["scope"]["paths"][phase]))
+                   or set(row["paths"]) <= set(allowed))
                   and set(task_criteria(row)) <= set(state["scope"]["criteria"]),
                   "scope_violation", "Task publication exceeds accepted paths or criteria.")
         for relative in row["paths"]:
-            path(root, relative)
+            write_path(root, relative)
         validate_read_inputs(root, state["scope"], row)
     if w.current(state)["phase"] == "build":
         approved = w.accepted_plan(state)["packet"]["output"]["task_dag"]
@@ -399,7 +421,7 @@ def _plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
     for key, row in build.items():
         validate_read_inputs(root, state["scope"], row)
         for relative in _strings(row.get("paths"), f"Task {key} paths"):
-            path(root, relative)
+            write_path(root, relative)
             w.require(relative in planned and relative not in owners, "invalid_evidence",
                       "Every Build path needs exactly one declared task owner.")
             owners[relative] = key
@@ -496,6 +518,38 @@ def validate_build_outputs(root: Path, state: dict[str, Any], output: dict[str, 
             w.require(any(ref.get("path") == row["path"] and ref.get("kind") == "report"
                           and row["task"] in ref.get("tasks", []) for ref in output.get("artifacts", [])),
                       "invalid_evidence", "Build needs its planned report with matching task ownership.")
+
+
+def check_execution(root: Path, state: dict[str, Any], check: dict[str, Any], *,
+                    nonce: str | None = None) -> dict[str, Any]:
+    """Project known generated outputs, never change a check's logical command.
+
+    Only the repository package builders' declared archive/sidecar pair has a
+    directory projection. Other commands retain their approved arguments; an
+    explicit reference to an unowned declared output refuses before execution.
+    """
+    command = list(check['command'])
+    owned = set(w.phase_write_paths(state))
+    declared = check['evidence_outputs']
+    outputs = w.package_check_outputs(check)
+    result: dict[str, Any] = {'command': command, 'outputs': [], 'mapping': {}, 'nonce': None}
+    if outputs is None:
+        for relative in declared:
+            if relative in command or any(arg.endswith('='+relative) for arg in command):
+                w.require(relative in owned, 'scope_violation', 'Check command targets an output outside its current phase.')
+        return result
+    directory = command[4]
+    path(root, directory)
+    stage = w.current(state)
+    if (stage['phase'] == 'build' and stage['id'] != state.get('repair_scope', {}).get('build_visit')
+            and set(outputs) <= owned):
+        result['outputs'] = outputs
+        return result
+    mapping = w.generated_check_outputs(state, stage, check, nonce)
+    destination = str(Path(next(iter(mapping.values()))).parent)
+    path(root, destination)
+    command[4] = destination
+    return {'command': command, 'outputs': list(mapping.values()), 'mapping': mapping, 'nonce': nonce}
 
 
 def finding_paths(output: dict[str, Any]) -> list[str]:
@@ -851,7 +905,8 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
             saved_record = store.resolve(row["record_ref"])
             saved = saved_record["key"]
             now = context_reuse.revalidate(root, saved_record, state=state, output_path=output_path)
-            if not context_reuse.same_inputs(now, saved):
+            if (not context_reuse.same_inputs(now, saved)
+                    or row.get('status') == 'pass' and not context_reuse.reusable(saved_record, now)):
                 row.update(status="unknown", reason="Inherited verification inputs changed.")
         for criterion, result in output.get("criterion_results", {}).items():
             if result.get("status") == "pass":
@@ -866,7 +921,7 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     if w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit'):
         declared_histories = set(w.current(state).get('artifact_paths', []))
     if phase == "evaluate" and not inherited:
-        declared_histories = set(state["scope"]["paths"].get("evaluate", []) + w.current(state).get('artifact_paths', []))
+        declared_histories = set(w.phase_write_paths(state))
     w.require(isinstance(history_path, str) and history_path in declared_histories,
               "invalid_evidence", "Verification history must name a planned output or the current Evaluate's owned output.")
     assert isinstance(history_path, str)
@@ -880,6 +935,20 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     current_visit = predecessor.get("id") if inherited else w.current(state)["id"]
     w.require(history.get("visit") == current_visit, "invalid_evidence", "Verification history belongs to a different producing visit.")
     attempts = history["attempts"]
+    # All planned histories for this producer are projections of one ordered
+    # history. Selecting another filename cannot hide a newer observation.
+    for candidate in declared_histories:
+        if candidate == history_path or not path(root, candidate).exists():
+            continue
+        try:
+            other = object_file(root, candidate)
+        except w.Refusal:
+            continue  # A declared ordinary source/output is not a history.
+        if (other.get('schema') == VERIFICATION_HISTORY and other.get('run') == state['run']
+                and other.get('visit') == current_visit):
+            prior_attempts = other.get('attempts', [])
+            w.require(isinstance(prior_attempts, list) and attempts[:len(prior_attempts)] == prior_attempts,
+                      'invalid_evidence', 'Verification attempts cannot be removed, reordered or rewritten; select the complete newest verification history.')
     # Continuity belongs to the producing visit, not its selected filename.
     # Renaming a history must not discard a previously captured fail/unknown.
     for stage in _packets(state):
@@ -921,7 +990,9 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
         declared_logs = (state["scope"]["paths"].get("evaluate", [])
                          if producer["phase"] == "evaluate" else requirement["evidence_outputs"])
         declared_logs = [*declared_logs, *(relative for relative in producer.get('artifact_paths', [])
-                                          if '/check-' in relative and relative.endswith('.log'))]
+                                          if '/check-' in relative and relative.endswith('.log')
+                                          or producer['phase'] == 'evaluate'
+                                          and relative == w.visit_result_paths(state, producer)[2])]
         w.require(log_path in declared_logs and attempt.get("log_ref") == record.get("log_ref")
                   and record.get("log_path") == log_path, "invalid_evidence", "Attempt log is not its declared immutable evidence.")
         log = store.resolve(attempt["log_ref"])
@@ -934,9 +1005,7 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
             w.require(read(root, log_path) == log["text"].encode(), "invalid_evidence", "A captured verification log was edited.")
             files.append(log_path)
         refs.extend([attempt["record_ref"], attempt["log_ref"]])
-        retained = (phase == 'build' and w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit')
-                    and attempt['check_id'] not in state['repair_scope']['checks'])
-        if attempt["visit"] == current_visit or retained:
+        if attempt["visit"] == current_visit:
             latest[attempt["check_id"]] = {**deepcopy(attempt), "_record": record}
     selected: list[dict[str, Any]] = []
     final_rows = (predecessor.get("packet", {}).get("output", {}).get("build_checks", [])
@@ -949,23 +1018,33 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     for check_id, requirement in requirements.items():
         attempt = latest.get(check_id)
         if attempt is None:
-            w.require(check_id not in final, "invalid_evidence", "Final check has no current attempt.")
             # A fresh Evaluate may rerun a subset. Carry a predecessor only
             # after revalidating its record against current relevant inputs.
-            prior = next((row for row in predecessor.get("packet", {}).get("verification", {}).get("effective_checks", [])
-                          if row.get("check_id") == check_id), None) if phase == "evaluate" and not inherited else None
+            prior_rows = predecessor.get('packet', {}).get('verification', {}).get('effective_checks', [])
+            repair = state.get('repair_scope', {})
+            if (phase == 'build' and w.current(state)['id'] == repair.get('build_visit')
+                    and check_id not in repair.get('checks', [])):
+                basis = state.get('request_provenance', {}).get('repair', {}).get('verification_basis')
+                prior_rows = store.resolve(basis).get('effective_checks', []) if basis else []
+            prior = next((row for row in prior_rows if row.get('check_id') == check_id), None)
             if prior is not None:
                 prior = deepcopy(prior)
+                claim = final.get(check_id)
+                w.require(claim is None or claim.get('attempt_id') == prior.get('id')
+                          and claim.get('status') == prior.get('status') and claim.get('evidence') == prior.get('evidence'),
+                          'invalid_evidence', 'Retained check must select the controller-pinned newest attempt.')
                 saved_record = store.resolve(prior["record_ref"]) if prior.get("record_ref") else {}
                 saved = saved_record.get("key", {})
                 if saved:
                     now = context_reuse.revalidate(root, saved_record, state=state, output_path=output_path)
-                    if not context_reuse.same_inputs(now, saved) or predecessor.get("decision") != "approved":
+                    if (not context_reuse.same_inputs(now, saved)
+                            or prior.get('status') == 'pass' and not context_reuse.reusable(saved_record, now)):
                         prior.update(status="unknown", reason="Inherited verification is no longer current or accepted.")
                 else:
                     prior.update(status="unknown", reason="Inherited verification lacks an immutable record.")
                 selected.append(prior)
                 continue
+            w.require(check_id not in final, 'invalid_evidence', 'Final check has no current attempt.')
             selected.append({"check_id": check_id, "status": "unknown", "required": requirement['required'],
                              "criteria": deepcopy(requirement['criteria']),
                              "reason": "Check has no current attempt."})
@@ -975,6 +1054,22 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
                   and claim.get("status") == attempt["status"] and claim.get("evidence") == attempt["evidence"],
                   "invalid_evidence", "Final check must select its latest attempt with the same observed status and log.")
         record = attempt.pop("_record")
+        execution = record.get('result', {}).get('execution')
+        if execution is not None:
+            producing_state = deepcopy(state)
+            producing_state['index'] = next(index for index, stage in enumerate(state['visits'])
+                                             if stage['id'] == attempt['visit'])
+            expected = check_execution(root, producing_state, requirement, nonce=execution.get('nonce'))
+            output_files = record['result'].get('output_files', {})
+            w.require(execution == expected and isinstance(output_files, dict)
+                      and set(output_files) <= set(expected['outputs']), 'invalid_evidence',
+                      'Generated output projection differs from its approved check.')
+            w.require(attempt['status'] != 'pass' or set(output_files) == set(expected['outputs']),
+                      'invalid_evidence', 'Passing package check lacks its complete output pair.')
+            for relative, fingerprint in output_files.items():
+                w.require(hashlib.sha256(read(root, relative)).hexdigest() == fingerprint,
+                          'invalid_evidence', 'A produced verification artifact changed.')
+                files.append(relative)
         saved = record["key"]
         current_key = context_reuse.revalidate(root, record, state=state, output_path=output_path)
         if not context_reuse.same_inputs(current_key, saved):
@@ -1108,7 +1203,7 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
     files = [output_path, *execution_evidence(root, state, tasks, output)]
     for t in tasks:
         for p in t["paths"]:
-            path(root, p)
+            write_path(root, p)
     if phase == "product":
         entries = output["acceptance_criteria"]
         w.require(isinstance(entries, list) and all(isinstance(c, dict) and c.get("statement") for c in entries)
@@ -1232,12 +1327,14 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
 
 
 @observed('source-audit')
-def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False) -> tuple[str, str] | None:
+def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False,
+            require_current: bool = False) -> tuple[str, str] | None:
     for stage in state["visits"]:
         # A native negative decision reopens this visit for correction. Its old
-        # packet remains history; protected-host revocation semantics stay intact.
+        # packet remains history; accepting that packet again must still compare
+        # its frozen inputs. Protected-host revocation semantics stay intact.
         editable = stage["id"] == w.current(state)["id"] and (
-            skip_current or state.get("profile") == "native_workflow"
+            skip_current or not require_current and state.get("profile") == "native_workflow"
             and stage["decision"] in ("changes_requested", "rejected"))
         if stage["superseded"] or stage["decision"] == "stale" or not stage["packet"] or editable:
             continue

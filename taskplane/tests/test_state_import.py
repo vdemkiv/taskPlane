@@ -124,10 +124,8 @@ def test_archive_loss_import_preserves_checkpoint_and_requires_separate_approval
     assert not observed.get("parent_hook_readiness")
     assert observed["state_import"]
     assert invoke(lost, "apply")["status"] == "already_imported"
-    with pytest.raises(w.Refusal, match="Initialization"):
-        decide(c, observed, approval)
-    parent_pair(c)
     accepted = decide(c, observed, approval)
+    assert not accepted.get('parent_hook_readiness')
     assert accepted["decisions"][approval["event_id"]]["provenance"]["relay"] == approval["relay"]
     advanced = c.apply("advance", state["run"], expected_revision=accepted["revision"], phase="design")
     assert w.current(advanced)["phase"] == "design" and w.current(advanced)["decision"] == "not_requested"

@@ -49,6 +49,18 @@ def execute(c, state, request, mode='inspect', **kwargs):
                                mode=mode, request=request, **kwargs)
 
 
+def test_contextual_continuation_keeps_full_human_request_and_identity(tmp_path, monkeypatch):
+    c, newcomer, state, request, _ = fixture(tmp_path, monkeypatch, accepted=True)
+    request['excerpt'] = 'Please resume run ' + state['run'] + ' and keep approvals; carry on with the current work.'
+    request['intent'] = {'candidate': 'resume', 'run': state['run'], 'phase': w.current(state)['phase']}
+    result = execute(newcomer, state, request)
+    assert result['request'] == request
+    assert result['approvals_changed'] is result['ownership_changed'] is False
+    request['intent']['run'] = 'foreign'
+    with pytest.raises(w.Refusal, match='Continuation intent'):
+        execute(newcomer, state, request)
+
+
 def test_native_resume_retains_owner_run_approval_and_exact_request(tmp_path, monkeypatch):
     c, newcomer, state, request, _ = fixture(tmp_path, monkeypatch, accepted=True)
     before = c._path().read_bytes()

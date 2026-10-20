@@ -7,6 +7,133 @@ import pytest
 from taskplane import workflow as w, workflow_evidence as e
 
 
+@pytest.mark.parametrize('nonce', [None, '../outside', 'A'*32, '0'*31])
+def test_fresh_package_projection_requires_a_bounded_controller_nonce(tmp_path, nonce):
+    state, _, _ = prepare(tmp_path, 'evaluate')
+    check = {'command': [sys.executable, '-B', 'scripts/package_openai.py', '--output-dir', 'old'],
+             'evidence_outputs': ['old/candidate.zip', 'old/candidate.zip.json', 'check.log']}
+    with pytest.raises(w.Refusal, match='controller-allocated'):
+        e.check_execution(tmp_path, state, check, nonce=nonce)
+    assert not (tmp_path/'old').exists()
+
+
+def test_check_projection_refuses_an_unowned_literal_output_and_incomplete_package_pair(tmp_path):
+    state, _, _ = prepare(tmp_path, 'evaluate')
+    with pytest.raises(w.Refusal, match='outside its current phase'):
+        e.check_execution(tmp_path, state, {'command': ['python3', 'writer.py', 'outside.txt'],
+                                           'evidence_outputs': ['outside.txt']})
+    with pytest.raises(w.Refusal, match='archive and provenance pair'):
+        e.check_execution(tmp_path, state,
+            {'command': [sys.executable, '-B', 'scripts/package_openai.py', '--output-dir', 'old'],
+             'evidence_outputs': ['old/candidate.zip']}, nonce='0'*32)
+
+
+@pytest.mark.parametrize('relative', ['.taskplane/workflow-root.json', '.taskplane/harness-root.json',
+    '.taskplane/workspace-binding.json', '.taskplane/context-v1/objects/object.json'])
+def test_controller_metadata_is_readable_but_never_a_task_write(tmp_path, relative):
+    target = tmp_path / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('{}')
+    assert e.read(tmp_path, relative) == b'{}'
+    with pytest.raises(w.Refusal, match='Controller metadata'):
+        e.write_path(tmp_path, relative)
+
+
+def test_task_write_rejects_hardlink_alias_without_changing_either_file(tmp_path):
+    import os
+    first, alias = tmp_path / 'owned.txt', tmp_path / 'outside.txt'
+    first.write_text('preserved')
+    os.link(first, alias)
+    with pytest.raises(w.Refusal, match='multiply-linked'):
+        e.write_path(tmp_path, 'owned.txt')
+    assert first.read_text() == alias.read_text() == 'preserved'
+
+
+def test_invalid_repair_task_is_refused_before_sealing_or_consuming_consent(tmp_path):
+    state, _, _ = prepare(tmp_path, 'build', plan_fixture=True)
+    state['visits'][3].update(decision='approved', packet={'output': {}})
+    state['index'] = 4
+    before = deepcopy(state)
+    with pytest.raises(w.Refusal, match='existing approved Build tasks|typed Plan'):
+        w.route_eligibility(state, {'kind': 'repair', 'tasks': ['FOREIGN']})
+    assert state == before
+
+
+@pytest.mark.parametrize('fresh_subset', [False, True])
+def test_evaluate_never_inherits_an_ineligible_identical_pass(tmp_path, monkeypatch, fresh_subset):
+    from taskplane import context_reuse as reuse
+    from taskplane.tests.test_farm_evidence import contract, capture, fake_key
+    state, plan, check = contract(tmp_path)
+    (tmp_path / 'app.py').write_text('value = 2\n')
+    def unknown_key(*args, **kwargs):
+        return {**fake_key(*args, **kwargs), 'eligible': False}
+    monkeypatch.setattr(reuse, 'key', unknown_key)
+    secondary = {**deepcopy(check), 'id': 'secondary', 'required': False}
+    if fresh_subset:
+        plan['verification_strategy']['checks'].append(secondary)
+    def run(requirement, history, log):
+        provenance = reuse.key(tmp_path, paths=requirement['source_inputs'], tests=requirement['test_inputs'],
+            criteria=requirement['criteria'], command=requirement['command'], tool='python', contract='fixture/v1')
+        reuse.run_check(tmp_path, provenance, producer='root', state=state, history_path=history,
+            log_path=log, run=state['run'], visit=w.current(state)['id'], check_id=requirement['id'],
+            kind=requirement['kind'], environment=requirement['environment'])
+        row = json.loads((tmp_path / history).read_text())['attempts'][-1]
+        return {'check_id': requirement['id'], 'attempt_id': row['id'], 'status': row['status'], 'evidence': log}
+    output = {'verification_history': 'history.json', 'build_checks': [run(check, 'history.json', 'check-1.log')]}
+    capture(state, output, e.validate_verification(tmp_path, state, output))
+    state['index'] = 4
+    evaluated = {'criterion_results': {'AC1': {'status': 'unknown'}}}
+    if fresh_subset:
+        state['scope']['paths']['evaluate'] += ['eval-history.json', 'eval-secondary.log']
+        run(secondary, 'eval-history.json', 'eval-secondary.log')
+        evaluated['verification_history'] = 'eval-history.json'
+    selected = e.validate_verification(tmp_path, state, evaluated)['effective_checks']
+    assert next(row for row in selected if row['check_id'] == check['id'])['status'] == 'unknown'
+    evaluated['criterion_results']['AC1']['status'] = 'pass'
+    with pytest.raises(w.Refusal, match='Criterion pass requires'):
+        e.validate_verification(tmp_path, state, evaluated)
+
+
+def test_repair_uses_pinned_later_unknown_instead_of_copied_build_pass(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+    from taskplane import context_reuse as reuse, workflow_host
+    from taskplane.tests.test_farm_evidence import contract, attempt, capture, fake_key
+    state, plan, check = contract(tmp_path)
+    other = dict(id='OTHER', phase='build', owner='root', paths=['other.txt'], dependencies=[],
+                 read_inputs=[], criteria=['AC1'], verification='Review the unrelated output')
+    plan['task_dag'].append(other)
+    plan['write_scope'].append('other.txt')
+    state['scope']['paths']['build'].append('other.txt')
+    (tmp_path / 'other.txt').write_text('unrelated')
+    (tmp_path / 'app.py').write_text('value = 2\n')
+    output, old_history, _ = attempt(tmp_path, monkeypatch, state, check, 'check-1.log')
+    capture(state, output, e.validate_verification(tmp_path, state, output))
+    state['index'] = 4
+    state['scope']['paths']['evaluate'] += ['eval-history.json', 'eval.log']
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], .01)
+    monkeypatch.setattr(reuse, '_execute', timeout)
+    provenance = fake_key(tmp_path, paths=check['source_inputs'], tests=check['test_inputs'],
+        criteria=check['criteria'], command=check['command'], tool='python', contract='fixture/v1')
+    reuse.run_check(tmp_path, provenance, producer='root', state=state, history_path='eval-history.json',
+        log_path='eval.log', run=state['run'], visit=w.current(state)['id'], check_id=check['id'],
+        kind=check['kind'], environment=check['environment'])
+    evaluated = {'verification_history': 'eval-history.json', 'criterion_results': {'AC1': {'status': 'unknown'}}}
+    state['visits'][4].update(decision='approved', packet={'output': evaluated,
+        'verification': e.validate_verification(tmp_path, state, evaluated)})
+    previous = deepcopy(state)
+    state = w.repair(state, ['OTHER'], {'human': True, 'automatic': False, 'choice': 'approved'})
+    workflow_host.Controller._retain_repair_context(SimpleNamespace(workspace=tmp_path), previous, state)
+    history = w.current(state)['artifact_paths'][2]
+    (tmp_path / history).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / history).write_text(json.dumps({**old_history, 'visit': w.current(state)['id']}))
+    selected = e.validate_verification(tmp_path, state, {'verification_history': history})['effective_checks']
+    assert selected[0]['status'] == 'unknown' and selected[0]['evidence'] == 'eval.log'
+    with pytest.raises(w.Refusal, match='controller-pinned newest attempt'):
+        e.validate_verification(tmp_path, state, {'verification_history': history, 'build_checks': output['build_checks']})
+
+
 def prepare(tmp_path, phase="product", *, plan_fixture=False):
     from taskplane import depgraph
 
@@ -14,6 +141,7 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
              "verification_inputs": ["app.py"]}
     scope["paths"]["build"].append("app.py")
     scope['paths']['build'] += ['build-check.txt', 'checks.json']
+    scope['paths']['evaluate'] += ['evaluate-checks.json', 'evaluate-check.txt']
     s = w.new_state(str(tmp_path), "root", "run", scope)
     # This low-level fixture also exercises readable historical untyped packets.
     # New controller runs normalize their contract to ownership/v1 separately.
@@ -71,12 +199,16 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
 
 
 def bound_output(controller, state):
-    """Fixture output for a new run, with actual typed check evidence at Build."""
+    """Fixture output with actual typed checks at owned Build/Evaluate paths."""
     phase = w.current(state)['phase']
     repairing = w.current(state)['id'] in state.get('repair_scope', {}).get('visits', [])
+    renewed = w.current(state).get('artifact_paths') == w.visit_result_paths(state, w.current(state))
     target, history = phase+'.json', 'checks.json'
-    if repairing:
-        target, _, history, _ = w.current(state)['artifact_paths'][:4]
+    if repairing or renewed:
+        if renewed:
+            target, _, _, history = w.current(state)['artifact_paths'][:4]
+        else:
+            target, _, history, _ = w.current(state)['artifact_paths'][:4]
         plan = w.accepted_plan(state)['packet']['output']
         output = {'schema': 'taskplane.phase-output/v1', 'phase': phase, 'criteria': state['scope']['criteria'],
                   **{field: 'Fixture phase analysis' for field in w.OUTPUT_FIELDS[phase]}}
@@ -97,19 +229,33 @@ def bound_output(controller, state):
             (controller.workspace/history).write_text(json.dumps(captured))
     else:
         _, output, _ = prepare(controller.workspace, phase)
+        if phase == 'evaluate':
+            # Progressive flows allocate this visit's paths at advance. The
+            # historical fixed filenames are not authority for a fresh visit.
+            target = state['scope']['paths']['evaluate'][0]
     output.update(run=state['run'], visit=w.current(state)['id'])
     (controller.workspace/target).parent.mkdir(parents=True, exist_ok=True)
     (controller.workspace/target).write_text(json.dumps(output))
-    if phase == 'build':
+    if phase in {'build', 'evaluate'}:
         from taskplane import context_reuse as reuse
         from taskplane.context import Store
         plan = w.accepted_plan(state)['packet']['output']
         checks = plan.get('verification_strategy', {}).get('checks', [])
         if checks:
+            if phase == 'evaluate':
+                history = (w.current(state)['artifact_paths'][3] if renewed else
+                           w.current(state)['artifact_paths'][2] if repairing else
+                           next(p for p in state['scope']['paths']['evaluate']
+                                if Path(p).name in {'evaluate-checks.json', 'checks.json'}))
             rows = []
             for check in checks:
                 log = check['evidence_outputs'][0]
-                if repairing:
+                if phase == 'evaluate':
+                    log = next((p for p in state['scope']['paths']['evaluate']
+                                if Path(p).name in {'evaluate-check.txt', 'report.md'}), 'evaluate-check.txt')
+                if renewed:
+                    log = w.current(state)['artifact_paths'][2]
+                elif repairing:
                     from taskplane.primitives import content_fingerprint
                     log = (Path(target).parent / ('check-'+content_fingerprint(check['id'])[:16]+'.log')).as_posix()
                 if not (controller.workspace/history).exists():
@@ -127,6 +273,9 @@ def bound_output(controller, state):
                 rows.append(dict(check_id=check['id'], name=check['name'], attempt_id=attempt['id'],
                                  status=record['status'], evidence=log))
             output.update(verification_history=history, build_checks=rows)
+            if phase == 'evaluate':
+                for result in output['criterion_results'].values():
+                    result['evidence'] = sorted({row['evidence'] for row in rows})
     (controller.workspace/target).write_text(json.dumps(output))
     return target
 
@@ -887,7 +1036,7 @@ def test_evaluate_records_own_attempt_without_rewriting_accepted_build(tmp_path,
         if status == 'unknown':
             raise subprocess.TimeoutExpired(args[0], 1)
         return subprocess.CompletedProcess(args[0], 1, '', 'Observed failing fixture command')
-    monkeypatch.setattr(reuse.subprocess, 'run', observed_failure)
+    monkeypatch.setattr(reuse, '_execute', observed_failure)
     key = fake_key(tmp_path, paths=check['source_inputs'], tests=check['test_inputs'],
                    criteria=check['criteria'], command=check['command'], tool='python', contract='assertion/v1')
     reuse.run_check(tmp_path, key, producer='root', history_path='evaluate-history.json',
@@ -984,7 +1133,7 @@ def test_evaluate_history_alias_preserves_captured_attempts(tmp_path, monkeypatc
                 raise subprocess.TimeoutExpired(args[0], 1)
             return subprocess.CompletedProcess(args[0], 0 if observed_status == 'pass' else 1, 'Fixture outcome', '')
         with monkeypatch.context() as observation:
-            observation.setattr(reuse.subprocess, 'run', observed_command)
+            observation.setattr(reuse, '_execute', observed_command)
             reuse.run_check(tmp_path, provenance, producer='root', history_path=history,
                 run=state['run'], visit=w.current(state)['id'], check_id=check['id'],
                 kind=check['kind'], environment=check['environment'], log_path=log, state=state)

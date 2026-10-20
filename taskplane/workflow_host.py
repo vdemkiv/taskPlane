@@ -804,6 +804,12 @@ class Controller:
             w.require(evidence.changed(self.workspace, state) is None, "stale_checkpoint", "Accepted inputs changed.")
             self.adapter.before_action(state, "update-tasks")
             previous = deepcopy(state)
+            renewed = w.renewed_result_paths(state)
+            if renewed:
+                # The same root operation also repairs old unsubmitted visits;
+                # no checkpoint, production permission or approval is invented.
+                stage = state['visits'][state['index']]
+                stage['artifact_paths'] = [*renewed, *stage.get('artifact_paths', [])]
             state["task_context"] = {"visit": w.current(state)["id"], "tasks": frozen, "base_revision": revision}
             if self.adapter.profile == 'native_workflow':
                 from .workflow_collision import require_claims
@@ -815,7 +821,7 @@ class Controller:
 
     def revise(self, run: str, mode: str, request: dict[str, Any], *,
                preview_digest: str | None = None, note: str | None = None) -> dict[str, Any]:
-        """Durable same-run revision intent; returning to Product grants no approval."""
+        """Durable same-run revision intent; opening review grants no approval."""
         from .context import Store, digest
         from .workflow_write_guard import revision_preview
         from . import worker_runtime as workers
@@ -846,12 +852,26 @@ class Controller:
             self.adapter.before_action(state, 'revise')
             updated = deepcopy(state)
             if prior is None:
-                proposal = revision_preview(self.workspace, state, request)
+                active_id = state.get('active_requirements_revision')
+                preview_state = deepcopy(state)
+                if active_id:
+                    active_event = preview_state['requirements_revisions'][active_id]
+                    w.require(not active_event['opened'] and active_event['status'] in {'pending', 'aborted'}
+                              and workers.joined(state)
+                              and not any(row['state'] == 'running' for row in state.get('observed_handles', {}).values()),
+                              'approval_required', 'A pending revision can be superseded only after known work is quiescent and before review opens.')
+                    preview_state.pop('active_requirements_revision', None)
+                proposal = revision_preview(self.workspace, preview_state, request)
                 if mode == 'preview':
                     return proposal
                 w.require(preview_digest == proposal['preview_digest'], 'stale_checkpoint',
                           'Revision source, closure or preview changed before begin.')
-                basis = Store(self.workspace).put('requirements-revision-basis', state)
+                basis = Store(self.workspace).put('requirements-revision-basis', preview_state)
+                if active_id:
+                    superseded = updated['requirements_revisions'][active_id]
+                    superseded.update(status='superseded', superseded_by=request['request_id'])
+                    superseded['result']['status'] = 'superseded'
+                    superseded['history'].append({'superseded_by': request['request_id']})
                 event: dict[str, Any] = {'schema': 'taskplane.requirements-revision-event/v1',
                     'request_digest': digest(request), 'request': deepcopy(request), 'preview': proposal,
                     'basis': basis, 'status': 'pending', 'history': [], 'opened': False}
@@ -906,16 +926,20 @@ class Controller:
                     event['completion_basis'] = Store(self.workspace).put('requirements-revision-basis', updated)
                     event['retained_results'] = sorted(key for key in updated.get('task_results', {})
                         if key not in event['preview']['tasks'])
+                    return_phase = event['request']['return_phase']
+                    renewed_phases = w.PHASES[w.PHASES.index(return_phase):]
                     for old in updated['visits']:
-                        old['superseded'] = True
-                    new_visits = [w.visit(phase) for phase in w.PHASES]
+                        if old['phase'] in renewed_phases:
+                            old['superseded'] = True
+                    new_visits = [w.visit(phase) for phase in renewed_phases]
                     for visit in new_visits:
                         visit['requirements_revision'] = request['request_id']
                     updated['index'] = len(updated['visits'])
                     updated['visits'].extend(new_visits)
                     updated['scope'] = deepcopy(event['preview']['scope'])
                     updated['revision'] += 1
-                    updated['requirements_epoch'] = updated.get('requirements_epoch', 0) + 1
+                    if return_phase == 'product':
+                        updated['requirements_epoch'] = updated.get('requirements_epoch', 0) + 1
                     epochs = updated.setdefault('criterion_epochs', {})
                     for criterion in event['preview']['criteria']:
                         epochs[criterion] = epochs.get(criterion, 0) + 1
@@ -938,7 +962,9 @@ class Controller:
                 'affected_tasks': event['preview']['tasks'],
                 'retained_results': event.get('retained_results', event['preview']['retained_results']),
                 'retained_result_status': 'Historical contributions; current fingerprints must validate before reuse.',
-                'next_action': 'Accept fresh Product, Design and Plan checkpoints before new implementation.'
+                'next_action': ('Accept a fresh Plan checkpoint before new implementation.'
+                    if event['request']['return_phase'] == 'plan' else
+                    'Accept fresh Product, Design and Plan checkpoints before new implementation.')
                     if event['status'] == 'review' else 'Observe genuine termination and accept or reject pending unaffected results, then resume this exact revision.'
                     if event['status'] == 'pending' else 'Resume this review explicitly; stopped grants remain fenced.'}
             event['history'].append({'operation': mode, 'storage_generation': updated['storage_generation']})
@@ -970,6 +996,89 @@ class Controller:
         return result
 
 
+
+    def verify(self, run: str, *, revision: int | None, check_id: str, history: str,
+               log: str, timeout: float = 120, coverage: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute one already approved check through the ordinary evidence API.
+
+        The caller cannot supply code or widen its write set. Long execution
+        holds no controller lock; native call tracking and input revalidation
+        retain the normal phase/process protections.
+        """
+        from . import context_reuse, worker_runtime
+        from .context import Store
+        w.require(self.principal == self.root, 'scope_violation', 'Only the root records a root-owned check.')
+        w.require(type(timeout) in {int, float} and 0 < timeout <= 7200,
+                  'invalid_evidence', 'Check timeout must be between zero and 7200 seconds.')
+        with self._locked(self._path()):
+            db = self._read(self._path())
+            w.require(db['active'] == run, 'stale_checkpoint', 'Verification needs the exact active run.')
+            state = deepcopy(db['runs'][run])
+            stage = w.current(state)
+            w.require(type(revision) is int and revision == state['revision'], 'stale_checkpoint', 'Check revision changed.')
+            w.require(stage['phase'] in {'build', 'evaluate'} and stage['decision'] in
+                      {'not_requested', 'changes_requested', 'rejected'} and not state.get('finished')
+                      and not state.get('retired') and not state.get('dispatch_paused'),
+                      'approval_required', 'Record checks only in an active unsealed Build or Evaluate.')
+            w.require(evidence.changed(self.workspace, state) is None, 'stale_checkpoint', 'Accepted evidence changed.')
+            self.adapter.before_action(state, 'verify')
+            plan = w.accepted_plan(state)['packet']['output']
+            w.require(evidence.typed_plan(plan), 'invalid_evidence', 'Verification requires the accepted typed check contract.')
+            check = next((row for row in plan.get('verification_strategy', {}).get('checks', [])
+                          if row['id'] == check_id), None)
+            w.require(check is not None, 'invalid_evidence', 'Select an existing accepted Plan check.')
+            assert check is not None
+            definition = worker_runtime.task(state, check['task'])
+            w.require(definition['owner'] in {'root', self.root} and definition.get('execution') != 'native_required',
+                      'scope_violation', 'A native-owned check requires its actual worker evidence.')
+            w.require(all(worker_runtime.result_valid(self.workspace, state, dependency)
+                          for dependency in definition['dependencies']), 'scope_violation', 'Check prerequisites are not accepted and current.')
+            owned = set(definition['paths']) if stage['phase'] == 'build' else set(w.phase_write_paths(state))
+            # Visit-local result metadata belongs to the root, separately from
+            # the accepted production task paths (including on scoped repair).
+            owned.update(stage.get('artifact_paths', []))
+            execution = evidence.check_execution(self.workspace, state, check, nonce=uuid.uuid4().hex)
+            generated = set(execution['outputs']) - owned
+            if generated:
+                # Generated result metadata stays in this actual visit's fresh
+                # namespace. Production ownership and the Plan are unchanged.
+                for relative in generated:
+                    w.require(not evidence.path(self.workspace, relative).exists(), 'scope_violation',
+                              'Fresh generated output already exists.')
+                    evidence.write_path(self.workspace, relative)
+                state['visits'][state['index']].setdefault('artifact_paths', []).extend(sorted(generated))
+                owned.update(generated)
+            histories = set(owned)
+            if stage['phase'] == 'build':
+                tasks = {row['id']: row for row in plan['task_dag']}
+                histories.update(row['path'] for row in plan.get('build_outputs', [])
+                    if row['kind'] == 'verification_history' and tasks[row['task']]['owner'] in {'root', self.root})
+            w.require(history != log and history in histories and log in owned,
+                      'scope_violation', 'History and log must be exact current owned outputs.')
+            admission = {**self.availability(observations=False), **state}
+            for relative in (history, log, *execution['outputs']):
+                self._guard({'tool_name': 'Write', 'tool_input': {'path': relative}}, admission)
+            for relative in owned | {history}:
+                evidence.write_path(self.workspace, relative)
+            w.require(not any(row['state'] in worker_runtime.LIVE and
+                             set(row['paths']) & (owned | set(check['source_inputs'] + check['test_inputs']))
+                             for row in state.get('workers', {}).values()),
+                      'scope_violation', 'Join conflicting native writers before verification.')
+            if generated:
+                db['runs'][run] = deepcopy(state)
+                self._write(self._path(), db)
+        provenance = context_reuse.key(self.workspace, paths=check['source_inputs'], tests=check['test_inputs'],
+            criteria=check['criteria'], command=check['command'], tool='taskplane.flow.verify',
+            contract='accepted-plan/v1', state=state, check_id=check_id, history_path=history, log_path=log)
+        reference = context_reuse.run_check(self.workspace, provenance, producer=self.root, timeout=timeout,
+            state=state, history_path=history, log_path=log, run=run, visit=stage['id'], check_id=check_id,
+            kind=check['kind'], environment=check['environment'], coverage_details=coverage, current_projection=True,
+            execution=execution)
+        record = Store(self.workspace).resolve(reference)
+        return {'check_id': check_id, 'status': record['status'], 'record_ref': reference,
+                'history': history, 'log': log, 'run': run, 'visit': stage['id'],
+                'workspace': str(self.workspace), 'root': self.root, 'revision': revision,
+                'approval': 'not_granted'}
 
     def worker(self, run: str, operation: str, *, revision: int | None = None,
                task: str = "", grant: str = "", request: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1289,7 +1398,8 @@ class Controller:
             # still block approvals/transitions, but cannot veto the user's correction.
             if negative and replay:
                 return w.decide(s, verified)
-            drift = None if negative else evidence.changed(self.workspace, s, skip_current=action == "submit")
+            drift = None if negative else evidence.changed(self.workspace, s, skip_current=action == "submit",
+                                                          require_current=action == "decide")
             if drift:
                 db["runs"][run] = w.invalidate(s, *drift)
                 self._write(target, db)
@@ -1303,21 +1413,11 @@ class Controller:
             if action in ("advance", "finish", "submit", "auto-decide"):
                 w.require(self.adapter.can_seal(s),
                           "scope_violation", "Live tool processes must stop before sealing or revoking a phase grant.")
-            if action == 'advance' and phase == 'build' and self.adapter.profile == 'native_workflow':
-                from .worker_runtime import parent_readiness
-                w.require(parent_readiness(s)['status'] == 'ready', 'worker_readiness',
-                          'Build needs an admitted automatic pre/post hook pair for the current session and phase. '
-                          'Restore the configured hooks, run an admitted read, then retry; approvals are preserved.')
-            first_checkpoint = not any(visit['decision'] == 'approved' for visit in s['visits'][:s['index']])
-            if (self.adapter.profile == 'native_workflow' and first_checkpoint and
-                    (action == 'submit' or action in {'decide', 'auto-decide'}
-                     and verified.get('choice') == 'approved')):
-                from .worker_runtime import parent_readiness
-                w.require(parent_readiness(s)['status'] == 'ready', 'worker_readiness',
-                          'Initialization needs a completed automatic admitted pre/post hook pair '
-                          'for this native session, workspace, runtime and phase. Complete an admitted '
-                          'read in the selected native workspace, then retry only this checkpoint; '
-                          'existing work and approvals are preserved.')
+            # Root phase authority comes from the scoped controller and actual
+            # decisions, not callback delivery. Missing callbacks remain visible
+            # in parent_readiness; they cannot establish host containment or
+            # veto an otherwise valid transaction. Native worker preparation
+            # still requires its own observed parent/child readiness.
             operations: dict[str, Callable[[], dict[str, Any]]] = {
                 "submit": lambda: w.submit(s, evidence.seal(self.workspace, s, output, tasks)),
                 "decide": lambda: w.decide(s, verified),
@@ -1924,11 +2024,11 @@ class Controller:
             if stage['phase'] == 'build':
                 definitions = w.accepted_plan(state)['packet']['output']['task_dag']
             assigned_elsewhere = {path for task in definitions
-                if task.get('phase', stage['phase']) == stage['phase'] and task.get('owner') != self.root
+                if task.get('phase', stage['phase']) == stage['phase'] and task.get('owner') not in {'root', self.root}
                 for path in task['paths']}
             allowed = [path for path in allowed if path not in assigned_elsewhere]
-        if self.adapter.profile == 'native_workflow' and stage['phase'] == 'build':
-            readiness = workers.parent_readiness(state) if worker is None else workers.readiness(worker)
+        if self.adapter.profile == 'native_workflow' and stage['phase'] == 'build' and worker is not None:
+            readiness = workers.readiness(worker)
             w.require(readiness['status'] == 'ready', 'worker_readiness',
                       'Preventive hook admission is missing for this session and phase. '
                       'Restore the configured pre/post hooks, run an admitted read, and retry only the pending action. '
@@ -1951,6 +2051,12 @@ class Controller:
                     for p in [*row['paths'], *row.get('input_manifest', {}), *row.get('dependency_manifest', {})]}
             allowed = [p for p in allowed if p not in busy]
         if tool in ("Bash", "exec_command"):
+            words = workflow_local.command_words(event)
+            if words[:2] in (['git', 'add'], ['git', 'commit']):
+                from . import runtime_command
+                w.require(worker is None and stage['phase'] == 'build'
+                          and runtime_command.execution_directory(event, self.workspace) == self.workspace,
+                          'scope_violation', 'Scoped Git staging and commits belong to the root Build in its workspace.')
             self.adapter.guard_command(event, state, allowed)
         elif tool == "write_stdin":
             if worker is not None:
@@ -1975,5 +2081,5 @@ class Controller:
             relative = (workspace_binding.relative_path(self.workspace, value)
                         if self.adapter.profile == "native_workflow" else
                         str(Path(value).relative_to(self.workspace)) if Path(value).is_absolute() and Path(value).is_relative_to(self.workspace) else value)
-            evidence.path(self.workspace, relative)
+            evidence.write_path(self.workspace, relative)
             w.require(relative in allowed, "scope_violation", f"Write is outside current phase scope: {relative}")

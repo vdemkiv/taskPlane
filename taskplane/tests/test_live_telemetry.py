@@ -57,6 +57,17 @@ def test_concurrent_aggregate_writers_keep_counts_across_readers(tmp_path):
     assert live.summary(live.read(Path(str(tmp_path)), state), state)['tool_calls'] == 24
 
 
+def test_advisory_lock_contention_is_bounded_and_does_not_hold_the_hook(tmp_path):
+    import time
+    from taskplane import primitives
+    c, state = setup(tmp_path)
+    with primitives.file_lock(str(live.path(tmp_path, state['run']))):
+        start = time.monotonic()
+        assert flow.hook(event(tmp_path), governor=c) == {}
+        assert time.monotonic() - start < 2
+    assert c.report()['run'] == state['run']
+
+
 def test_corrupt_telemetry_cannot_replace_gate_decision(tmp_path):
     c, state = setup(tmp_path)
     live.path(tmp_path, state['run']).write_text('{broken')

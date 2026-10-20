@@ -1,6 +1,7 @@
 """History retention and retirement never create checkpoint acceptance."""
 from copy import deepcopy
 import json
+from pathlib import Path
 import pytest
 from taskplane import workflow as w, workflow_host as h, workflow_retention as retention
 from taskplane.tests.test_workflow_evidence import prepare
@@ -102,6 +103,48 @@ def _assert_collection_safety(result):
         assert len(scans) == 2 and all(scan["complete"] for scan in scans)
         assert scans[0]["reference_digest"] == scans[1]["reference_digest"]
         assert not result["changed_references"]
+
+
+def test_phase_refresh_moves_only_its_pin_after_successful_selection(tmp_path, monkeypatch):
+    pin = 'phase/retention-fixture/build-visit'
+    first = snapshots.publish_pair(tmp_path, _snapshot_model(tmp_path, 'first'), 'first',
+                                   select=True, pin_reason=pin)
+    selection = tmp_path/'.taskplane/dashboard.selection.json'
+    first_prefix = Path(json.loads(selection.read_text())['snapshot']).stem
+    snapshots.publish_pair(tmp_path, _snapshot_model(tmp_path, 'first'), 'first',
+                           select=True, pin_reason='checkpoint/accepted')
+    before = first.read_bytes()
+    write = snapshots._write
+    def failing_selection(fd, name, *args, **kwargs):
+        if name == 'dashboard.selection.json':
+            raise OSError('selection unavailable')
+        return write(fd, name, *args, **kwargs)
+    monkeypatch.setattr(snapshots, '_write', failing_selection)
+    with pytest.raises(OSError, match='selection unavailable'):
+        snapshots.publish_pair(tmp_path, _snapshot_model(tmp_path, 'second'), 'second',
+                               select=True, pin_reason=pin)
+    pairs = json.loads((tmp_path/'.taskplane'/snapshots.CATALOG).read_text())['pairs']
+    assert set(pairs[first_prefix]['pins']) == {pin, 'checkpoint/accepted'}
+    assert Path(json.loads(selection.read_text())['snapshot']).read_bytes() == before
+    monkeypatch.setattr(snapshots, '_write', write)
+    snapshots.publish_pair(tmp_path, _snapshot_model(tmp_path, 'second'), 'second',
+                           select=True, pin_reason=pin)
+    pairs = json.loads((tmp_path/'.taskplane'/snapshots.CATALOG).read_text())['pairs']
+    assert pairs[first_prefix]['pins'] == ['checkpoint/accepted']
+    assert sum(pin in pair['pins'] for pair in pairs.values()) == 1
+
+
+def test_selected_optional_snapshot_counts_against_collection_target(tmp_path, monkeypatch):
+    if not snapshots.supports_collection():
+        pytest.skip('Native safe snapshot collection unavailable')
+    monkeypatch.setattr(snapshots, 'LEASE_SECONDS', 0)
+    monkeypatch.setattr(snapshots, 'MAX_PAIRS', 2)
+    model = _snapshot_model(tmp_path, 'selected-at-capacity')
+    selected = snapshots.publish_pair(tmp_path, model, 'selected', select=True)
+    _publish(tmp_path, 'expired')
+    newest = _publish(tmp_path, 'replacement')
+    assert selected.exists() and newest.exists()
+    assert len(list((tmp_path / '.taskplane').glob('snapshot-*.html'))) == 2
 
 
 def test_snapshot_stable_store_collects_only_owned_pair(tmp_path):

@@ -5,11 +5,16 @@ These records preserve observations, including failures. They never carry gates.
 from __future__ import annotations
 
 import hashlib
+import ast
+import importlib.machinery
+import importlib.metadata
 from copy import deepcopy
 import os
 from pathlib import Path
 import platform
-import subprocess
+import re
+import signal
+import subprocess as _subprocess
 import sys
 import uuid
 from typing import Any, Callable
@@ -20,10 +25,189 @@ from .context import Store, digest, encode
 ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "TZ", "PYTHONHASHSEED", "PYTHONPATH", "NODE_ENV", "CI",
                "HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
                "XDG_CACHE_HOME", "XDG_STATE_HOME", "TMPDIR", "TMP", "TEMP",
-               "PYTHONDONTWRITEBYTECODE", "PYTEST_DISABLE_PLUGIN_AUTOLOAD")
+               "PYTHONDONTWRITEBYTECODE", "PYTHONOPTIMIZE", "PYTHONHOME", "PYTHONSAFEPATH",
+               "PYTHONNOUSERSITE", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_PLUGINS", "PYTEST_ADDOPTS")
 
 INPUT_POLICY = "accepted-plan-roles/v1"
 PUBLICATION = ".taskplane/context-v1/verification-publication"
+
+
+def _marker_applies(marker: str, extras: set[str]) -> bool:
+    """Evaluate only the finite, non-executable subset of dependency markers."""
+    values = {'python_version': platform.python_version().rsplit('.', 1)[0],
+              'python_full_version': platform.python_version(), 'sys_platform': sys.platform,
+              'os_name': os.name, 'platform_machine': platform.machine(),
+              'platform_system': platform.system(), 'platform_release': platform.release(),
+              'platform_version': platform.version(), 'implementation_name': sys.implementation.name,
+              'implementation_version': platform.python_version(),
+              'platform_python_implementation': platform.python_implementation()}
+
+    def evaluate(node: ast.AST, extra: str) -> Any:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return extra if node.id == 'extra' else values[node.id]
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            parts = [evaluate(part, extra) for part in node.values]
+            return all(parts) if isinstance(node.op, ast.And) else any(parts)
+        if isinstance(node, ast.Compare) and len(node.ops) == len(node.comparators) == 1:
+            left, right = evaluate(node.left, extra), evaluate(node.comparators[0], extra)
+            version_names = {'python_version', 'python_full_version', 'implementation_version'}
+            if any(isinstance(part, ast.Name) and part.id in version_names
+                   for part in (node.left, node.comparators[0])):
+                if not all(re.fullmatch(r'\d+(?:\.\d+)*', value) for value in (left, right)):
+                    raise ValueError('Unsupported version marker')
+                versions = [tuple(map(int, value.split('.'))) for value in (left, right)]
+                width = max(map(len, versions))
+                left, right = (version + (0,) * (width-len(version)) for version in versions)
+            elif any(isinstance(part, ast.Name) and part.id == 'extra'
+                     for part in (node.left, node.comparators[0])):
+                left, right = (re.sub(r'[-_.]+', '-', value).lower() for value in (left, right))
+            op = node.ops[0]
+            if isinstance(op, ast.Eq): return left == right
+            if isinstance(op, ast.NotEq): return left != right
+            if isinstance(op, ast.Lt): return left < right
+            if isinstance(op, ast.LtE): return left <= right
+            if isinstance(op, ast.Gt): return left > right
+            if isinstance(op, ast.GtE): return left >= right
+            if isinstance(op, ast.In): return left in right
+            if isinstance(op, ast.NotIn): return left not in right
+        raise ValueError('Unsupported dependency marker')
+
+    tree = ast.parse(marker, mode='eval')
+    return any(bool(evaluate(tree.body, extra)) for extra in extras | {''})
+
+
+def _providers(workspace: Path, executable: Path | None, command: list[str],
+               environment: dict[str, str], names: list[str],
+               diagnostics: list[str] | None = None) -> tuple[dict[str, Any], list[str]]:
+    """Bind installed Python providers without importing project/dependency code.
+
+    Unsupported interpreters, markers, namespace providers and missing metadata
+    remain unknown. Both installed file contents and their census are re-read;
+    version strings and lockfile declarations alone are never proof of coverage.
+    """
+    if not names:
+        return {}, []
+    flags = []
+    for arg in command[1:]:
+        if arg in {'-c', '-m'} or not arg.startswith('-'):
+            break
+        flags.append(arg)
+    if (executable != Path(sys.executable).resolve()
+            or any(any(flag in arg[1:] for flag in 'IESsP') for arg in flags)
+            or environment.get('PYTHONHOME')
+            or bool(environment.get('PYTHONSAFEPATH')) != bool(getattr(sys.flags, 'safe_path', False))
+            or bool(environment.get('PYTHONNOUSERSITE')) != bool(sys.flags.no_user_site)):
+        return {}, names
+    try:
+        script = next((arg for arg in command[1:] if not arg.startswith('-')), '')
+        search = [str((workspace / script).parent if script.endswith('.py') else workspace)]
+        search += [str((workspace / item).resolve()) for item in environment.get('PYTHONPATH', '').split(os.pathsep) if item]
+        search += [str(Path(item).resolve()) for item in sys.path[1:] if item]
+        search = list(dict.fromkeys(search))
+        def normalize(name: str) -> str:
+            return re.sub(r'[-_.]+', '-', name).lower()
+        distributions: dict[str, Any] = {}
+        for distribution in importlib.metadata.distributions(path=search):
+            name = distribution.metadata['Name']
+            if name:
+                key_name = normalize(name)
+                # Metadata discovery follows the same search order as imports.
+                # An unrelated lower-priority installation is not ambiguity in
+                # the provider actually selected below; its origin must still
+                # belong to the selected distribution's declared files.
+                distributions.setdefault(key_name, distribution)
+        pending: list[tuple[str, set[str]]] = []
+        for node in names:
+            if not node.startswith('ext:'):
+                raise ValueError('Unsupported external provider')
+            module = node[4:].split('.')[0]
+            spec = importlib.machinery.PathFinder.find_spec(module, search)
+            if spec is None or not spec.origin or not Path(spec.origin).is_file():
+                raise ValueError('Unresolved provider origin')
+            origin = Path(spec.origin).resolve()
+            owners = [name for name, dist in distributions.items()
+                      if any(Path(dist.locate_file(file)).resolve() == origin for file in dist.files or [])]
+            if len(owners) != 1:
+                raise ValueError('Provider has no unique installed owner')
+            pending.append((owners[0], set()))
+        if any(command[index:index+2] == ['-m', 'pytest'] for index in range(len(command)-1)):
+            if (environment.get('PYTEST_PLUGINS') or environment.get('PYTEST_ADDOPTS')
+                    or any(arg == '-p' and not command[index+1].startswith('no:')
+                           for index, arg in enumerate(command[:-1]))):
+                raise ValueError('Explicit pytest plugin configuration is not covered')
+            if environment.get('PYTEST_DISABLE_PLUGIN_AUTOLOAD') != '1':
+                pending.extend((name, set()) for name, dist in distributions.items()
+                               if any(point.group == 'pytest11' for point in dist.entry_points))
+        providers: dict[str, Any] = {}
+        seen: dict[str, set[str]] = {}
+        total_bytes = total_files = 0
+        while pending:
+            name, extras = pending.pop()
+            if name in seen and extras <= seen[name]:
+                continue
+            seen.setdefault(name, set()).update(extras)
+            distribution = distributions[name]
+            declared = distribution.files
+            if not declared:
+                raise ValueError('Installed file inventory unavailable')
+            files = {Path(distribution.locate_file(file)).absolute() for file in declared}
+            roots: set[Path] = set()
+            import_roots: set[str] = set()
+            for file in declared:
+                first = file.parts[0]
+                if first != '__pycache__' and re.fullmatch(r'[A-Za-z_]\w*', first):
+                    target = Path(distribution.locate_file(first))
+                    if target.is_dir():
+                        roots.add(target)
+                        import_roots.add(first)
+                elif len(file.parts) == 1 and first.endswith('.py'):
+                    import_roots.add(first[:-3])
+                    files.update(Path(distribution.locate_file('__pycache__')).glob(first[:-3]+'.*.pyc'))
+            for module in sorted(import_roots):
+                spec = importlib.machinery.PathFinder.find_spec(module, search)
+                if (spec is None or not spec.origin
+                        or Path(spec.origin).resolve() not in {path.resolve() for path in files}):
+                    raise ValueError('Installed provider is shadowed or unsupported: '
+                                     + name + '/' + module + ' at ' + str(spec.origin if spec else None))
+            for root in roots:
+                files.update(path for path in root.rglob('*') if path.is_file())
+            fingerprints = {}
+            for path in sorted(files):
+                # Missing derived bytecode is not a required installed artifact.
+                if not path.exists() and path.suffix == '.pyc':
+                    continue
+                if not path.is_file():
+                    raise ValueError('Installed artifact unavailable')
+                total_files += 1
+                total_bytes += path.stat().st_size
+                if total_files > 16384 or total_bytes > 128 * 1024 * 1024:
+                    raise ValueError('Provider fingerprint budget exceeded')
+                fingerprints[str(path)] = [str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest()]
+            requirements = distribution.requires or []
+            providers[name] = {'version': distribution.version, 'location': str(distribution.locate_file('').resolve()),
+                               'manifest_sha256': digest(fingerprints), 'file_count': len(fingerprints),
+                               'requirements_sha256': digest(requirements),
+                               'entry_points_sha256': digest(sorted((point.group, point.name, point.value)
+                                                                   for point in distribution.entry_points)),
+                               'extras': sorted(seen[name])}
+            for requirement in requirements:
+                dependency, separator, marker = requirement.partition(';')
+                if separator and not _marker_applies(marker.strip(), seen[name]):
+                    continue
+                match = re.fullmatch(r'\s*([A-Za-z0-9_.-]+)(?:\[([A-Za-z0-9_., -]+)\])?\s*(?:\(?[<>=!~][^@]*\)?)?\s*', dependency)
+                if match is None:
+                    raise ValueError('Unsupported dependency requirement')
+                dependency_name = normalize(match[1])
+                if dependency_name not in distributions:
+                    raise ValueError('Required installed provider missing')
+                pending.append((dependency_name, set((match[2] or '').replace(' ', '').split(',')) - {''}))
+        return providers, []
+    except (OSError, ValueError, KeyError, SyntaxError, TypeError, AttributeError) as error:
+        if diagnostics is not None:
+            diagnostics.append(type(error).__name__ + ': ' + str(error))
+        return {}, names
 
 
 def _module(graph: dict[str, Any], relative: str) -> str | None:
@@ -138,6 +322,12 @@ def _roles(workspace: Path, state: dict[str, Any], *, check_id: str,
             owner = tasks[requirement["task"]]
             histories = {row["path"] for row in plan.get("build_outputs", [])
                          if row["kind"] == "verification_history" and row["task"] == owner["id"]}
+            if owner['owner'] in {'root', state['root']}:
+                # Root tasks may share one declared root-owned collector. This
+                # appends evidence, not acceptance of the collector task.
+                histories.update(row['path'] for row in plan.get('build_outputs', [])
+                    if row['kind'] == 'verification_history'
+                    and tasks[row['task']]['owner'] in {'root', state['root']})
             if not any(row["kind"] == "verification_history" for row in plan.get("build_outputs", [])):
                 histories = set(owner["paths"])
             logs = set(requirement["evidence_outputs"])
@@ -155,7 +345,9 @@ def _roles(workspace: Path, state: dict[str, Any], *, check_id: str,
     history_sources: list[tuple[str, dict[str, Any]]] = []
     metadata = {row["path"] for row in plan.get("build_outputs", [])}
     metadata.update(p for row in checks.values() for p in row["evidence_outputs"])
-    own = set(check["evidence_outputs"])
+    # Generated artifacts may also be real source inputs. Only the selected
+    # history and log below have an exclusive verification-metadata role.
+    own: set[str] = set()
     if history_path is not None:
         owned(check_id, producer, history_path, log_path)
         histories.add(history_path)
@@ -366,6 +558,12 @@ def _key(workspace: Path, *, paths: list[str], tests: list[str], criteria: list[
     unverified_dependencies = sorted(str(name) for name in closure
                                     if name not in modules
                                     or modules[name].get("kind") == "external")
+    from . import runtime_command
+    env = environment if environment is not None else dict(os.environ)
+    executable = runtime_command.interpreter(command[0], workspace) if command else None
+    provider_diagnostics: list[str] = []
+    providers, unverified_dependencies = _providers(workspace, executable, command, env, unverified_dependencies,
+                                                   provider_diagnostics)
     complete = complete and not unverified_dependencies
     # Reuse the scanner's artifact, manifest and exclusion policy. Enumerate
     # names once, but hash only covered components and shared root resolution
@@ -405,11 +603,9 @@ def _key(workspace: Path, *, paths: list[str], tests: list[str], criteria: list[
     for path in sorted(files):
         target = evidence.path(workspace, path)
         fingerprints[path] = hashlib.sha256(evidence.read(workspace, path)).hexdigest() if target.is_file() else "missing"
-    executable = Path(command[0]) if command else Path("/nonexistent")
-    complete = complete and executable.is_absolute() and executable.is_file()
-    executable_hash = hashlib.sha256(executable.read_bytes()).hexdigest() if executable.is_file() else "unknown"
+    complete = complete and executable is not None and executable.is_file()
+    executable_hash = hashlib.sha256(executable.read_bytes()).hexdigest() if executable and executable.is_file() else "unknown"
     # Only hashes of explicitly allowlisted nonsecret settings enter persisted data.
-    env = environment if environment is not None else dict(os.environ)
     body = {"schema": "taskplane.verification-key/v1", "eligible": bool(complete),
             "paths": sorted(paths), "tests": sorted(tests),
             "files": fingerprints, "modules": sorted(str(x) for x in closure),
@@ -420,6 +616,8 @@ def _key(workspace: Path, *, paths: list[str], tests: list[str], criteria: list[
                         "taskplane": host_capabilities.runtime_identity()},
             "environment": digest({name: env.get(name) for name in ENVIRONMENT}),
             "unverified_dependencies": unverified_dependencies,
+            "provider_fingerprints": providers,
+            "provider_diagnostics": provider_diagnostics,
             "coverage": "complete" if complete else "unknown"}
     if state is not None:
         body["input_policy"] = INPUT_POLICY
@@ -517,11 +715,50 @@ def lookup(store: Store, reference: dict[str, Any], current: dict[str, Any]) -> 
     prior = store.resolve(reference)
     w.require(isinstance(prior, dict) and prior.get("schema") == "taskplane.verification-record/v1",
               "invalid_context", "Invalid verification record.")
-    eligible = (current.get("eligible") is True and same_inputs(prior.get("key", {}), current)
-                and prior.get("status") == "pass" and prior.get("result", {}).get("returncode") == 0)
+    eligible = reusable(prior, current)
     return {"status": "reused" if eligible else "miss", "prior_status": prior.get("status"),
             "producer": prior.get("producer"), "findings": prior.get("findings", []),
             "evidence_ref": reference, "key_digest": current.get("digest"), "approval": "not_transferred"}
+
+
+def reusable(prior: dict[str, Any], current: dict[str, Any]) -> bool:
+    """Every reuse consumer requires both covered inputs and actual success."""
+    return (current.get('eligible') is True and same_inputs(prior.get('key', {}), current)
+            and prior.get('status') == 'pass' and prior.get('result', {}).get('returncode') == 0)
+
+
+def _execute(command: list[str], workspace: Path, timeout: float) -> _subprocess.CompletedProcess[str]:
+    """Own the check's process group so a timeout cannot leave writers behind."""
+    process = _subprocess.Popen(command, cwd=workspace, stdout=_subprocess.PIPE, stderr=_subprocess.PIPE,
+        text=True, start_new_session=os.name != 'nt',
+        creationflags=getattr(_subprocess, 'CREATE_NEW_PROCESS_GROUP', 0) if os.name == 'nt' else 0,
+        env={name: os.environ[name] for name in ENVIRONMENT if name in os.environ})
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except _subprocess.TimeoutExpired:
+        if os.name == 'nt':
+            _subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True, timeout=10, check=False)
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        stdout, stderr = process.communicate(timeout=10)
+        raise _subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from None
+    return _subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+class _CheckProcess:
+    """Keep check-runner injection local instead of patching global subprocess."""
+
+    @staticmethod
+    def run(command: list[str], workspace: Path, timeout: float) -> _subprocess.CompletedProcess[str]:
+        return _execute(command, workspace, timeout)
+
+
+# Retain the existing check injection seam; cleanup always uses the real stdlib.
+subprocess = _CheckProcess()
 
 
 def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
@@ -529,7 +766,8 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
               run: str | None = None, visit: str | None = None, check_id: str | None = None,
               kind: str | None = None, environment: str | None = None,
               log_path: str | None = None, coverage_details: dict[str, Any] | None = None,
-              state: dict[str, Any] | None = None) -> dict[str, Any]:
+           state: dict[str, Any] | None = None, current_projection: bool = False,
+           execution: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute once, preserving fail/unknown attempts before returning their ref.
 
     Typed callers explicitly bind run/visit and owned history/log paths. There is
@@ -545,9 +783,12 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
         assert history_path is not None and log_path is not None
         evidence.path(workspace, history_path)
         assert state is not None
-        # A repair's current log is a projection. Every actual attempt/log body
+        # An unsealed CLI/repair current log is a projection. Every actual attempt/log body
         # is still pinned immutably in Store and retained in the ordered history.
-        repair_projection = (w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit')
+        w.require(not current_projection or w.current(state)['decision'] in
+                  {'not_requested', 'changes_requested', 'rejected'},
+                  'invalid_context', 'A sealed attempt log cannot become a current projection.')
+        repair_projection = (current_projection or w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit')
                              and log_path in w.current(state).get('artifact_paths', []))
         w.require(history_path != log_path and (repair_projection or not evidence.path(workspace, log_path).exists()),
                   "invalid_context", "Each attempt needs a new distinct declared log path.")
@@ -556,6 +797,13 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
                             ["verification_strategy"]["checks"] if row["id"] == check_id), {})
         w.require(requirement.get("kind") == kind and requirement.get("environment") == environment,
                   "invalid_context", "Typed check kind/environment differs from its Plan.")
+        expected_execution = evidence.check_execution(workspace, state, requirement,
+            nonce=execution.get('nonce') if execution else None)
+        w.require(execution is None or execution == expected_execution, 'scope_violation',
+                  'Check execution differs from its approved output projection.')
+        execution = expected_execution
+        w.require(set(execution['outputs']) <= set(w.phase_write_paths(state)), 'scope_violation',
+                  'Produced check outputs are outside current ownership.')
         _roles(workspace, state, check_id=check_id, history_path=history_path,
                log_path=log_path, visit=visit,
                packet_context=_packet_context(workspace, state, provenance.get("packet_context", []), None))
@@ -579,15 +827,20 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
                 raise w.Refusal("invalid_context", "Verification inputs changed before execution.")
             result["reason"] = "input_drift_before_execution"
         else:
-            completed = subprocess.run(provenance["command"], cwd=workspace, capture_output=True,
-                text=True, timeout=timeout, check=False,
-                env={name: os.environ[name] for name in ENVIRONMENT if name in os.environ})
+            completed = subprocess.run(execution['command'] if execution else provenance['command'], workspace, timeout)
             result.update(returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
             status = "pass" if completed.returncode == 0 else "fail"
+            if execution and execution['outputs']:
+                result['execution'] = execution
+                result['output_files'] = {relative: hashlib.sha256(evidence.read(workspace, relative)).hexdigest()
+                    for relative in execution['outputs'] if evidence.path(workspace, relative).is_file()}
+                if status == 'pass' and set(result['output_files']) != set(execution['outputs']):
+                    status = 'unknown'
+                    result['reason'] = 'declared_output_missing'
             if not same_inputs(current(), provenance):
                 status = "unknown"
                 result["reason"] = "input_drift_during_execution"
-    except subprocess.TimeoutExpired as exc:
+    except _subprocess.TimeoutExpired as exc:
         def decoded(value: Any) -> str:
             return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
         result.update(reason="timeout", timeout=timeout, stdout=decoded(exc.stdout), stderr=decoded(exc.stderr))
@@ -618,6 +871,28 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
                   and history.get("coverage") == "declared_producer" and isinstance(history.get("attempts"), list),
                   "invalid_context", "Cannot append to a foreign verification history.")
         attempts = history["attempts"]
+        # The publication lock also orders attempts across alternative declared
+        # history paths. Carry their complete prefix before appending.
+        assert state is not None
+        plan = w.accepted_plan(state)['packet']['output']
+        declared = [row['path'] for row in plan.get('build_outputs', []) if row['kind'] == 'verification_history']
+        candidates = declared or plan['write_scope']
+        for candidate in candidates:
+            if candidate == history_path or not evidence.path(workspace, candidate).is_file():
+                continue
+            try:
+                other = evidence.object_file(workspace, candidate)
+            except w.Refusal:
+                if candidate in declared:
+                    raise
+                continue
+            if (other.get('schema') == evidence.VERIFICATION_HISTORY and other.get('run') == run
+                    and other.get('visit') == visit):
+                prior = other.get('attempts', [])
+                shorter, longer = sorted((attempts, prior), key=len)
+                w.require(longer[:len(shorter)] == shorter, 'invalid_context', 'Conflicting verification histories cannot discard observations.')
+                attempts = deepcopy(longer)
+        history['attempts'] = attempts
         w.require(all(isinstance(row, dict) and row.get("sequence") == number
                       for number, row in enumerate(attempts, 1)),
                   "invalid_context", "Existing verification history sequence is corrupt.")
@@ -628,11 +903,15 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
         log_target.parent.mkdir(parents=True, exist_ok=True)
         # Exclusive creation protects old failure evidence, including races with
         # another producer. Only the owning task should append this history.
-        fd = os.open(log_target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
+        if repair_projection:
+            primitives.atomic_json(log_target, result, indent=None, ensure_ascii=False)
+            raw = evidence.read(workspace, log_path)
+        else:
+            fd = os.open(log_target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
         log_ref = store.put("verification-log", {"path": log_path, "encoding": "utf-8",
                             "text": raw.decode(), "sha256": hashlib.sha256(raw).hexdigest()})
         ref = record(store, provenance, status=status, producer=producer, result=result,

@@ -354,7 +354,13 @@ def test_exact_optional_capability_rules(node, reason, platform, params):
             assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
-WINDOWS_CAPABILITY_CASES = [('test_native_worker_dispatch.py::test_claude_start_stop_contract_and_child_control_refusal[None-user-True]',
+WINDOWS_CAPABILITY_CASES = [('test_context_reuse.py::test_timeout_kills_descendant_before_it_can_write',
+  {}),
+ ('test_workflow_continuation.py::test_contextual_continuation_keeps_full_human_request_and_identity',
+  {}),
+ ('test_workflow_retention.py::test_selected_optional_snapshot_counts_against_collection_target',
+  {}),
+ ('test_native_worker_dispatch.py::test_claude_start_stop_contract_and_child_control_refusal[None-user-True]',
   {'background': True, 'completion_defect': None, 'delivery': 'user'}),
  ('test_workspace_binding.py::test_native_targets_refuse_symlink_components[False-True]',
   {'bound': True, 'directory': False}),
@@ -412,8 +418,10 @@ def test_reviewed_windows_capability_skips_remain_explicit(node, parameters):
 
 
 @pytest.mark.parametrize('case', ['test_native_worker_dispatch.py::', 'test_workspace_binding.py::',
-    'test_host_capabilities.py::'],
-    ids=['native-reader', 'bound-only', 'recovery-reader'])
+    'test_host_capabilities.py::', 'test_context_reuse.py::', 'test_workflow_continuation.py::',
+    'test_workflow_retention.py::'],
+    ids=['native-reader', 'bound-only', 'recovery-reader', 'posix-process-group',
+         'continuation-reader', 'snapshot-collection'])
 @pytest.mark.parametrize('change', ['unknown-node', 'malformed-capability', 'missing-capability',
                                    'missing-call', 'duplicate-call', 'missing-selected', 'xfail'])
 def test_windows_skip_rules_do_not_hide_missing_or_forged_execution(case, change):

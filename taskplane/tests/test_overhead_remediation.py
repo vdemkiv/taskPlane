@@ -34,7 +34,7 @@ def journey(workspace, host, capsys):
                 c.guard({'tool_name':'Write','tool_input':{'path':'unplanned.py'}},state['run'])
             (workspace/'app.py').write_text('value = 2  # implemented during approved Build\n')
         _,output,tasks=prepare(workspace,phase)
-        if phase=='build':
+        if phase in {'build', 'evaluate'}:
             output=json.loads((workspace/bound_output(c,state)).read_text())
         output.update(run=state['run'],visit=w.current(state)['id'])
         for row in tasks['tasks']:

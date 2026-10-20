@@ -74,6 +74,30 @@ def test_background_refresh_stays_optional(fixture):
         flow.publish_dashboard(root, "fixture-run")
 
 
+def test_current_phase_view_survives_pressure_without_claiming_approval(fixture):
+    root, state = fixture
+    state['workflow']['visits'][0].update(decision='not_requested', packet=None)
+    before = deepcopy(state)
+    flow.publish_dashboard(root, 'fixture-run', phase_required=True)
+    assert next(iter(catalog(root)['pairs'].values()))['pins'] == ['phase/fixture-run/visit-1']
+    assert state == before
+
+
+def test_phase_context_refresh_moves_only_its_working_pin(fixture):
+    root, state = fixture
+    state['workflow']['visits'][0].update(decision='not_requested', packet=None)
+    flow.publish_dashboard(root, 'fixture-run', phase_required=True)
+    first = next(iter(catalog(root)['pairs']))
+    state['workflow']['revision'] += 1
+    state['snapshot']['revision'] += 1
+    flow.publish_dashboard(root, 'fixture-run', phase_required=True)
+    pairs = catalog(root)['pairs']
+    assert not pairs[first]['pins']
+    assert sum('phase/fixture-run/visit-1' in pair['pins'] for pair in pairs.values()) == 1
+    selected = json.loads((root/'.taskplane/dashboard.selection.json').read_text())
+    assert selected['revision'] == state['workflow']['revision']
+
+
 def test_revision_drift_is_refused(fixture, monkeypatch):
     root, state = fixture
     monkeypatch.setattr(flow, "_controller", lambda *a, **k: SimpleNamespace(

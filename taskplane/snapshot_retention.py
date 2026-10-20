@@ -489,8 +489,11 @@ def _collect(fd: int | Path, root: Path, catalog: dict[str, Any], before: dict[s
                      or item.get("lease_until", 0) > now)
     eligible = [(name, item) for name, item in pairs.items() if name not in protected]
     eligible.sort(key=lambda row: row[1]["order"])
-    size = sum(sum(f["bytes"] for f in item["files"].values()) for _, item in eligible)
-    count = len(eligible)
+    # Protected optional pairs still consume transient capacity. Durable pins
+    # are outside that budget, matching publication admission.
+    transient = [item for item in pairs.values() if not item['pins']]
+    size = sum(f['bytes'] for item in transient for f in item['files'].values())
+    count = len(transient)
     for name, item in eligible:
         if count <= max_pairs and size <= max_bytes and not item.get("deleting"):
             continue
@@ -516,7 +519,10 @@ def _collect(fd: int | Path, root: Path, catalog: dict[str, Any], before: dict[s
         _save(fd, catalog)
     if result["status"] == "skipped":
         result["status"] = "complete"
-    result.update(eligible_pairs=count, eligible_bytes=size, protected_pairs=len(protected & set(pairs)))
+    remaining = [item for name, item in pairs.items() if name not in protected]
+    result.update(eligible_pairs=len(remaining),
+                  eligible_bytes=sum(f['bytes'] for item in remaining for f in item['files'].values()),
+                  transient_pairs=count, transient_bytes=size, protected_pairs=len(protected & set(pairs)))
     return result
 
 
@@ -751,6 +757,14 @@ def publish_pair(workspace: str | Path, model: dict[str, Any], document: str, *,
                                  "presentation": "generated; opening and visible verification are host observations"}
                     _write(target_fd, selection_name, primitives.canonical_bytes(selection, trailing_newline=True))
                     selected = True
+        if selected and item and pin_reason and pin_reason.startswith('phase/'):
+            # Only the selected current phase view owns this moving pin.
+            # Checkpoint, presentation and external-reference pins are retained.
+            for previous_item in catalog['pairs'].values():
+                if (previous_item is not item
+                        and (previous_item.get('root'), previous_item.get('run')) ==
+                            (item.get('root'), item.get('run'))):
+                    previous_item['pins'] = [pin for pin in previous_item['pins'] if pin != pin_reason]
         if item and not selected and not pin_reason:
             item["active_latest"] = bool(active)
         _save(fd, catalog)

@@ -4,7 +4,7 @@ Plan, build and review software with Codex or Claude, keeping decisions and actu
 verification connected. Use full delivery, standalone Product/Design/Engineering,
 or a reusable workflow with fresh inputs.
 
-Candidate version: **2.34.5**. Source, extracted packages, installed runtimes and
+Version: **2.34.6**. Source, extracted packages, installed runtimes and
 live host acceptance are separate observations. This candidate does not certify
 a loaded Codex/Claude update or publication.
 
@@ -25,15 +25,18 @@ A review or design request does not authorize source changes.
 ## Delivery
 
 Product → Design → Plan → Build → Evaluate → Engineering → Retro.
-Each phase presents a concrete result and retains its own human approval.
+Each phase presents a concrete result and retains its own approval decision.
 Ordinary contextual assent works; no exact phrase or question title is required.
-Grouping and automatic approval enrollment are deferred.
+Manual approval is the default. Explicit optional automatic approval uses a
+run-bound policy, scoped conditions, named stop phases and evidence-backed
+assessments. Ordinary approval of one result never enrolls that policy.
 
 New repository runs start in a clean dedicated linked worktree at the intended
-base, with the actual native session bound there. The first checkpoint requires
-an automatic admitted pre/post hook pair from that session and runtime. Missing
-readiness pauses the checkpoint; an admitted read can recover it without a new
-run. Existing initialized work keeps its scope and approvals across interruptions.
+base, with the actual native session bound there. Automatic pre/post hook coverage
+is reported separately from controller phase authority. Missing callbacks do not
+block root phase work or require restarting the chat. Native worker dispatch keeps
+its own readiness checks. Existing work, decisions and unchanged Product consent
+survive delayed checkpoint delivery.
 
 Start with the goal, stable acceptance criteria, material boundaries and current
 output. Design chooses the approach; Plan fixes exact Build paths, ownership,
@@ -78,7 +81,7 @@ Check the actual loaded installation with:
 python3 /actual/plugin/taskplane/tp.py version --verify
 ```
 
-Both host manifests use `2.34.5`. A source edit or archive does not update a
+Both host manifests use `2.34.6`. A source edit or archive does not update a
 running session. Preserve its original runtime and evidence; update/reload through
 the host between runs. Candidate active old-contract mutation refuses rather than
 silently migrating history. Installed caches are never modified by package build.
@@ -101,6 +104,9 @@ version. See [Workflow Builder](docs/workflow-builder.md).
 ## Development and packages
 
 ```sh
+awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > .requirements-test.lock
+python3 -m pip install --require-hashes --no-deps -r .requirements-test.lock
+rm .requirements-test.lock
 python3 -m pip install --require-hashes --no-deps -r requirements-dev.lock
 python3 scripts/ci_local.py --help
 python3 scripts/ci_local.py --check quality
@@ -109,8 +115,12 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-Packages go to `dist/taskplane-2.34.5.plugin` and
-`dist/taskplane-2.34.5-openai.zip`. Sidecars record source/dirty lineage and exact
+First install the complete test profile using the extraction commands in
+[Contributing](CONTRIBUTING.md#run-the-tests). The quality lock alone does not
+install pytest or its dependencies; even quality runs the isolation canary.
+
+Packages go to `dist/taskplane-2.34.6.plugin` and
+`dist/taskplane-2.34.6-openai.zip`. Sidecars record source/dirty lineage and exact
 archive/member hashes at this package boundary. Building does not install or
 publish. Use actual targeted/combined check evidence and keep unavailable live
 host/platform acceptance explicit. See [CI coverage](docs/ci-performance.md).

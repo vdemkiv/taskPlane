@@ -137,12 +137,13 @@ def test_revision_internal_evidence_change_invalidates_preview(tmp_path):
     assert c._path().read_bytes() == before
 
 
-def test_revision_still_refuses_unmapped_executable_in_evidence_directory(tmp_path):
+def test_revision_unmapped_executable_expands_to_all_tasks(tmp_path):
     c, state, request = revision_fixture(tmp_path, components=True,
                                         artifact_path='.taskplane/evidence/hidden.py')
     before = c._path().read_bytes()
-    with pytest.raises(w.Refusal, match='Selective closure is unknown for existing paths'):
-        c.revise(state['run'], 'preview', request)
+    preview = c.revise(state['run'], 'preview', request)
+    assert set(preview['tasks']) == {'ALPHA', 'BETA', 'INDEPENDENT', 'FINAL'}
+    assert preview['graph_coverage'].startswith('unknown')
     assert c._path().read_bytes() == before
 
 
@@ -160,6 +161,37 @@ def test_revision_waiting_for_worker_refuses_changed_internal_evidence(tmp_path)
     with pytest.raises(w.Refusal, match='Declared evidence artifacts changed'):
         c.revise(state['run'], 'resume', request)
     assert c._path().read_bytes() == before
+
+
+def test_pending_revision_can_be_superseded_after_artifact_drift_and_quiescence(tmp_path):
+    from taskplane.tests.test_worker_runtime import reserve
+    artifact = '.taskplane/evidence/alpha.json'
+    c, state, request = revision_fixture(tmp_path, components=True, artifact_path=artifact)
+    item = reserve(c, state, 'ALPHA')
+    preview = c.revise(state['run'], 'preview', request)
+    c.revise(state['run'], 'begin', request, preview_digest=preview['preview_digest'])
+    (tmp_path / artifact).write_text('{"result":"changed while waiting"}')
+    c.worker(state['run'], 'abandon', revision=state['revision'], grant=item['grant']['grant_id'])
+    with pytest.raises(w.Refusal):
+        c.revise(state['run'], 'resume', request)
+    current = c._read(c._path())['runs'][state['run']]
+    renewed = {**deepcopy(request), 'request_id': 'revision-two',
+               'expected_revision': current['revision'], 'expected_generation': current.get('storage_generation', 0)}
+    fresh = c.revise(state['run'], 'preview', renewed)
+    opened = c.revise(state['run'], 'begin', renewed, preview_digest=fresh['preview_digest'])
+    assert opened['status'] == 'review' and opened['phase'] == 'product'
+    final = c._read(c._path())['runs'][state['run']]
+    assert final['requirements_revisions'][request['request_id']]['status'] == 'superseded'
+    assert final['decisions'] == state['decisions']
+
+
+def test_missing_optional_graph_expands_revision_to_every_task(tmp_path):
+    from taskplane import depgraph
+    c, state, request = revision_fixture(tmp_path, components=True)
+    Path(depgraph._path(str(tmp_path))).unlink()
+    preview = c.revise(state['run'], 'preview', request)
+    assert set(preview['tasks']) == {'ALPHA', 'BETA', 'INDEPENDENT', 'FINAL'}
+    assert preview['graph_coverage'].startswith('unknown')
 
 
 @pytest.mark.parametrize('path_kind', ['implementation_paths', 'test_paths'])
@@ -182,8 +214,9 @@ def test_revision_does_not_treat_declared_source_as_internal_evidence(tmp_path, 
         scope.update(planning_contract='implementation/v1', implementation_intent=deepcopy(intent))
     request['scope_digest'] = digest(state['scope'])
     before = c._path().read_bytes()
-    with pytest.raises(w.Refusal, match='Selective closure is unknown for existing paths'):
-        revision_preview(tmp_path, state, request)
+    preview = revision_preview(tmp_path, state, request)
+    assert set(preview['tasks']) == {'ALPHA', 'BETA', 'INDEPENDENT', 'FINAL'}
+    assert preview['graph_coverage'].startswith('unknown')
     assert c._path().read_bytes() == before
 
 
@@ -204,6 +237,91 @@ def test_revision_preview_and_same_run_return_preserve_approval_history(tmp_path
     stable = c._path().read_bytes()
     assert c.revise(state['run'], 'begin', request, preview_digest=preview['preview_digest']) == result
     assert c._path().read_bytes() == stable
+
+
+def plan_amendment_fixture(tmp_path):
+    c, state, request = revision_fixture(tmp_path)
+    scope = deepcopy(state['scope'])
+    scope['paths']['plan'] = ['amended-plan.json', 'amended-tasks.json']
+    scope['paths']['build'].append('omitted-test.py')
+    request.update(changes={}, return_phase='plan', scope_amendment=scope,
+                   request_reference='fixture/human-requests-in-scope-stabilization',
+                   reason='Add an omitted regression fixture without changing accepted requirements or design.')
+    return c, state, request
+
+
+def test_plan_amendment_preserves_product_design_and_requires_actual_plan_acceptance(tmp_path):
+    from taskplane import depgraph
+    c, state, request = plan_amendment_fixture(tmp_path)
+    before = c._path().read_bytes()
+    preview = c.revise(state['run'], 'preview', request)
+    assert c._path().read_bytes() == before
+    assert preview['approvals_requiring_renewal'] == ['plan'] and preview['criteria'] == []
+    assert preview['tasks'] == ['T1'] and 'omitted-test.py' in preview['files']
+    assert preview['requirements'] == state['visits'][0]['packet']['output']['acceptance_criteria']
+    result = c.revise(state['run'], 'begin', request, preview_digest=preview['preview_digest'])
+    current = c.report(diagnostics=False)
+    assert result['phase'] == 'plan' and result['approvals_created'] == 0
+    assert current['run'] == state['run'] and current['decisions'] == state['decisions']
+    assert current['visits'][:2] == state['visits'][:2]
+    assert current.get('requirements_epoch', 0) == state.get('requirements_epoch', 0)
+    assert current.get('criterion_epochs', {}) == state.get('criterion_epochs', {})
+    assert all(v['superseded'] for v in current['visits'][2:len(state['visits'])])
+    assert [v['phase'] for v in current['visits'][len(state['visits']):]] == list(w.PHASES[2:])
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name': 'write_file', 'tool_input': {'path': 'omitted-test.py', 'content': 'not yet'}}, state['run'])
+    with pytest.raises(w.Refusal):
+        c.apply('advance', state['run'], expected_revision=current['revision'], phase='build')
+    output = deepcopy(w.accepted_plan(state)['packet']['output'])
+    output.update(run=state['run'], visit=w.current(current)['id'], requirements_revision=request['request_id'])
+    output['write_scope'] = request['scope_amendment']['paths']['build']
+    output['task_dag'][0]['paths'].append('omitted-test.py')
+    (tmp_path/'amended-plan.json').write_text(json.dumps(output))
+    (tmp_path/'amended-tasks.json').write_text(json.dumps({'tasks': output['task_dag']}))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    current = c.apply('submit', state['run'], expected_revision=current['revision'],
+                      output='amended-plan.json', tasks='amended-tasks.json')
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name': 'write_file', 'tool_input': {'path': 'omitted-test.py', 'content': 'still not yet'}}, state['run'])
+    present(c, current)
+    current = decide(c, current, decision(current, event='fixture-approve-amended-plan'))
+    current = c.apply('advance', state['run'], expected_revision=current['revision'], phase='build')
+    c.guard({'tool_name': 'write_file', 'tool_input': {'path': 'omitted-test.py', 'content': 'now owned'}}, state['run'])
+    assert len(current['decisions']) == len(state['decisions']) + 1
+    assert all(current['decisions'][key] == value for key, value in state['decisions'].items())
+    assert not current['dispatch_paused'] and not current.get('active_requirements_revision')
+
+
+@pytest.mark.parametrize('defect', ['criteria', 'product', 'design', 'evaluate', 'repository',
+                                    'intent', 'noop', 'sealed_plan', 'controller_path'])
+def test_plan_amendment_cannot_change_accepted_boundaries(tmp_path, defect):
+    c, state, request = plan_amendment_fixture(tmp_path)
+    scope = request['scope_amendment']
+    if defect == 'criteria': request['changes'] = {'AC1': {'id': 'AC1', 'statement': 'Replace the accepted requirement.'}}
+    elif defect in {'product', 'design', 'evaluate'}: scope['paths'][defect] = ['different-'+defect+'.json']
+    elif defect == 'repository': scope['repository'] = 'https://example.com/another-repository.git'
+    elif defect == 'intent': scope['implementation_intent'] = {'unreviewed': True}
+    elif defect == 'noop': scope['paths']['build'] = state['scope']['paths']['build']
+    elif defect == 'sealed_plan': scope['paths']['plan'] = state['scope']['paths']['plan']
+    elif defect == 'controller_path': scope['paths']['build'].append('.taskplane/context-v1/index.json')
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal):
+        c.revise(state['run'], 'preview', request)
+    assert c._path().read_bytes() == before
+
+
+def test_plan_amendment_waits_for_worker_quiescence(tmp_path):
+    from taskplane.tests.test_worker_runtime import reserve
+    c, state, request = plan_amendment_fixture(tmp_path)
+    item = reserve(c, state, 'T1')
+    request['expected_generation'] = c.report(diagnostics=False).get('storage_generation', 0)
+    preview = c.revise(state['run'], 'preview', request)
+    pending = c.revise(state['run'], 'begin', request, preview_digest=preview['preview_digest'])
+    assert pending['status'] == 'pending' and pending['phase'] == 'build'
+    c.worker(state['run'], 'abandon', revision=state['revision'], grant=item['grant']['grant_id'])
+    opened = c.revise(state['run'], 'resume', request)
+    assert opened['phase'] == 'plan' and opened['approvals_created'] == 0
+    assert c.report(diagnostics=False)['visits'][:2] == state['visits'][:2]
 
 
 @pytest.mark.parametrize('defect', ['revision', 'generation', 'requirements', 'plan', 'scope', 'paths', 'changes', 'graph', 'child', 'preview'])
@@ -452,7 +570,7 @@ def test_selective_revision_preserves_unaffected_worker_until_result_review(tmp_
         assert c.worker(current['run'], 'reject-result', revision=current['revision'], grant=grant, request=rejection) == rejected
         assert c._path().read_bytes() == stable
         assert rejected['terminal_status'] == 'completed' and rejected['accepted'] is False
-        with pytest.raises(w.Refusal, match='current source graph'):
+        with pytest.raises(w.Refusal, match='dependency closure changed'):
             c.revise(current['run'], 'resume', request)
         assert c._path().read_bytes() == stable
         from taskplane import depgraph
@@ -528,7 +646,7 @@ def test_pending_revision_rechecks_current_graph_before_opening_product(tmp_path
     source.write_text('from alpha.code import value\n' if new_dependency else 'value = 2\n')
     c.worker(state['run'], 'abandon', revision=state['revision'], grant=item['grant']['grant_id'])
     stable = c._path().read_bytes()
-    with pytest.raises(w.Refusal, match='current source graph'):
+    with pytest.raises(w.Refusal, match='dependency closure changed'):
         c.revise(state['run'], 'resume', request)
     assert c._path().read_bytes() == stable
     depgraph.scan(str(tmp_path), decompose=True, strict=True)

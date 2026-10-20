@@ -4,8 +4,10 @@ Taskplane carries software work from outcome to verified result across Codex and
 Claude while preserving the user's scope and existing decisions.
 
 1. Keep Product → Design → Plan → Build → Evaluate → Engineering → Retro and a
-   separate actual human approval for each concrete result. Interpret intent in
-   context; retain provenance, target, chronology and replay validation.
+   separate decision for each concrete result. Default to actual human approval;
+   retain explicit optional run-bound automatic policies with scoped conditions,
+   stop phases and assessments. Interpret intent in context; retain provenance,
+   target, chronology and replay validation. One phase assent never enrolls policy.
 2. Start with material boundaries and current output. Plan fixes executable Build
    tasks, exact paths, relevant inputs, owners, prerequisites and meaningful checks.
 3. Resume with a durable brief and ordinary evidence references. Do not require

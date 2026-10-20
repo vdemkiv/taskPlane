@@ -4,8 +4,10 @@
 
 Use the selected project, actual loaded runtime and existing matching run. Full
 delivery is Product → Design → Plan → Build → Evaluate → Engineering → Retro.
-Each concrete result requires a separate human approval before advancing.
-Grouping and automatic approval enrollment are not part of this contract.
+Each concrete result requires a separate decision before advancing. Manual
+approval is the default. Explicitly authorized automatic mode uses the existing
+run-bound policy, scoped conditions, stop phases and evidence-backed assessments.
+One human phase approval never enrolls a policy or approves future checkpoints.
 Standalone Product, Design and Engineering retain their requested entry/ending.
 A review/design request never grants implementation authority.
 
@@ -26,11 +28,11 @@ For each new repository run, use a clean dedicated linked Git worktree at the
 intended repository and base. Start scope may state `repository`, `base_ref` or
 `base_revision`; otherwise the known origin default supplies the base. Verify the
 actual native session location, not only a command workdir or attached checkout.
-The saved initialization and automatic admitted pre/post pair must match before
-the first submission or positive decision. An ordinary admitted read establishes
-the pair; missing readiness keeps the same run pending with a supported recovery
-instruction. Idempotent continuation does not require a working checkout to be
-clean again.
+Saved initialization must match the native workspace. Automatic admitted pre/post
+pairs report callback coverage independently; missing callbacks cannot veto root
+submission, human acceptance or an approved Build, and require no session restart.
+Native worker dispatch retains its own readiness requirements. Idempotent
+continuation does not require a working checkout to be clean again.
 
 Working scope and task/worker paths are claimed before submission. Another active
 root cannot acquire or write them. Transfer needs a quiescent explicit release or
@@ -39,7 +41,7 @@ Execution workdirs and literal absolute targets are resolved before unselected
 fallback. Conflicting governed roots refuse a mutation; normal reads remain usable.
 
 New runs use `taskplane.workflow/v2`, `brief/v1` and `ownership/v1`. Keep the loaded
-runtime fixed for an active run. Candidate source, packages and installed caches
+runtime contract fixed for an active run. Candidate source, packages and installed caches
 are separate copies. Old-contract runs remain historical/readable and require
 their original compatible runtime for mutation. Never silently migrate an active
 run or transfer its approvals to a new one.
@@ -108,6 +110,10 @@ writer per file and transfer ownership explicitly when needed; documentation can
 follow each relevant completed change.
 `flow advance` can allocate the next output path when `--output` is omitted.
 Run/visit metadata paths are distinct from the Plan's exact production write scope.
+Renewed phase results must use current visit ownership rather than historical
+filenames. Normal task attachment repairs missing metadata for an unsubmitted
+renewed phase with the same root/revision/freshness checks; do not repeat earlier
+phase approvals or overwrite the old results to work around a missing allocation.
 
 Show the concrete result and `.taskplane/dashboard.html` at flow start and phase
 checkpoints. Publication is automatic at lifecycle milestones; retry a failed
@@ -134,6 +140,10 @@ stays pending for normal clarification. Approval accepts only the current result
 it neither enrolls policy nor accepts future phases. Reuse a valid existing
 approval rather than ask again. An invalid route proposal must fail before sealing
 or consuming the human reply.
+A later human approval may reverse changes requested or rejection of the same
+unchanged checkpoint. Preserve both decisions and the original presentation;
+use the current revision and actual later response time. Do not resubmit unchanged
+evidence merely to reopen a decision, or use this route after cancellation.
 
 ## Reads, writes and native work
 
@@ -149,7 +159,15 @@ establish session hook readiness; a selected run or trusted install alone does n
 
 Editing owned candidate hook source and tests is normal implementation work.
 Disabling, uninstalling, replacing or bypassing the active harness to get past a
-refusal is prohibited. Keep the live installation intact while testing separate
+refusal is prohibited. Do not ask the user to execute a refused repair helper in
+Terminal. After a trusted host update, an explicitly authorized same-run handover
+uses the new installed runtime's `flow recover --runtime-repair` operation with a
+pinned request. Preserve both immutable installations, phase decisions and task
+ownership; change only the enforcing runtime binding and revision, invalidating
+old runtime reuse and callback readiness. Never infer recovery authorization from
+phase approval. If the loaded
+runtime lacks that operation, report the capability gap and use the host plugin
+updater; candidate source cannot grant itself live admission. Keep the live installation intact while testing separate
 candidates. Verify allowed and rejected actions in fresh Codex and Claude
 installations. A failed supported-path check is a defect. Stronger containment
 when a host does not invoke hooks is a separately documented existing limitation;

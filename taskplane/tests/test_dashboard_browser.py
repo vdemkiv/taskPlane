@@ -256,6 +256,42 @@ def _visible(browser, selector):
     }})()""")
 
 
+@pytest.mark.parametrize('theme', ['light', 'dark'])
+def test_graph_readable_scale_unicode_and_filtered_keyboard_focus(tmp_path, theme, record_property):
+    from taskplane import depgraph
+    ids = ['components/frontend-team-😀tools'] + ['module-' + str(i) for i in range(11)]
+    graph = {'modules': {key: {'kind': 'module', 'files': 1} for key in ids},
+             'edges': [{'from': ids[i], 'to': ids[i + 1]} for i in range(11)], 'components': []}
+    document = depgraph._HTML.replace('__DATA__', json.dumps(graph)).replace('__TITLE__', 'Fixture')
+    target = tmp_path / 'graph.html'
+    target.write_text(document)
+    with _chromium(tmp_path) as browser:
+        record_property('browser', browser.command('Browser.getVersion')['product'])
+        browser.command('Page.enable')
+        browser.command('Runtime.enable')
+        # A headless page can retain activeElement while its document has no
+        # system focus. Give keyboard interaction a focused document so CSS
+        # :focus/:focus-visible are exercised as they are in a foreground tab.
+        browser.command('Emulation.setFocusEmulationEnabled', enabled=True)
+        browser.command('Emulation.setEmulatedMedia', features=[{'name': 'prefers-color-scheme', 'value': theme}])
+        browser.command('Page.navigate', url=target.as_uri())
+        browser.wait_for("document.readyState === 'complete' && document.querySelectorAll('.node').length === 12")
+        metrics = browser.evaluate("""(() => {const svg=document.querySelector('svg'), text=document.querySelector('.node text');
+            return {scale:svg.getBoundingClientRect().width/svg.viewBox.baseVal.width,
+                    font:parseFloat(getComputedStyle(text).fontSize), label:text.textContent,
+                    scroll:document.querySelector('#wrap').scrollWidth, width:document.querySelector('#wrap').clientWidth};})()""")
+        assert metrics['scale'] * metrics['font'] >= 12
+        assert metrics['scroll'] > metrics['width']
+        assert '😀' in metrics['label'] and '�' not in metrics['label']
+        metrics['label'].encode('utf-8')
+        browser.evaluate("const input=document.querySelector('#search'); input.value='no-match'; input.dispatchEvent(new Event('input'))")
+        browser.focus('.node')
+        assert browser.evaluate("document.hasFocus() && document.querySelector('.node').matches(':focus')")
+        assert browser.evaluate("getComputedStyle(document.querySelector('.node')).opacity") == '1'
+        browser.enter()
+        assert ids[0] in browser.evaluate("document.querySelector('#inspector h2').textContent")
+
+
 def _static_notice_visible(browser):
     return browser.evaluate("""[...document.querySelectorAll('body *')].some(element => {
         const box = element.getBoundingClientRect(), style = getComputedStyle(element);

@@ -92,7 +92,7 @@ def _sample(value: dict[str, Any], session: str, usage: Any) -> None:
 
 def initialize(workspace: Path, state: dict[str, Any], observation: dict[str, Any]) -> None:
     target = path(workspace, state['run'])
-    with primitives.file_lock(str(target)):
+    with primitives.file_lock(str(target), timeout=.25):
         value = read(workspace, state)
         value['metadata'].update(observation)
         _sample(value, state['root'], observation.get('usage'))
@@ -134,7 +134,7 @@ def summary(value: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
 
 def observe(workspace: Path, state: dict[str, Any], row: dict[str, Any]) -> list[str]:
     target = path(workspace, state['run'])
-    with primitives.file_lock(str(target)):
+    with primitives.file_lock(str(target), timeout=.25):
         value = read(workspace, state)
         before = summary(value, state)['advice']
         call = row.get('call_id')
@@ -174,7 +174,7 @@ def observe(workspace: Path, state: dict[str, Any], row: dict[str, Any]) -> list
 def progress(workspace: Path, state: dict[str, Any], kind: str, note: str,
              artifacts: dict[str, Any], captured: dict[str, Any]) -> None:
     target = path(workspace, state['run'])
-    with primitives.file_lock(str(target)):
+    with primitives.file_lock(str(target), timeout=.25):
         value = read(workspace, state)
         value['observation_count'] += 1
         value['last_observation_at'] = datetime.now(timezone.utc).isoformat()
@@ -195,7 +195,7 @@ def progress(workspace: Path, state: dict[str, Any], kind: str, note: str,
 def remember_measurement(workspace: Path, state: dict[str, Any], measurement: dict[str, Any],
                          captured_at: str) -> None:
     target = path(workspace, state['run'])
-    with primitives.file_lock(str(target)):
+    with primitives.file_lock(str(target), timeout=.25):
         value = read(workspace, state)
         if value.get('measurement_captured_at', '') > captured_at:
             return

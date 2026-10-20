@@ -760,6 +760,9 @@ def _report(workspace: Path, run_id: str | None = None, *,
                 visit = candidates[-1]
                 task["phase_decision"] = visit["decision"]
                 task.setdefault('status', 'unverified')
+            from . import worker_runtime
+            if task['id'] in governed.get('task_results', {}) and worker_runtime.result_valid(workspace, governed, task['id']):
+                task['status'] = 'completed'
         result["phase_usage"] = phase_usage(rows, governed, result)
         result["historical"] = historical
         result['artifact_links'] = phase_artifacts(workspace, governed, attachments)
@@ -804,7 +807,8 @@ def older_snapshot(previous: dict[str, Any], snapshot: dict[str, Any]) -> bool:
 def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Path | None = None,
                       select: bool = False, governor: workflow_host.Controller | None = None,
                       supplied: dict[str, Any] | None = None, detached: bool = False,
-                      pin_reason: str | None = None, checkpoint_required: bool = False) -> Path:
+                      pin_reason: str | None = None, checkpoint_required: bool = False,
+                      phase_required: bool = False) -> Path:
     """One renderer and immutable generation per explicit/task-bound run."""
     from taskplane import dashboard, flow_dashboard
     workspace = workspace.resolve()
@@ -834,7 +838,7 @@ def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Pat
         publication_pin = pin_reason
         # Explicit checkpoint delivery is required evidence. Derive the pin
         # after each retry's freshness checks, never from a caller's checkpoint.
-        if (checkpoint_required and not publication_pin and governed.get("visits")
+        if ((checkpoint_required or phase_required) and not publication_pin and governed.get("visits")
                 and not model.get("historical") and not model.get("final_observation")
                 and not any(governed.get(key) for key in
                             ("finished", "retired", "superseded_by", "cancellation"))):
@@ -842,6 +846,11 @@ def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Pat
             checkpoint = (stage.get("packet") or {}).get("checkpoint")
             if checkpoint and stage.get("decision") in {"awaiting_human_approval", "approved"}:
                 publication_pin = "checkpoint/" + checkpoint
+            elif (stage.get('phase') in workflow.PHASES and stage.get('id')
+                  and stage.get('decision') in {'not_requested', 'changes_requested', 'rejected'}):
+                # A real phase entry/current-context view is required delivery,
+                # independently of whether its result is ready for a decision.
+                publication_pin = 'phase/' + governed['run'] + '/' + stage['id']
         return publish_pair(workspace, model, document, target=target, select=select,
                             detached=detached, older=older_snapshot, pin_reason=publication_pin)
     raise workflow.Refusal("stale_checkpoint", "Dashboard inputs changed during publication; regenerate the selected run.")
@@ -962,7 +971,9 @@ def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
             return False
     required = {'--workspace'}
     if words[3] == 'recover':
-        required |= ({'--recovery-request', '--expected-sha256', '--recovery-mode'}
+        required |= ({'--runtime-repair', '--expected-sha256', '--recovery-mode'}
+                     if '--runtime-repair' in options else
+                     {'--recovery-request', '--expected-sha256', '--recovery-mode'}
                      if '--recovery-request' in options else
                      {'--recover-from', '--expected-sha256', '--run', '--expected-revision', '--request-reference'})
     if len(options) != len(required) * 2 or set(options[::2]) != required:
@@ -1355,7 +1366,12 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "retire", "worker", "verify"])
+    parser.add_argument('--check-id')
+    parser.add_argument('--history-path')
+    parser.add_argument('--log-path')
+    parser.add_argument('--check-timeout', type=float, default=120)
+    parser.add_argument('--coverage-json')
     parser.add_argument('--revision-mode', choices=['preview', 'begin', 'resume', 'abort'])
     parser.add_argument('--revision-request', help='Exact source-pinned requirements revision request')
     parser.add_argument('--revision-sha256')
@@ -1405,7 +1421,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--recover-from", help="Exact adjacent numbered workflow copy; recover only")
     parser.add_argument("--expected-sha256", help="Expected recovery copy or import request SHA-256")
     parser.add_argument("--recovery-request", help="Absolute hash-pinned state import request file")
-    parser.add_argument("--recovery-mode", choices=["inspect", "apply"], help="Preview or apply a same-root state import")
+    parser.add_argument("--runtime-repair", help="Pinned same-run handover to a compatible runtime already selected by the host")
+    parser.add_argument("--recovery-mode", choices=["inspect", "apply"], help="Preview or apply supported state/runtime recovery")
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -1414,6 +1431,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     except ValueError as exc:
         parser.error(str(exc))
     args = parser.parse_args(arguments)
+    if args.action != 'verify' and any(value is not None for value in
+            (args.check_id, args.history_path, args.log_path, args.coverage_json)):
+        parser.error('check options apply only to flow verify')
     if args.action != 'revise' and any(value is not None for value in
             (args.revision_mode, args.revision_request, args.revision_sha256, args.revision_note)):
         parser.error('revision options apply only to flow revise')
@@ -1423,12 +1443,16 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         parser.error('resume options apply only to flow resume')
     if args.action != 'recover' and args.recover_from is not None:
         parser.error('--recover-from applies only to flow recover')
-    if args.action != 'recover' and (args.expected_sha256 is not None or args.recovery_request is not None or args.recovery_mode is not None):
+    if args.action != 'recover' and (args.expected_sha256 is not None or args.recovery_request is not None
+                                   or args.runtime_repair is not None or args.recovery_mode is not None):
         parser.error('recovery options apply only to flow recover')
+    if args.runtime_repair is not None and (args.recovery_request is not None or args.recover_from is not None
+                                          or args.run is not None or args.expected_revision is not None):
+        parser.error('select one runtime repair, state import or numbered-copy recovery')
     if args.recovery_request is not None and (args.recover_from is not None or args.run is not None or args.expected_revision is not None):
         parser.error('select a pinned import request or an adjacent numbered copy, not both')
-    if args.recovery_mode is not None and args.recovery_request is None:
-        parser.error('--recovery-mode requires --recovery-request')
+    if args.recovery_mode is not None and args.recovery_request is None and args.runtime_repair is None:
+        parser.error('--recovery-mode requires --recovery-request or --runtime-repair')
     if args.task is not None and args.action not in {"context", "worker"}:
         parser.error("--task applies to context or worker")
     if any(value is not None for value in (args.read, args.section, args.page)) and args.action != "context":
@@ -1537,7 +1561,15 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             workflow.require(not observed_parent({}, session) or independent_fork({}, session),
                              'scope_violation', 'Native children cannot restore workflow state.')
             controller = governor or _controller(workspace, session, args.profile)
-            if args.recovery_request is not None:
+            if args.runtime_repair is not None:
+                try:
+                    repaired = workflow_local.recover_runtime(controller, args.runtime_repair,
+                        args.expected_sha256 or '', mode=args.recovery_mode or 'inspect')
+                except (OSError, primitives.StateError) as exc:
+                    raise workflow.Refusal('state_unavailable',
+                        'Runtime recovery did not complete; inspect the controller binding and installation identities: ' + str(exc)) from None
+                print(json.dumps(repaired))
+            elif args.recovery_request is not None:
                 from . import state_import
                 imported = state_import.recover(controller, args.recovery_request, args.expected_sha256 or '',
                                                 mode=args.recovery_mode or 'inspect')
@@ -1549,10 +1581,26 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             return 0
         if args.action == "diagnose":
             diagnostics = workflow_local.diagnose(workspace)
+            diagnostics['runtime_recovery'] = {
+                'operation': 'flow recover --runtime-repair REQUEST --expected-sha256 SHA256 --recovery-mode inspect|apply',
+                'request_schema': 'taskplane.runtime-repair/v1', 'available': True,
+                'scope': 'Rebind an open quiescent Build to a compatible patch runtime already selected by the host; preserve approvals and both installations.',
+                'fallback': 'Use the host plugin updater if this installed runtime lacks the operation; do not execute a repair helper outside the hook gate.'}
             diagnostic_controller = governor or _controller(workspace, session_id({}), args.profile)
             try:
                 state = diagnostic_controller.report()
                 diagnostics["workflow"] = {k: state.get(k) for k in ("run", "revision", "phase", "status", "storage")}
+                if diagnostic_controller.adapter.profile == 'native_workflow':
+                    from .host_capabilities import runtime_identity
+                    incoming = runtime_identity()
+                    origin = state.get('runtime_identity')
+                    if isinstance(origin, dict) and origin != incoming:
+                        diagnostics['runtime_recovery']['proposal'] = {
+                            'schema': 'taskplane.runtime-repair/v1',
+                            'binding': {key: state[key] for key in ('workspace', 'root', 'run', 'revision')} | {
+                                'visit': workflow.current(state)['id']},
+                            'request_reference': '', 'from_runtime': origin, 'to_runtime': incoming,
+                            'member_sha256': workflow_local._runtime_members(Path(incoming['root']))}
             except (workflow.Refusal, OSError, ValueError, TypeError, KeyError) as exc:
                 diagnostics["workflow_error"] = str(exc)
             if diagnostic_controller.adapter.profile == 'native_workflow':
@@ -1612,6 +1660,19 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                       if args.action == "inspect" else controller.prevalidate(args.run,
                           revision=args.expected_revision, output=args.output or "", tasks=args.tasks or ""))
             show(recovery_read)
+            return 0
+        if args.action == 'verify':
+            workflow.require(args.run and args.check_id and args.history_path and args.log_path,
+                             'invalid_evidence', 'Verification needs run, check ID and exact history/log outputs.')
+            workflow.require(len((args.coverage_json or '{}').encode()) <= 16384,
+                             'invalid_evidence', 'Coverage details exceed 16 KiB.')
+            coverage = json.loads(args.coverage_json or '{}')
+            workflow.require(isinstance(coverage, dict), 'invalid_evidence', 'Coverage details must be an object.')
+            verification_result = controller.verify(args.run, revision=args.expected_revision, check_id=args.check_id,
+                history=args.history_path, log=args.log_path, timeout=args.check_timeout, coverage=coverage)
+            # Like worker results, this bounded observation is not a phase
+            # state and must not be rendered as an approval summary.
+            print(json.dumps(verification_result))
             return 0
         if args.action == "worker":
             from .context import encode
@@ -1731,7 +1792,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                 if args.action != 'submit':
                     refresh_scan(workspace)
                 publish_dashboard(workspace, state['run'], governor=controller,
-                                  checkpoint_required=args.action in {'submit', 'decide'})
+                                  checkpoint_required=args.action in {'submit', 'decide'},
+                                  phase_required=args.action in {'start', 'advance', 'repair'}
+                                      or args.action == 'attach' and args.update_context)
             except Exception:
                 observation_errors.append('Workflow action committed; dashboard publication needs retry.')
         state = {**state, "phase": workflow.current(state)["phase"],
