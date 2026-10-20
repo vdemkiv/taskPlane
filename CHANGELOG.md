@@ -9,6 +9,7 @@
 - Publish complete durable context objects, reconcile snapshot capacity, bound advisory locks, and terminate timed-out check descendants.
 - Reconcile accepted task progress, keep graph labels readable and keyboard focus visible, and preserve Unicode labels.
 - Correct contributor, lens, evaluation and package instructions. Preserve explicit optional automatic approval with manual approval as the default.
+- Refresh the security scanner's Certifi pin and wheel hash; keep Windows runtime fingerprint fixtures executable and classify three existing capability skips by exact test and platform facts.
 
 Candidate verification, platform CI and installed-host acceptance remain separate evidence.
 

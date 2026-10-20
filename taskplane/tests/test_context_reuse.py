@@ -396,13 +396,14 @@ def test_contribution_capture_pins_each_actual_input_dimension(tmp_path, change)
     options['outputs'] = ['pkg/result.txt']
     options['environment'] = {'LANG': 'C'}
     if change == 'runtime':
-        executable = tmp_path / 'runtime-copy'
+        executable = tmp_path / ('runtime-copy' + Path(sys.executable).suffix)
         executable.write_bytes(Path(sys.executable).read_bytes())
         executable.chmod(0o700)
         options['command'] = [str(executable), '-c', 'pass']
     depgraph.scan(str(tmp_path), decompose=True, strict=True)
     before = contribution_key(tmp_path, **options)
-    assert before['eligible'] and contribution_matches(before, contribution_key(tmp_path, **options))
+    assert before['eligible'], before
+    assert contribution_matches(before, contribution_key(tmp_path, **options))
     if change == 'source': (tmp_path / 'pkg/app.py').write_text('from pkg.rules import value\nvalue += 1\n')
     elif change == 'dependency': (tmp_path / 'pkg/rules.py').write_text('value = 4\n')
     elif change == 'output': (tmp_path / 'pkg/result.txt').write_text('answer = 4\n')
