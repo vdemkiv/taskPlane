@@ -863,6 +863,15 @@ class LocalWorkflow:
                         and earlier):
                     _require_decision(observed > timestamp(earlier), "decision_chronology",
                                       "Cancellation must follow the approval it revokes.")
+        if (value.get("choice") == "approved" and event_id not in prior
+                and stage.get("decision") in {"changes_requested", "rejected"}):
+            for old in prior.values():
+                earlier = old.get("provenance", {}).get("source", {}).get("observed_at")
+                if (old.get("choice") in {"changes_requested", "rejected"}
+                        and old.get("binding", {}).get("visit") == stage.get("id")
+                        and old.get("binding", {}).get("checkpoint") == expected["checkpoint"] and earlier):
+                    _require_decision(observed > timestamp(earlier), "decision_chronology",
+                                      "Approval must follow the decision it reverses.")
         _require_decision(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
                   and isinstance(presentation.get("reference"), str) and presentation["reference"]
                   and isinstance(presentation.get("at"), str),

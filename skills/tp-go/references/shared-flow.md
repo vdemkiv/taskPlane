@@ -136,6 +136,10 @@ stays pending for normal clarification. Approval accepts only the current result
 it neither enrolls policy nor accepts future phases. Reuse a valid existing
 approval rather than ask again. An invalid route proposal must fail before sealing
 or consuming the human reply.
+A later human approval may reverse changes requested or rejection of the same
+unchanged checkpoint. Preserve both decisions and the original presentation;
+use the current revision and actual later response time. Do not resubmit unchanged
+evidence merely to reopen a decision, or use this route after cancellation.
 
 ## Reads, writes and native work
 

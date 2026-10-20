@@ -201,6 +201,10 @@ Approval applies only to this unchanged concrete result and scope. It neither
 accepts future phases nor grants host tool permissions. Reuse a valid decision
 instead of asking again. Route eligibility is checked before sealing/presentation
 and again at decision; invalid amendments must not consume a human response.
+After requesting changes or rejecting a checkpoint, the human may approve that
+same unchanged result without resubmission. Bind the later reply to the current
+revision and original presentation; retain the earlier decision. Changed evidence,
+an older reply or cancellation cannot use this continuation.
 
 ## Native ownership and command boundaries
 

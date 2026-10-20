@@ -395,6 +395,8 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
     require(not state.get("cancellation") and not state["finished"],
             "approval_required", "An ended run cannot receive new checkpoint decisions.")
     require((stage["decision"] == "awaiting_human_approval"
+             or stage["decision"] in {"changes_requested", "rejected"}
+             and choice == "approved" and verified.get("human") is True
              or stage["decision"] == "approved" and (choice == 'cancelled'
                  or stage['phase'] in PHASES[:3] and choice in {'changes_requested', 'rejected'})) and stage["packet"],
             "approval_required", "Submit the current stage's evidence before requesting a decision.")

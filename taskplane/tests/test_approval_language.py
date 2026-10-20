@@ -90,6 +90,53 @@ def test_dissent_candidate_keeps_checkpoint_unapproved(tmp_path,candidate):
     with pytest.raises(w.Refusal):c.apply('advance',result['run'],expected_revision=result['revision'],phase='design')
 
 
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('phase', ['product', 'design', 'plan'])
+@pytest.mark.parametrize('dissent', ['changes_requested', 'rejected'])
+def test_later_human_approval_reconsiders_unchanged_checkpoint(tmp_path, host, phase, dissent):
+    c, state = setup(tmp_path)
+    c.adapter.name = host
+    while w.current(state)['phase'] != phase:
+        state = submit(c, state, presentation=False)
+        state = decide(c, state, decision(state, event='human/prior/' + w.current(state)['phase']))
+        state = c.apply('advance', state['run'], expected_revision=state['revision'],
+                        phase=w.PHASES[state['index'] + 1])
+    state = submit(c, state, presentation=False)
+    original = deepcopy(w.current(state))
+    correction = decision(state, event='human/correction', candidate=dissent)
+    state = decide(c, state, correction)
+    assent = decision(state, event='human/reconsideration')
+    assent['presentation'] = correction['presentation']
+    result = decide(c, state, assent)
+    assert w.current(result)['decision'] == 'approved'
+    assert w.current(result)['packet'] == original['packet']
+    assert w.current(result)['submitted_at'] == original['submitted_at']
+    assert result['decisions']['human/correction'] == state['decisions']['human/correction']
+    assert result['decisions']['human/reconsideration']['provenance']['presentation'] == correction['presentation']
+    assert result['revision'] == state['revision'] + 1
+
+
+@pytest.mark.parametrize('bad', ['ordering', 'source-drift', 'old-binding'])
+def test_reconsideration_refuses_older_or_changed_checkpoint(tmp_path, bad):
+    c, state = setup(tmp_path)
+    state = submit(c, state, presentation=False)
+    correction = decision(state, event='human/correction', candidate='changes_requested')
+    state = decide(c, state, correction)
+    assent = decision(state, event='human/reconsideration')
+    assent['presentation'] = correction['presentation']
+    if bad == 'ordering':
+        assent['source']['observed_at'] = correction['source']['observed_at']
+    elif bad == 'source-drift':
+        (tmp_path / 'product.json').write_text('{}')
+    else:
+        assent['binding'] = correction['binding']
+    with pytest.raises(w.Refusal):
+        decide(c, state, assent)
+    observed = c.report(state['run'], diagnostics=False)
+    assert observed['decisions'] == state['decisions']
+    assert w.current(observed)['decision'] != 'approved'
+
+
 @pytest.mark.parametrize('bad',['foreign-source','automated','binding','future','missing-candidate','replay'])
 def test_observed_candidate_cannot_replace_provenance_or_current_target(tmp_path,bad):
     c,state=setup(tmp_path);state=submit(c,state,presentation=False);value=decision(state)
