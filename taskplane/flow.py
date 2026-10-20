@@ -1013,6 +1013,9 @@ def _hook(event: dict[str, Any], *,
     if (event.get('hook_event_name') in {'PreToolUse', 'PostToolUse'}
             and (governor is None or governor.principal == governor.root)
             and not any(event.get(k) for k in ('parent_session_id', 'agent_id', 'subagent_id'))
+            and not (event.get('hook_event_name') == 'PostToolUse'
+                     and isinstance(event.get('tool_response'), dict)
+                     and event['tool_response'].get('session_id') is not None)
             and runtime_command.installed(words, cwd, absolute=True)
             and words[2:] in (['version', '--verify'], ['help', '--md'])):
         return {'hookSpecificOutput': {'hookEventName': event['hook_event_name'],
