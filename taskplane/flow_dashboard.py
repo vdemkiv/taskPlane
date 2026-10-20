@@ -325,16 +325,16 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
     plan = '<section id="decomposition"><div class="section-head"><h2>02 / Task decomposition</h2><span class="muted">Dependencies and execution evidence</span></div>'
     if tasks:
         plan += '<div class="task-chain">'+''.join(f'<span>{_e(t.get("id"))} ← {_e(", ".join(t.get("dependencies",t.get("deps",[]))) or "No prerequisites")}</span>' for t in tasks)+'</div>'
-        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Depends on</th><th>State</th><th>Execution / verification</th></tr></thead><tbody>'
+        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Owner / phase</th><th>Depends on</th><th>State</th><th>Execution / verification</th></tr></thead><tbody>'
         for t in tasks:
             timing=f'{t.get("started_at") or "Not started"} → {t.get("completed_at") or "Not completed"}'
-            plan += f'<tr><td><strong>{_e(t.get("id"))}</strong><br>{_e(t.get("title"))}</td><td>{_e(", ".join(t.get("dependencies",t.get("deps",[]))) or "—")}</td><td>{_e(t.get("status","unknown"))}</td><td><span class="muted">{_e(timing)}</span><br><code>{_e(t.get("verification","Not recorded"))}</code>'
+            plan += f'<tr><td><strong>{_e(t.get("id"))}</strong><br>{_e(t.get("title"))}</td><td>{_e(t.get("owner") or "Unassigned")}<br>{_e(t.get("phase") or "Unspecified")}</td><td>{_e(", ".join(t.get("dependencies",t.get("deps",[]))) or "—")}</td><td>{_e(t.get("status","unverified"))}<br><span class="muted">Phase decision: {_e(t.get("phase_decision", "not_requested"))}</span></td><td><span class="muted">{_e(timing)}</span><br><code>{_e(t.get("verification","Not recorded"))}</code>'
             if t.get('premature_completed_at'):
                 plan += '<br><span class="muted">Earlier completion corrected; history retained in task evidence.</span>'
             plan += '</td></tr>'
         plan += '</tbody></table></div>'
     else:
-        plan += '<p class="muted">No task decomposition attached to this run.</p>'
+        plan += '<p class="muted">Planning is unfinished: no current task definitions are available for this run.</p>'
     workers = (m.get('workflow') or {}).get('worker_status', {})
     if workers:
         limit = (workers.get('capacity') or {}).get('effective_limit')
@@ -414,6 +414,17 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
     tokens += '</tbody></table></div>'
     tokens += f'<p class="muted">Native lifetime totals for delivery sessions: {_number((m.get("native_tokens") or {}).get("total_tokens"))}. Flow totals use run-owned intervals, excluding reused-session history. Host approval review is separate: {_number((m.get("host_approval_tokens") or {}).get("total_tokens"))}. Cached input is included in input; reasoning is included in output. Token counts are not a billing estimate.</p></section>'
     evidence = '<section id="evidence"><h2>06 / Evidence and Retro</h2>'
+    links = m.get('artifact_links', [])
+    if links:
+        evidence += '<ul>'
+        for item in links:
+            label = _e(item['path'])
+            if item.get('href') and item.get('status') == 'available':
+                label = '<a href="'+_e(item['href'])+'">'+label+'</a>'
+            evidence += '<li>'+_e(item.get('phase'))+' · '+label+' · '+_e(item.get('status'))+'</li>'
+        evidence += '</ul><p class="muted">Availability was observed for this snapshot. Workspace links open the current file.</p>'
+    else:
+        evidence += '<p class="muted">No phase artifacts are available yet.</p>'
     for path in m['artifacts'].get('evidence',[]):
         evidence += f'<details><summary>{_e(path)}</summary>{_evidence(ws,path,m)}</details>'
     evidence += '</section>'

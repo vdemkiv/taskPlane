@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.34.5 — isolated startup and simpler hook recovery
+
+- Start new repository runs in clean dedicated worktrees, verify native initialization, and preserve working ownership across runs.
+- Route hooks to the actual execution workspace; ignore empty and lock-only stores during first-run discovery.
+- Keep Stop advisory and remove its redundant retry bookkeeping. Phase acceptance and write permissions remain enforced by the workflow controller.
+- Allow exact approved repair checks to use fresh evidence paths without overwriting sealed history; keep ordinary diagnostics and process tracking available.
+- Preserve pending user handoffs during reads and automatic prompts, and keep dashboard task status aligned with authoritative work.
+- Honor effective Git line-ending settings when checking a new worktree, avoiding false dirty-worktree refusals on Windows. Exercise quoted shell targets across workspaces.
+
+Candidate packages and local tests remain separate from CI and installed-host acceptance.
+
 ## 2.34.4 — preserve historical state during hook startup
 
 - Read ordinary historical Build metadata without requiring typed check IDs from legacy Plan records.

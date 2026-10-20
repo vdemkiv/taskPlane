@@ -88,6 +88,77 @@ def resolve_selection(value: str | None, event: dict[str, Any], fallback: Path) 
     return workspace_binding.resolve_workspace(selected, event={**event, 'cwd': str(cwd)})
 
 
+def mutation_targets(event: dict[str, Any]) -> list[str]:
+    """Literal host targets only; this does not authorize opaque command effects."""
+    from . import workflow_local
+    args = event.get('tool_input', {})
+    if not isinstance(args, dict):
+        return []
+    tool = event.get('tool_name') or event.get('tool')
+    if tool in {'Write', 'Edit', 'write_file', 'edit_file'}:
+        target = args.get('file_path') or args.get('path')
+        return [target] if isinstance(target, str) else []
+    if tool == 'apply_patch':
+        patch = args.get('command', args.get('input', args.get('patch', '')))
+        return [line.split(': ', 1)[1] for line in patch.splitlines()
+                if line.startswith(('*** Add File: ', '*** Update File: ', '*** Delete File: ', '*** Move to: '))] if isinstance(patch, str) else []
+    if tool in {'Bash', 'exec_command'}:
+        return workflow_local.shell_write_paths(event) or []
+    return []
+
+
+def hook_workspace(event: dict[str, Any], fallback: Path) -> Path:
+    """Resolve actual execution/target ancestry before unselected fallback."""
+    from . import workspace_binding, workflow as w, workflow_local
+    incidental = Path(event.get('cwd') or fallback).resolve()
+    execution = execution_directory(event, fallback)
+    w.require('.taskplane' not in incidental.parts and '.taskplane' not in execution.parts,
+              'scope_violation', 'Tool execution is inside reserved Taskplane state. Return to the containing project with the supported literal cd command.')
+    words = workflow_local.runtime_words(event)
+    explicit = workspace_selector(words[2:]) if installed(words, execution) else None
+    roots: set[Path] = set()
+    def containing(path: Path) -> Path | None:
+        for number, parent in enumerate([path, *path.parents]):
+            w.require(number < 64, 'scope_violation', 'Workspace target ancestry exceeds its safe bound.')
+            store = parent / '.taskplane'
+            if store.is_symlink() or store.exists() and not store.is_dir():
+                return parent  # The binding validator reports the unsafe store.
+            if store.is_dir():
+                for count, entry in enumerate(store.iterdir(), 1):
+                    w.require(count <= workspace_binding.MAX_FILES, 'scope_violation',
+                              'Workspace store inventory exceeds its safe bound.')
+                    if not entry.name.endswith('.lock'):
+                        return parent
+        return None
+    selected = (resolve_selection(explicit, event, fallback)
+                if explicit is not None or os.environ.get('TASKPLANE_WORKSPACE') else
+                workspace_binding.resolve_workspace(containing(execution) or execution,
+                                                    event={**event, 'cwd': str(execution)}))
+    for location in (incidental, execution):
+        found = containing(location)
+        if found:
+            roots.add(found)
+    if os.environ.get('TASKPLANE_WORKSPACE') or explicit is not None:
+        roots.add(selected)
+    targets = mutation_targets(event)
+    for target in targets:
+        path = Path(target)
+        found = containing((execution / path).absolute().parent)
+        if found:
+            roots.add(found)
+    # A normal read may inspect another directory without granting mutation.
+    if (event.get('tool_name') or event.get('tool')) in workflow_local.READ_TOOLS or workflow_local.readonly_command(event):
+        return selected
+    w.require(len(roots) <= 1, 'scope_violation',
+              'Execution and targets select conflicting governed workspaces; use one native task workspace.')
+    chosen = next(iter(roots)) if roots else selected
+    chosen = workspace_binding.resolve_workspace(chosen, event=event)
+    for target in targets if roots else []:
+        path = Path(target)
+        workspace_binding.relative_path(chosen, str(path if path.is_absolute() else execution / path))
+    return chosen
+
+
 def _windows_current_directory(command: str) -> bool:
     import ctypes
     kernel = getattr(ctypes, 'WinDLL')('kernel32', use_last_error=True)

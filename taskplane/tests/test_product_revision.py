@@ -11,6 +11,7 @@ from taskplane import workflow as w, workflow_host, workflow_evidence as evidenc
 from taskplane.context import digest
 from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_local import decide, decision, present
+from taskplane.tests.test_worker_runtime import parent_pair
 
 
 def accepted_build_fixture(tmp_path, *, components=False, source_writes=False, artifact_path=None):
@@ -48,6 +49,7 @@ def accepted_build_fixture(tmp_path, *, components=False, source_writes=False, a
     c = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('codex'))
     state = c.start({'scope': scope, 'request_reference': 'fixture/original-user',
                      'goal': 'Preserve accepted outcomes while reviewing an explicit requirement change.'})
+    parent_pair(c)
     for phase, next_phase in [('product', 'design'), ('design', 'plan'), ('plan', 'build')]:
         _, output, _ = prepare(tmp_path, phase)
         (tmp_path/'tasks.json').write_text(json.dumps({'tasks': tasks}))

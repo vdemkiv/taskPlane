@@ -4,7 +4,7 @@ Plan, build and review software with Codex or Claude, keeping decisions and actu
 verification connected. Use full delivery, standalone Product/Design/Engineering,
 or a reusable workflow with fresh inputs.
 
-Candidate version: **2.34.4**. Source, extracted packages, installed runtimes and
+Candidate version: **2.34.5**. Source, extracted packages, installed runtimes and
 live host acceptance are separate observations. This candidate does not certify
 a loaded Codex/Claude update or publication.
 
@@ -28,6 +28,12 @@ Product → Design → Plan → Build → Evaluate → Engineering → Retro.
 Each phase presents a concrete result and retains its own human approval.
 Ordinary contextual assent works; no exact phrase or question title is required.
 Grouping and automatic approval enrollment are deferred.
+
+New repository runs start in a clean dedicated linked worktree at the intended
+base, with the actual native session bound there. The first checkpoint requires
+an automatic admitted pre/post hook pair from that session and runtime. Missing
+readiness pauses the checkpoint; an admitted read can recover it without a new
+run. Existing initialized work keeps its scope and approvals across interruptions.
 
 Start with the goal, stable acceptance criteria, material boundaries and current
 output. Design chooses the approach; Plan fixes exact Build paths, ownership,
@@ -72,7 +78,7 @@ Check the actual loaded installation with:
 python3 /actual/plugin/taskplane/tp.py version --verify
 ```
 
-Both host manifests use `2.34.4`. A source edit or archive does not update a
+Both host manifests use `2.34.5`. A source edit or archive does not update a
 running session. Preserve its original runtime and evidence; update/reload through
 the host between runs. Candidate active old-contract mutation refuses rather than
 silently migrating history. Installed caches are never modified by package build.
@@ -103,8 +109,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-Packages go to `dist/taskplane-2.34.4.plugin` and
-`dist/taskplane-2.34.4-openai.zip`. Sidecars record source/dirty lineage and exact
+Packages go to `dist/taskplane-2.34.5.plugin` and
+`dist/taskplane-2.34.5-openai.zip`. Sidecars record source/dirty lineage and exact
 archive/member hashes at this package boundary. Building does not install or
 publish. Use actual targeted/combined check evidence and keep unavailable live
 host/platform acceptance explicit. See [CI coverage](docs/ci-performance.md).

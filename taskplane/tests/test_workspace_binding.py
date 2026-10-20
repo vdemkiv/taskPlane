@@ -852,12 +852,37 @@ def test_prompt_reaches_model_with_setup_guidance(tmp_path, monkeypatch, capsys,
         monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
     before = tree(tmp_path)
     code, result = invoke(tmp_path, monkeypatch, capsys, 'UserPromptSubmit', prompt=PROMPT)
-    assert code == 0
+    assert code == 0, result
     assert 'decision' not in result
     context = result['hookSpecificOutput']['additionalContext']
     assert 'original request' in context and 'lens count' in context
     assert 'selected' in context and 'binding' in context
     assert tree(tmp_path) == before
+
+
+@requires_binding_runtime
+@pytest.mark.parametrize('ancestor', [False, True])
+@pytest.mark.usefixtures("onboarding_environment")
+def test_lock_only_store_does_not_capture_first_run_onboarding(tmp_path, monkeypatch, capsys, ancestor):
+    from taskplane import runtime_command
+    monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
+    project = tmp_path / 'project'
+    project.mkdir()
+    store = (tmp_path if ancestor else project) / '.taskplane'
+    store.mkdir()
+    (store / ('workflow-' + 'a' * 32 + '.json.lock')).touch()
+    (store / 'workspace-claims.lock').touch()
+    before = tree(tmp_path)
+    with pytest.raises(b.MissingBinding) as missing:
+        runtime_command.hook_workspace({'cwd': str(project)}, project)
+    assert missing.value.root == project
+    code, result = invoke(project, monkeypatch, capsys, 'UserPromptSubmit', prompt=PROMPT)
+    assert code == 0, result
+    assert 'setup is pending' in result['hookSpecificOutput']['additionalContext']
+    assert tree(tmp_path) == before
+    (store / ('workflow-' + 'a' * 32 + '.initialized.json')).write_text('{}')
+    code, result = invoke(project, monkeypatch, capsys, 'UserPromptSubmit', prompt=PROMPT)
+    assert code == 2 and 'preserve existing state' in result['reason']
 
 
 @requires_binding_runtime

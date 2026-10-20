@@ -1,4 +1,4 @@
-"""Protect another active native run's sealed paths before write admission."""
+"""Protect active working claims and sealed evidence before write admission."""
 from __future__ import annotations
 
 import json
@@ -12,6 +12,29 @@ from . import workflow as w, workflow_evidence as evidence
 
 MAX_DATABASES = 128
 MAX_BYTES = 64 * 1024 * 1024
+
+
+def working_paths(state: dict[str, Any]) -> set[str]:
+    """Current scope remains claimed until an explicit transition releases it."""
+    stage = w.current(state)
+    paths = set(w.phase_write_paths(state))
+    for task in evidence.context_tasks(state):
+        if task.get('phase', stage['phase']) == stage['phase']:
+            paths.update(task['paths'])
+    for worker in state.get('workers', {}).values():
+        if worker.get('state') in {'prepared', 'launched', 'running', 'cancel_requested', 'interrupted', 'result_pending'}:
+            paths.update(worker.get('paths', []))
+    return paths
+
+
+def require_claims(workspace: Path, current: dict[str, Any], previous: dict[str, Any] | None = None) -> None:
+    """Called under checkout-before-controller locks at claim acquisition."""
+    acquired = working_paths(current) - (working_paths(previous) if previous else set())
+    protected = sealed_paths(workspace, current)
+    conflicts = sorted(acquired & protected.keys())
+    w.require(not conflicts, 'scope_violation',
+              f'Another active run owns the requested paths: {conflicts[:8]}. '
+              'Preserve its work; use distinct paths or explicit owner-authorized release/recovery.')
 
 
 def sealed_paths(workspace: Path, current: dict[str, Any]) -> dict[str, dict[str, str]]:
@@ -46,6 +69,10 @@ def sealed_paths(workspace: Path, current: dict[str, Any]) -> dict[str, dict[str
                       'Another active workflow has an incomplete controller binding.')
             if any(other.get(key) for key in ('finished', 'retired', 'superseded_by')):
                 continue
+            for relative in working_paths(other):
+                evidence.path(workspace, relative)
+                protected[relative] = {'root': other['root'], 'run': other['run'],
+                                      'phase': w.current(other)['phase'], 'kind': 'working'}
             for visit in other.get('visits', []):
                 if visit.get('superseded') or visit.get('decision') not in {'approved', 'awaiting_human_approval'}:
                     continue

@@ -2,7 +2,7 @@
 
 Use the actual loaded entrypoint, explicit selected workspace and relevant
 `--help`. Source, an extracted archive and an installed plugin are distinct.
-These commands describe the 2.34.4 candidate; an old-contract active run requires
+These commands describe the 2.34.5 candidate; an old-contract active run requires
 its original compatible runtime for mutation.
 
 ```sh
@@ -45,6 +45,14 @@ for supported standalone routes, `--standalone --phase PHASE`. A scope identifie
 stable criteria, material boundaries and current output; future paths may be
 omitted until Plan fixes concrete Build paths. Do not manufacture all future
 filenames before Product.
+
+New repository starts require a clean dedicated linked worktree in the actual
+native session. Optional scope fields `repository`, `base_ref` and `base_revision`
+pin the intended destination; without a base field, the known origin default is
+used. Start retries resume matching initialized work before fresh-start checks.
+Before first submission and its positive acceptance, an admitted automatic pre/post pair
+must match this root, run, visit, workspace, inspected initialization and runtime.
+An ordinary read is the supported recovery; no new run or approval replay is needed.
 
 Submission uses the current `--output` and any concrete task/evidence inputs
 required by that result. No prevalidation token, receipt, universal report packet,
@@ -144,9 +152,14 @@ creates pinned inputs for existing flow controls and launches nothing. There is
 no separate `workflow run` command. See [Workflow Builder](workflow-builder.md)
 for exact definition fields, invocation and compatibility.
 
-Graph scan/decomposition, lens catalogs, dashboards and usage remain optional
-inspection aids. Missing measurements are unknown. Their outputs do not authorize
-or veto a phase. Old `loop`, `repository`, `share`, wave transports, maintenance
+The flow refreshes source scan/decomposition at initialization and relevant
+milestones, reusing unchanged inputs. The exact installed command
+`python3 /actual/plugin/taskplane/tp.py graph --workspace /absolute/project scan --decompose --strict`
+is also available during setup. Its managed outputs do not grant source writes.
+Dashboards separate current task observations from phase decisions and expose
+missing artifacts and failed/stale scans. These views, lens catalogs and usage
+do not authorize or veto a phase; required check evidence remains binding.
+Old `loop`, `repository`, `share`, wave transports, maintenance
 reconciliation and context-upgrade/rollback rituals are not current new-run
 procedures. Consult actual help rather than reuse historical commands.
 

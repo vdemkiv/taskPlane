@@ -12,6 +12,7 @@ import pytest
 from taskplane import flow, state_import as recovery, workflow as w, workflow_host as h, workflow_local as local
 from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_local import submit, decide, present
+from taskplane.tests.test_worker_runtime import parent_pair
 from taskplane.tests.test_ordinary_checkpoint_reply import ordinary
 from taskplane.tests.binding_support import HAS_BINDING_RUNTIME
 
@@ -123,6 +124,9 @@ def test_archive_loss_import_preserves_checkpoint_and_requires_separate_approval
     assert not observed.get("parent_hook_readiness")
     assert observed["state_import"]
     assert invoke(lost, "apply")["status"] == "already_imported"
+    with pytest.raises(w.Refusal, match="Initialization"):
+        decide(c, observed, approval)
+    parent_pair(c)
     accepted = decide(c, observed, approval)
     assert accepted["decisions"][approval["event_id"]]["provenance"]["relay"] == approval["relay"]
     advanced = c.apply("advance", state["run"], expected_revision=accepted["revision"], phase="design")

@@ -482,7 +482,9 @@ def test_valid_interpreter_identity_uses_execution_cwd(interpreters, mode, diffe
         else:
             event['tool_input']['workdir'] = str(selected)
     assert runtime_command.installed(local.runtime_words(event), execution if different_cwd else selected)
-    flow.hook(event, governor=controller)
+    result = flow.hook(event, governor=controller)
+    assert 'do not create or validate workspace binding' in result['hookSpecificOutput']['additionalContext']
+    assert 'taskplane_admission' not in event
     controller.guard(event, state['run'])
     assert flow._onboarding_read(event)
 

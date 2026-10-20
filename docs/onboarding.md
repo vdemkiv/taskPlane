@@ -10,7 +10,7 @@ python3 /actual/plugin/taskplane/tp.py version --verify
 python3 /actual/plugin/taskplane/tp.py --help
 ```
 
-Both candidate manifests use `2.34.4`. Keep loaded skills, hooks and runtime on the
+Both candidate manifests use `2.34.5`. Keep loaded skills, hooks and runtime on the
 same installation. Building archives or editing source does not reload an active
 session. Use supported host reload/new-session behavior and preserve the old
 runtime/evidence. Do not overwrite an installed cache during an active run.
@@ -22,6 +22,15 @@ validation/preview remain read-only. For execution, inspect the selected folder
 and existing run, then perform only required supported initialization/binding.
 Missing setup is a concrete blocker; do not ask for another project selection
 when already known or redirect a standalone review into full delivery.
+
+New repository work requires a clean dedicated linked worktree at the intended
+base. Use the host's workspace selection to execute the actual native chat there;
+a worktree attachment or a shell workdir alone does not move it. Declare
+`repository`, `base_ref` or `base_revision` in the start scope when needed.
+Dirty/shared/foreign destinations are refused without deleting files. After
+start, perform an ordinary admitted read so the automatic pre/post pair matches
+this run, visit, workspace and loaded runtime before the first phase review.
+If readiness is missing, retry this checkpoint after that read; keep prior work.
 
 Start with goal, stable criteria, material boundaries and current output.
 Plan later fixes exact Build ownership/paths/checks. Present each concrete phase
@@ -61,5 +70,8 @@ Report the failing operation, actual runtime/workspace, reason and next useful
 action. Inspect relevant help/state once and retry after a changed condition.
 Do not spin on unchanged refusals, weaken permissions or claim unavailable live
 acceptance. Unit fixtures, extracted packages, actual platform CI and installed
-Codex/Claude journeys are distinct evidence. Graph/dashboard/usage failures are
-optional diagnostics and never phase approval gates.
+Codex/Claude journeys are distinct evidence. Initial and milestone graph scans
+reuse current source inputs. Dashboard tasks show actual owners, dependencies,
+status and available artifacts; phase approval does not complete unfinished work.
+Graph/dashboard/usage failures remain explicit derived-view diagnostics and do
+not change authority. A requested verification criterion still needs its evidence.

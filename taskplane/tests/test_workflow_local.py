@@ -276,6 +276,10 @@ def present(c, s):
 
 def submit(c,s, *, presentation=True):
     from taskplane.tests.test_workflow_evidence import bound_output
+    from taskplane.tests.test_worker_runtime import parent_pair
+    from taskplane.worker_runtime import parent_readiness
+    if s['index'] == 0 and parent_readiness(c.report(s['run'], diagnostics=False))['status'] != 'ready':
+        parent_pair(c)
     target = bound_output(c, s)
     submitted=c.apply("submit",s["run"],expected_revision=s["revision"],output=target,tasks="tasks.json")
     if presentation: present(c,submitted)
@@ -492,6 +496,15 @@ def test_scoped_repair_uses_controller_and_preserves_prior_approvals(tmp_path, c
     parent_pair(c)
     state = c.report()
     c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
+    import shlex
+    check = w.accepted_plan(state)['packet']['output']['verification_strategy']['checks'][0]
+    event = {'tool_name': 'exec_command', 'tool_input': {
+        'cmd': shlex.join(check['command']), 'workdir': str(tmp_path)}}
+    c.guard(event, state['run'])
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name': 'Write', 'tool_input': {'path': check['evidence_outputs'][0]}}, state['run'])
+    with pytest.raises(w.Refusal):
+        c.adapter.guard_command(event, state, [p for p in w.phase_write_paths(state) if p != 'app.py'])
     (tmp_path/'app.py').write_text('value = 2\n')
     for phase in w.PHASES[3:]:
         target = bound_output(c, state)
@@ -888,6 +901,8 @@ def task_observation_checkpoint(workspace, *, legacy=False, host="codex"):
     state['scope']['paths']['build'].append(task_path)
     c=h.Controller(workspace.resolve(),'root',h.installed_adapter(host))
     s=c.start({'scope':state['scope'],'request_reference':'test/EV-F02'})
+    from taskplane.tests.test_worker_runtime import parent_pair
+    parent_pair(c)
     raw_manifest=evidence.manifest
     for phase in ('product','design','plan','build'):
         _,out,tasks=prepare(workspace,phase)
@@ -952,7 +967,7 @@ def test_legacy_task_manifest_remains_strict_without_rewriting_acceptance(tmp_pa
 
 
 @pytest.mark.parametrize('entry',['taskplane','tp-go','tp-tag','tp-build','tp-product','tp-design','tp-engineering','tp-northstar'])
-def test_execution_selection_requires_harness_before_writes_and_completion(tmp_path,entry):
+def test_execution_selection_guards_writes_without_forcing_continuation(tmp_path,entry):
     from taskplane import flow
     event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse',
            'tool_name':'Skill','tool_input':{'skill':'taskplane:'+entry}}
@@ -962,7 +977,7 @@ def test_execution_selection_requires_harness_before_writes_and_completion(tmp_p
         flow.hook(event|{'tool_name':'Write','tool_input':{'file_path':str(tmp_path/'app.py'),'content':'x'}})
     assert refused.value.reason == 'scope_violation'
     stopped=flow.hook(event|{'hook_event_name':'Stop'})
-    assert stopped['decision']=='block' and stopped['reason']
+    assert stopped.get('systemMessage') and 'decision' not in stopped
     assert 'decision' not in flow.hook(event|{'hook_event_name':'Stop','stop_hook_active':True})
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
 
@@ -994,7 +1009,7 @@ def test_execution_prompt_arms_session_bound_gate(tmp_path,prompt):
     assert local.Harness(tmp_path,'root').read()['selected']
     assert result['hookSpecificOutput']['additionalContext']
     assert flow.hook({'cwd':str(tmp_path),'session_id':'unrelated','hook_event_name':'Stop'})=={}
-    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'})['decision']=='block'
+    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'}).get('systemMessage')
 
 
 def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
@@ -1007,7 +1022,7 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
         assert phase in result['hookSpecificOutput']['additionalContext'].casefold()
         assert c.context(run)['binding']['visit'] == w.current(c.report())['id']
         assert run in result['hookSpecificOutput']['additionalContext']
-        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
+        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c).get('systemMessage')
         s=submit(c,s)
         page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
         harness=local.Harness(c.workspace,c.root)
@@ -1019,7 +1034,7 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
     assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)=={}
     selected=flow.hook(event|{'hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review the next change.'},governor=c)
     assert selected['hookSpecificOutput']['additionalContext']
-    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
+    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c).get('systemMessage')
 
 
 @pytest.mark.parametrize('bad',['source','metadata','escape','symlink'])
@@ -1143,6 +1158,55 @@ def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
     with pytest.raises(w.Refusal,match='identity'):harness.read()
 
 
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_stop_is_advisory_without_retry_state_or_phase_authority(tmp_path, host):
+    from taskplane import flow
+    c, state = setup(tmp_path)
+    c.adapter.name = host
+    harness = local.Harness(tmp_path, c.root)
+    harness.bind(state)
+    controller_before = c._path().read_bytes()
+    harness_before = harness.path.read_bytes()
+    # Missing evidence, failed review, and stale evidence all permit a handoff.
+    for status in ('not_requested', 'changes_requested', 'rejected', 'stale'):
+        pending = deepcopy(state)
+        w.current(pending)['decision'] = status
+        for event in ({}, {'stop_hook_active': True}):
+            result = harness.stop(event, pending)
+            assert result.get('systemMessage') and 'decision' not in result
+    stale = deepcopy(state)
+    stale['invalidation_pending'] = True
+    assert 'stale' in harness.stop({}, stale)['systemMessage']
+    assert harness.path.read_bytes() == harness_before
+    event = {'cwd': str(tmp_path), 'session_id': c.root, 'host': host}
+    for _ in range(3):
+        result = flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)
+        assert result.get('systemMessage') and 'decision' not in result
+    with pytest.raises(w.Refusal):
+        c.apply('advance', state['run'], expected_revision=state['revision'], phase='design')
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name': 'Write', 'tool_input': {'file_path': 'app.py'}}, state['run'])
+    assert c._path().read_bytes() == controller_before
+
+
+def test_wait_survives_read_tools_and_automatic_stop_continuation(tmp_path):
+    from taskplane import flow
+    c, state = setup(tmp_path)
+    harness = local.Harness(tmp_path, c.root)
+    harness.bind(state)
+    harness.wait(c.report(), 'Awaiting the reported repair decision')
+    expected = harness.read()['waiting']
+    event = {'cwd': str(tmp_path), 'session_id': c.root}
+    flow.hook(event | {'hook_event_name': 'PreToolUse', 'tool_name': 'Read',
+        'tool_input': {'file_path': str(tmp_path / 'app.py')}}, governor=c)
+    flow.hook(event | {'hook_event_name': 'UserPromptSubmit',
+        'prompt': '<hook_prompt hook_run_id="stop:12">Continue</hook_prompt>'}, governor=c)
+    assert harness.read()['waiting'] == expected
+    assert 'waiting for user input' in flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)['systemMessage']
+    flow.hook(event | {'hook_event_name': 'UserPromptSubmit', 'prompt': 'Proceed with changes'}, governor=c)
+    assert harness.read()['waiting'] is None
+
+
 @pytest.mark.parametrize('prompt,entry',[
     ('taskplane build a design tool and review the result.','taskplane'),
     ('Taskplane implement this feature with a product specification.','taskplane'),
@@ -1157,7 +1221,7 @@ def test_bare_execution_directive_keeps_its_requested_route(tmp_path,prompt,entr
     flow.hook(event)
     harness=local.Harness(tmp_path,'root')
     assert harness.read()['entry']==entry
-    assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
+    assert flow.hook(event|{'hook_event_name':'Stop'}).get('systemMessage')
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
 
 
@@ -1189,10 +1253,12 @@ def recovery_fixture(tmp_path):
     source = tmp_path/'source'; source.mkdir()
     def git(*args, cwd=source):
         subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True, text=True)
+    # A legacy folder run later became a shared repository. Recovery must
+    # remain available even though a new run in this checkout is now refused.
+    c, s = setup(source); s = submit(c, s)
     git('init', '-q')
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         'commit', '-q', '--allow-empty', '-m', 'Fixture')
-    c, s = setup(source); s = submit(c, s)
     destination = tmp_path/'clean'
     git('worktree', 'add', '--detach', str(destination), 'HEAD')
     harness = local.Harness(source, 'root')

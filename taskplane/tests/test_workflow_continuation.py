@@ -155,7 +155,9 @@ def test_foreign_report_explains_supported_next_step(tmp_path, monkeypatch, caps
 def test_explicit_foreign_report_does_not_select_requesters_own_run(tmp_path, monkeypatch, capsys):
     c, _, state, _, _ = fixture(tmp_path, monkeypatch)
     own = host.Controller(c.workspace, 'new-session', host.installed_adapter('claude'))
-    own_state = own.start({'scope': state['scope'], 'request_reference': 'user/other-task'})
+    own_scope = deepcopy(state['scope'])
+    own_scope['paths']['product'] = ['other-product.json']
+    own_state = own.start({'scope': own_scope, 'request_reference': 'user/other-task'})
     for item in (state, own_state):
         flow.append(c.workspace, {'kind': 'start', 'run': item['run'], 'session': item['root']})
     monkeypatch.setattr(flow, 'session_id', lambda event: 'new-session')

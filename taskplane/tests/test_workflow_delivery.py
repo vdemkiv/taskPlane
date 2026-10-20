@@ -52,6 +52,8 @@ def test_progressive_delivery_extension_reaches_accepted_plan_and_scoped_build(t
     c = h.Controller(tmp_path, "root", h.installed_adapter(host))
     state = c.start({"scope": {"criteria": ["AC1"], "paths": {entry: ["review.json"]}},
                      "request_reference": "fixture/scoped-review", "entry": entry, "standalone": True})
+    from taskplane.tests.test_worker_runtime import parent_pair
+    parent_pair(c)
     proposed = {"criteria": ["AC1"], "paths": {"product": ["product.json"]},
                 "verification_inputs": ["app.py", "test_app.py"]}
     original = deepcopy(proposed)
@@ -663,6 +665,7 @@ def test_partial_repair_retains_unaffected_actual_check_and_task_result(tmp_path
             ('A', 'app.py', 2, 'build-check.txt'), ('B', 'other.py', 3, 'other.log')]]
     c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
     state = c.start(dict(scope=initial['scope'], request_reference='fixture/narrow-repair'))
+    parent_pair(c)
     for phase in w.PHASES[:3]:
         _, out, _ = prepare(tmp_path, phase)
         out.update(run=state['run'], visit=w.current(state)['id'])
@@ -821,6 +824,9 @@ class _RealVerificationDelivery:
         return target
 
     def submit(self, extra):
+        if self.state['index'] == 0:
+            from taskplane.tests.test_worker_runtime import parent_pair
+            parent_pair(self.controller)
         target = self.draft(extra)
         self.state = self.controller.apply('submit', self.state['run'],
             expected_revision=self.state['revision'], output=target, tasks=self.task_path)

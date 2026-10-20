@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
 import json
 import os
@@ -9,7 +10,7 @@ from pathlib import Path
 import stat
 import re
 import time
-from typing import Any, Callable, Mapping, cast
+from typing import Any, Callable, Iterator, Mapping, cast
 import uuid
 
 from . import primitives, storage, workflow as w, workflow_evidence as evidence
@@ -233,6 +234,16 @@ class Controller:
         self.adapter = adapter
         adapter.bind(self.workspace, root)
 
+    @contextmanager
+    def _locked(self, target: Path) -> Iterator[None]:
+        """Serialize cross-root claims before each controller transaction."""
+        with ExitStack() as stack:
+            if self.adapter.profile == 'native_workflow':
+                shared = storage.runtime_file(str(self.workspace), 'workspace-claims')
+                stack.enter_context(primitives.file_lock(str(shared)))
+            stack.enter_context(primitives.file_lock(str(target)))
+            yield
+
     def availability(self, *, observations: bool = True) -> dict[str, Any]:
         caps = self.adapter.capabilities()
         ready = all(caps.get(k) is True for k in
@@ -350,7 +361,7 @@ class Controller:
             w.require(len(raw) <= limit, "state_unavailable", "Recovery input exceeds its size bound.")
             return raw
 
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             marker = storage.runtime_file(str(self.workspace), target.stem + ".initialized.json")
             expected_marker = {"schema": "taskplane.local-initialization/v1", "workspace": str(self.workspace),
                                "root": self.root, "profile": "native_workflow"}
@@ -428,8 +439,9 @@ class Controller:
         contract = (workspace_binding.ensure(self.workspace)
                     if self.adapter.profile == "native_workflow" else None)
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             authorized = None
+            initialization = None
             if not (cast(workflow_local.LocalWorkflow, self.adapter).state_exists(allow_pending=True)
                     if self.adapter.profile == "native_workflow"
                     else self.adapter.state_exists()):
@@ -441,6 +453,9 @@ class Controller:
                 # Validate route before creating the durable initialization marker.
                 w.new_state(str(self.workspace), self.root, "validate", authorized["scope"],
                             entry=authorized["entry"], standalone=authorized["standalone"])
+                if self.adapter.profile == 'native_workflow':
+                    initialization = workflow_local.initialize_workspace(
+                        self.workspace, self.root, self.adapter.name, authorized['scope'])
                 self.adapter.initialize()
             db = self._read(target)
             replaced = None
@@ -483,6 +498,9 @@ class Controller:
                 return self._started_result(active)
             authorized = authorized or self.adapter.verify_start(self.workspace, self.root, request)
             evidence.valid_scope(self.workspace, authorized["scope"])
+            if self.adapter.profile == 'native_workflow' and initialization is None:
+                initialization = workflow_local.initialize_workspace(
+                    self.workspace, self.root, self.adapter.name, authorized['scope'])
             s = w.new_state(str(self.workspace), self.root, uuid.uuid4().hex, authorized["scope"],
                             entry=authorized["entry"], standalone=authorized["standalone"])
             s.update(requested_scope=deepcopy(authorized["scope"]),
@@ -490,6 +508,10 @@ class Controller:
                      started_at=datetime.now(timezone.utc).isoformat(), profile=self.adapter.profile,
                      initial_context_tasks=self._initial_tasks(request, authorized["scope"]))
             self.adapter.state_created(s, authorized)
+            if initialization is not None:
+                s['native_initialization'] = initialization
+                from .workflow_collision import require_claims
+                require_claims(self.workspace, s)
             if contract:
                 s["workspace_contract"] = {k: contract[k] for k in ("project_id", "digest")}
             if replaced is not None:
@@ -536,7 +558,7 @@ class Controller:
     def can_seal(self, run: str) -> bool:
         """Mutable observation boundary used by Stop; no phase authority granted."""
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             w.require(db['active'] == run, 'state_unavailable', 'Quiescence requires the active run.')
             state = db['runs'][run]
@@ -669,7 +691,7 @@ class Controller:
         if not availability["workflow_available"]:
             return availability
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             if not self.adapter.state_exists():
                 w.require(run is None, "state_unavailable", "Requested run has no local workflow binding.")
                 return {**availability, "status": "no_workflow"}
@@ -709,14 +731,14 @@ class Controller:
         w.require(self.principal == self.root, "scope_violation", "Recovery inspection belongs to the root.")
         from . import workflow_retention
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             state = workflow_retention.read(self.workspace, self._read(target), run)
             return command_runtime.inspect_recovery(self.workspace, state, kind, reference, offset, limit)
 
     def prevalidate(self, run: str, *, revision: int | None, output: str, tasks: str) -> dict[str, Any]:
         w.require(self.principal == self.root, "scope_violation", "Prevalidation belongs to the root.")
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             w.require(db["active"] == run, "state_unavailable", "Prevalidation needs the active run.")
             state = db["runs"][run]
@@ -738,7 +760,7 @@ class Controller:
         w.require(snapshot.get("run") and not snapshot.get("invalidation_pending"),
                   "invalid_context", "Repair the current workflow binding before consuming context.")
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             selected = snapshot["run"]
             w.require(selected and db["active"] == selected
@@ -766,7 +788,7 @@ class Controller:
     def update_tasks(self, run: str, revision: int | None, tasks: str) -> dict[str, Any]:
         w.require(self.principal == self.root, "scope_violation", "Only the root can publish task definitions.")
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             w.require(db["active"] == run, "stale_checkpoint", "Task publication requires the active run.")
             state = db["runs"][run]
@@ -781,7 +803,11 @@ class Controller:
                       and self.adapter.can_seal(state), "scope_violation", "Task updates need an unsealed, quiescent visit.")
             w.require(evidence.changed(self.workspace, state) is None, "stale_checkpoint", "Accepted inputs changed.")
             self.adapter.before_action(state, "update-tasks")
+            previous = deepcopy(state)
             state["task_context"] = {"visit": w.current(state)["id"], "tasks": frozen, "base_revision": revision}
+            if self.adapter.profile == 'native_workflow':
+                from .workflow_collision import require_claims
+                require_claims(self.workspace, state, previous)
             state["task_generation"] = state.get("task_generation", 0) + 1
             state["revision"] += 1
             self._write(target, db)
@@ -799,7 +825,7 @@ class Controller:
         w.require(mode in {'preview', 'begin', 'resume', 'abort'} and isinstance(request, dict)
                   and isinstance(request.get('request_id'), str), 'invalid_evidence', 'Invalid revision operation.')
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             w.require(db['active'] == run and run in db['runs'], 'stale_checkpoint', 'Revision needs the exact active run.')
             state = db['runs'][run]
@@ -916,6 +942,8 @@ class Controller:
                     if event['status'] == 'review' else 'Observe genuine termination and accept or reject pending unaffected results, then resume this exact revision.'
                     if event['status'] == 'pending' else 'Resume this review explicitly; stopped grants remain fenced.'}
             event['history'].append({'operation': mode, 'storage_generation': updated['storage_generation']})
+            from .workflow_collision import require_claims
+            require_claims(self.workspace, updated, state)
             db['runs'][run] = updated
             self._write(target, db)
             return deepcopy(event['result'])
@@ -954,7 +982,7 @@ class Controller:
                 'Inspect flow worker --operation status before offering recovery. '
                 + workers.recovery_capabilities(self.adapter.name)['next_action'])
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             w.require(db["active"] == run, "stale_checkpoint", "Worker operation needs the active run.")
             state = db["runs"][run]
@@ -1152,7 +1180,7 @@ class Controller:
         w.require(assessment_json is None or action == "auto-decide", "invalid_evidence",
                   "Inline assessment applies only to auto-decide.")
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             w.require(db["active"] == run or action == 'finish' and run in db['runs']
                       or action == 'repair' and db['active'] is None and run in db['runs'],
@@ -1198,6 +1226,9 @@ class Controller:
                     'decision': deepcopy(verified_repair), 'tasks': deepcopy(request['tasks'])}
                 self.adapter.before_action(s, 'repair')
                 self._retain_repair_context(s, updated)
+                if self.adapter.profile == 'native_workflow':
+                    from .workflow_collision import require_claims
+                    require_claims(self.workspace, updated, s)
                 db['runs'][run], db['active'] = updated, run
                 self._write(target, db)
                 return deepcopy(updated)
@@ -1277,6 +1308,16 @@ class Controller:
                 w.require(parent_readiness(s)['status'] == 'ready', 'worker_readiness',
                           'Build needs an admitted automatic pre/post hook pair for the current session and phase. '
                           'Restore the configured hooks, run an admitted read, then retry; approvals are preserved.')
+            first_checkpoint = not any(visit['decision'] == 'approved' for visit in s['visits'][:s['index']])
+            if (self.adapter.profile == 'native_workflow' and first_checkpoint and
+                    (action == 'submit' or action in {'decide', 'auto-decide'}
+                     and verified.get('choice') == 'approved')):
+                from .worker_runtime import parent_readiness
+                w.require(parent_readiness(s)['status'] == 'ready', 'worker_readiness',
+                          'Initialization needs a completed automatic admitted pre/post hook pair '
+                          'for this native session, workspace, runtime and phase. Complete an admitted '
+                          'read in the selected native workspace, then retry only this checkpoint; '
+                          'existing work and approvals are preserved.')
             operations: dict[str, Callable[[], dict[str, Any]]] = {
                 "submit": lambda: w.submit(s, evidence.seal(self.workspace, s, output, tasks)),
                 "decide": lambda: w.decide(s, verified),
@@ -1292,6 +1333,9 @@ class Controller:
                 raise w.Refusal("invalid_evidence", f"Invalid phase evidence: {type(exc).__name__}") from None
             if updated.get('repair_scope', {}).get('build_visit') != s.get('repair_scope', {}).get('build_visit'):
                 self._retain_repair_context(s, updated)
+            if self.adapter.profile == 'native_workflow':
+                from .workflow_collision import require_claims
+                require_claims(self.workspace, updated, s)
             if action == "advance":
                 prior_paths = set(s["scope"]["paths"].get(phase, []))
                 from .workflow_collision import sealed_paths
@@ -1400,7 +1444,7 @@ class Controller:
         root = decode_reference(reference)
         controller = cls(Path(command.workspace), root, installed_adapter("claude"))
         target = controller._path()
-        with primitives.file_lock(str(target)):
+        with controller._locked(target):
             db = controller._read(target)  # Existing validated store only; never initialize.
             matches = [row for row in db.get("admissions", {}).values()
                        if row.get("invocation", {}).get("reference") == reference]
@@ -1470,7 +1514,7 @@ class Controller:
         from . import worker_runtime as workers
         from .context_handoff import binding
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             # A late post-hook may close its admitted observation after replacement;
             # it receives no execution grant from the historical worker identity.
@@ -1505,7 +1549,7 @@ class Controller:
 
     def observe(self, event: dict[str, Any], run: str | None) -> str | None:
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             if run is None:
                 # Startup and observation use store -> harness order. Recheck the
                 # binding here: a pre-run report may predate start's transfer.
@@ -1560,7 +1604,7 @@ class Controller:
         from . import worker_runtime as workers
         state = self.report(run, diagnostics=False)
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             w.require(not db["runs"].get(run, {}).get("retired"), "scope_violation", "The retired run has no active grants.")
             w.require(db["active"] == run and db["runs"][run]["revision"] == state["revision"],
@@ -1654,7 +1698,7 @@ class Controller:
     def followup_admission(self, event: dict[str, Any], run: str) -> dict[str, Any] | None:
         w.require(self.principal == self.root, "scope_violation", "Only root follow-up observations are supported.")
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             from . import workflow_retention
             state = workflow_retention.read(self.workspace, db, run)
@@ -1692,7 +1736,7 @@ class Controller:
             return None
         key, identity = call
         target = self._path()
-        with primitives.file_lock(str(target)):
+        with self._locked(target):
             db = self._read(target)
             row = db.get("admissions", {}).get(key)
             if row is None:
@@ -1722,6 +1766,8 @@ class Controller:
                 proof = {'run': state['run'], 'visit': w.current(state)['id'],
                          'root': state['root'], 'workspace': str(self.workspace),
                          'automatic': True, 'matched_call': row['call_id'], 'runtime': row['runtime']}
+                if state.get('native_initialization') is not None:
+                    proof['initialization'] = primitives.content_fingerprint(state['native_initialization'])
                 if row['principal'] == state['root']:
                     state['parent_hook_readiness'] = proof
                 else:
@@ -1890,13 +1936,15 @@ class Controller:
         if self.adapter.profile == 'native_workflow':
             from .workflow_collision import sealed_paths
             protected = sealed_paths(self.workspace, state)
-            if tool in {'Write', 'Edit', 'write_file', 'edit_file'}:
-                target = args.get('file_path') or args.get('path')
-                if isinstance(target, str):
-                    relative = workspace_binding.relative_path(self.workspace, target)
-                    owner = protected.get(relative)
-                    w.require(not owner, 'scope_violation',
-                              f'Another active run has sealed this path: {relative}; preserve its approval and use a distinct run path or coordinated recovery. Owner: {owner}')
+            from . import runtime_command
+            for target in runtime_command.mutation_targets(event):
+                location = Path(target)
+                absolute = location if location.is_absolute() else runtime_command.execution_directory(event, self.workspace) / location
+                relative = workspace_binding.relative_path(self.workspace, str(absolute))
+                owner = protected.get(relative)
+                kind = 'owns this working path' if owner and owner.get('kind') == 'working' else 'has sealed this path'
+                w.require(not owner, 'scope_violation',
+                          f'Another active run {kind}: {relative}; preserve its work and use a distinct path or owner-authorized release. Owner: {owner}')
             allowed = [path for path in allowed if path not in protected]
         if worker is None:
             busy = {p for row in state.get('workers', {}).values() if row['state'] in workers.LIVE

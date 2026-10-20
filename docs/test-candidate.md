@@ -18,8 +18,18 @@ with provenance/target/chronology/replay, ordinary sealed reads versus safe writ
 relevant freshness, durable restart, true worker identity/terminal/cancellation,
 native locking/import provenance and diagnostic Stop behavior.
 
+Reproduce isolation/routing/ownership/readiness defects on the pristine base.
+Cover clean linked-worktree success and dirty/shared/foreign/concurrent refusals,
+idempotent dirty resume, actual cwd/workdir and absolute-target routing, working
+claims before sealing, and quiescent owner-authorized release. Missing, manual or
+foreign hook pairs must block the first checkpoint; an admitted read must recover
+the same run. Exercise graph initial/change/reuse/failure views and truthful
+owners, dependencies, statuses and artifact links without hot-path scans/replay.
+Fixture metadata and hook calls are labeled fixtures; separately verify fresh
+actual Codex and Claude candidate installations and keep the live plugin intact.
+
 No context receipt, startup account/probe, first-worker cohort, word-count rule,
-mandatory graph/dashboard or unrelated-file acknowledgement is a test prerequisite.
+verified dashboard display or unrelated-file acknowledgement is a test prerequisite.
 Root integrated review is valid. Explicit native/independence obligations still
 need actual observed completion; no fixture or label supplies it.
 

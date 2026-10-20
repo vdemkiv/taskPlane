@@ -2,9 +2,16 @@
 
 Use scoped native workers only when useful or explicitly required. Root integrated
 work and serial ownership are valid. Observe actual host capacity and true task
-prerequisites; there is no first-worker cohort, startup gate, lens quota or parent
+prerequisites; there is no first-worker cohort, lens quota or parent
 probe. This reference does not require delegation for a task that benefits from
 one integrated owner.
+
+Root initialization precedes the first phase review: select the actual native
+execution workspace and a clean dedicated repository worktree, verify the
+intended base/runtime, then establish the automatic admitted pair. Creating or
+attaching a Codex worktree does not move the calling chat. Use supported native
+workspace selection and retry the same pending setup; do not collect approvals
+while actual session binding is unresolved.
 
 Observe the automatic admitted parent pre/post pair before native preparation,
 and the worker's own pair before describing it as ready. An ordinary admitted

@@ -18,6 +18,12 @@ rather than create another run. Respect an explicit manual continuation without
 reactivating a retired harness. Missing setup is a concrete blocker, not a reason
 to redirect a standalone review into full delivery.
 
+Before a new repository run, select a clean dedicated linked worktree at the
+intended repository/base through the native host. Verify actual session location;
+a shell workdir or worktree attachment is insufficient. Establish the admitted
+automatic pre/post pair before the first phase submission or approval. Resume
+matching initialized work without repeating fresh-start checks or approvals.
+
 Product, Design, Plan, Build, Evaluate, Engineering and Retro each retain a
 separate approval. Loading a skill, producing an artifact or completing a worker
 never approves a phase. Source review does not authorize implementation.

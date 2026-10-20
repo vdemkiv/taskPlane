@@ -22,6 +22,22 @@ locality observations. A connected folder alone does not prove local execution.
 Respect user location restrictions and report a concrete setup blocker if needed.
 Use supported binding/initialization controls; do not synthesize missing history.
 
+For each new repository run, use a clean dedicated linked Git worktree at the
+intended repository and base. Start scope may state `repository`, `base_ref` or
+`base_revision`; otherwise the known origin default supplies the base. Verify the
+actual native session location, not only a command workdir or attached checkout.
+The saved initialization and automatic admitted pre/post pair must match before
+the first submission or positive decision. An ordinary admitted read establishes
+the pair; missing readiness keeps the same run pending with a supported recovery
+instruction. Idempotent continuation does not require a working checkout to be
+clean again.
+
+Working scope and task/worker paths are claimed before submission. Another active
+root cannot acquire or write them. Transfer needs a quiescent explicit release or
+retirement by the original owner before acquisition; never overwrite its state.
+Execution workdirs and literal absolute targets are resolved before unselected
+fallback. Conflicting governed roots refuse a mutation; normal reads remain usable.
+
 New runs use `taskplane.workflow/v2`, `brief/v1` and `ownership/v1`. Keep the loaded
 runtime fixed for an active run. Candidate source, packages and installed caches
 are separate copies. Old-contract runs remain historical/readable and require
@@ -78,7 +94,14 @@ unknown; it is not permission to declare a pass.
 Submit the concrete current result and necessary identity/criteria/evidence/task
 metadata once. The runtime validates and seals atomically. Optional `prevalidate`
 uses the same validator; no prevalidation token or repeated ceremony is required.
-No universal graph, separate report/task packet or word-count heuristic applies.
+No separate universal report/task packet or word-count heuristic applies. The
+flow refreshes its decomposed source graph at initialization and relevant
+milestones, reusing unchanged inputs. Hooks do not rescan folders or replay the
+journal. Dashboard tasks come from current authoritative context, with owner,
+dependencies, observed status and phase/artifact links. Missing artifacts,
+unfinished planning, failed/partial/stale scans stay visible. Derived-view or
+usage failures never create or revoke authority; explicitly required verification
+still needs its actual evidence.
 Plan may carry its DAG inline; other phases supply or reuse current task
 decomposition. Independent work has no artificial serial prerequisites. Keep one
 writer per file and transfer ownership explicitly when needed; documentation can
@@ -91,6 +114,9 @@ checkpoints. Publication is automatic at lifecycle milestones; retry a failed
 publication without repeating the committed workflow action. Describe queued
 opening honestly. The dashboard is a view, not approval authority. Advisory
 telemetry and measurement failures cannot change an enforcement decision.
+Stop only reports unfinished work; it never forces another turn or stores retry
+state. Submission, acceptance, advancement and writes retain their controller
+checks. Ending a turn does not complete or approve the workflow.
 
 ## Human intent and provenance
 
