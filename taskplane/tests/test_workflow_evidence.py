@@ -202,9 +202,13 @@ def bound_output(controller, state):
     """Fixture output with actual typed checks at owned Build/Evaluate paths."""
     phase = w.current(state)['phase']
     repairing = w.current(state)['id'] in state.get('repair_scope', {}).get('visits', [])
+    renewed = w.current(state).get('artifact_paths') == w.visit_result_paths(state, w.current(state))
     target, history = phase+'.json', 'checks.json'
-    if repairing:
-        target, _, history, _ = w.current(state)['artifact_paths'][:4]
+    if repairing or renewed:
+        if renewed:
+            target, _, _, history = w.current(state)['artifact_paths'][:4]
+        else:
+            target, _, history, _ = w.current(state)['artifact_paths'][:4]
         plan = w.accepted_plan(state)['packet']['output']
         output = {'schema': 'taskplane.phase-output/v1', 'phase': phase, 'criteria': state['scope']['criteria'],
                   **{field: 'Fixture phase analysis' for field in w.OUTPUT_FIELDS[phase]}}
@@ -239,7 +243,8 @@ def bound_output(controller, state):
         checks = plan.get('verification_strategy', {}).get('checks', [])
         if checks:
             if phase == 'evaluate':
-                history = (w.current(state)['artifact_paths'][2] if repairing else
+                history = (w.current(state)['artifact_paths'][3] if renewed else
+                           w.current(state)['artifact_paths'][2] if repairing else
                            next(p for p in state['scope']['paths']['evaluate']
                                 if Path(p).name in {'evaluate-checks.json', 'checks.json'}))
             rows = []
@@ -248,7 +253,9 @@ def bound_output(controller, state):
                 if phase == 'evaluate':
                     log = next((p for p in state['scope']['paths']['evaluate']
                                 if Path(p).name in {'evaluate-check.txt', 'report.md'}), 'evaluate-check.txt')
-                if repairing:
+                if renewed:
+                    log = w.current(state)['artifact_paths'][2]
+                elif repairing:
                     from taskplane.primitives import content_fingerprint
                     log = (Path(target).parent / ('check-'+content_fingerprint(check['id'])[:16]+'.log')).as_posix()
                 if not (controller.workspace/history).exists():

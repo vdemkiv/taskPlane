@@ -327,8 +327,10 @@ def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> lis
     for row in rows:
         phase = row.get("phase", w.current(state)["phase"])
         w.require(phase in state["scope"]["paths"], "invalid_evidence", "Unknown task phase.")
+        allowed = (w.phase_write_paths(state) if phase == w.current(state)['phase']
+                   else state["scope"]["paths"][phase])
         w.require((w.current(state)["phase"] == "plan" and phase == "build"
-                   or set(row["paths"]) <= set(state["scope"]["paths"][phase]))
+                   or set(row["paths"]) <= set(allowed))
                   and set(task_criteria(row)) <= set(state["scope"]["criteria"]),
                   "scope_violation", "Task publication exceeds accepted paths or criteria.")
         for relative in row["paths"]:
@@ -919,7 +921,7 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     if w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit'):
         declared_histories = set(w.current(state).get('artifact_paths', []))
     if phase == "evaluate" and not inherited:
-        declared_histories = set(state["scope"]["paths"].get("evaluate", []) + w.current(state).get('artifact_paths', []))
+        declared_histories = set(w.phase_write_paths(state))
     w.require(isinstance(history_path, str) and history_path in declared_histories,
               "invalid_evidence", "Verification history must name a planned output or the current Evaluate's owned output.")
     assert isinstance(history_path, str)
@@ -988,7 +990,9 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
         declared_logs = (state["scope"]["paths"].get("evaluate", [])
                          if producer["phase"] == "evaluate" else requirement["evidence_outputs"])
         declared_logs = [*declared_logs, *(relative for relative in producer.get('artifact_paths', [])
-                                          if '/check-' in relative and relative.endswith('.log'))]
+                                          if '/check-' in relative and relative.endswith('.log')
+                                          or producer['phase'] == 'evaluate'
+                                          and relative == w.visit_result_paths(state, producer)[2])]
         w.require(log_path in declared_logs and attempt.get("log_ref") == record.get("log_ref")
                   and record.get("log_path") == log_path, "invalid_evidence", "Attempt log is not its declared immutable evidence.")
         log = store.resolve(attempt["log_ref"])

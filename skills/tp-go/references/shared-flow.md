@@ -110,6 +110,10 @@ writer per file and transfer ownership explicitly when needed; documentation can
 follow each relevant completed change.
 `flow advance` can allocate the next output path when `--output` is omitted.
 Run/visit metadata paths are distinct from the Plan's exact production write scope.
+Renewed phase results must use current visit ownership rather than historical
+filenames. Normal task attachment repairs missing metadata for an unsubmitted
+renewed phase with the same root/revision/freshness checks; do not repeat earlier
+phase approvals or overwrite the old results to work around a missing allocation.
 
 Show the concrete result and `.taskplane/dashboard.html` at flow start and phase
 checkpoints. Publication is automatic at lifecycle milestones; retry a failed

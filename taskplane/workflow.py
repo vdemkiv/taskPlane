@@ -130,21 +130,63 @@ def current(state: dict[str, Any]) -> dict[str, Any]:
     return dict(state["visits"][state["index"]])
 
 
+def visit_result_paths(state: dict[str, Any], stage: dict[str, Any]) -> list[str]:
+    """Canonical result metadata; these paths never authorize production edits."""
+    prefix = f".taskplane/runs/{state['run']}/{stage['id']}/{stage['phase']}"
+    return [prefix + '/' + name for name in
+            ('output.json', 'tasks.json', 'report.md', 'checks.json')]
+
+
+def historical_result_paths(state: dict[str, Any]) -> set[str]:
+    """Result files remain historical even when their visit is superseded."""
+    active = current(state)['id']
+    packets = [v['packet'] for v in state['visits'] if v.get('packet') and v['id'] != active]
+    packets.extend(row['packet'] for row in state.get('history', [])
+                   if row.get('packet') and row['packet'].get('visit') != active)
+    paths: set[str] = set()
+    for packet in packets:
+        paths.update(p for p in (packet.get('output_path'),
+                                packet.get('context', {}).get('tasks_path')) if p)
+        paths.update(packet.get('verification', {}).get('files', []))
+        paths.update(ref['path'] for ref in packet.get('output', {}).get('artifacts', []))
+    return paths
+
+
+def historical_phase_paths(state: dict[str, Any]) -> set[str]:
+    """Identify scope slots belonging to a different producing visit."""
+    stage = current(state)
+    old_prefixes = tuple(f".taskplane/runs/{state['run']}/{v['id']}/{v['phase']}/"
+                         for v in state['visits'] if v['id'] != stage['id']
+                         and v['phase'] == stage['phase'])
+    historical = historical_result_paths(state)
+    return {p for p in state['scope']['paths'][stage['phase']]
+            if p in historical or p.startswith(old_prefixes)}
+
+
+def renewed_result_paths(state: dict[str, Any]) -> list[str]:
+    """Recover missing metadata for an unsubmitted renewed delivery phase."""
+    stage = current(state)
+    if (stage['phase'] not in PHASES[4:] or stage.get('packet')
+            or any('/generated/' not in p for p in stage.get('artifact_paths', []))):
+        return []
+    if historical_phase_paths(state):
+        return visit_result_paths(state, stage)
+    return []
+
+
 def phase_write_paths(state: dict[str, Any]) -> list[str]:
     """Production writes follow Plan; current root result metadata is separate."""
     stage = current(state)
-    paths = state["scope"]["paths"][stage["phase"]]
+    paths = list(state["scope"]["paths"][stage["phase"]])
+    renewed = renewed_result_paths(state)
+    if stage['phase'] in PHASES[4:]:
+        paths = [p for p in paths if p not in historical_phase_paths(state)]
     repair = state.get('repair_scope')
     if repair and stage['id'] in repair.get('visits', [repair.get('build_visit')]):
-        sealed: set[str] = set()
-        for prior in state['visits']:
-            packet = prior.get('packet') or {}
-            sealed.update(path for path in (packet.get('output_path'), packet.get('context', {}).get('tasks_path')) if path)
-            sealed.update(packet.get('verification', {}).get('files', []))
-            sealed.update(ref['path'] for ref in packet.get('output', {}).get('artifacts', []))
+        sealed = historical_result_paths(state)
         paths = [path for path in paths if path not in sealed
                  and (stage['phase'] != 'build' or path in repair['paths'])]
-    return list(dict.fromkeys([*paths, *stage.get("artifact_paths", [])]))
+    return list(dict.fromkeys([*paths, *stage.get("artifact_paths", []), *renewed]))
 
 
 def unmet_evidence(packet: dict[str, Any]) -> list[str]:
@@ -266,7 +308,8 @@ def validate_state(state: dict[str, Any]) -> None:
                 else:
                     fixed.append(path)
             standard = [prefix + '/output.json', prefix + '/tasks.json']
-            ordinary = stage['phase'] == 'build' and fixed == standard
+            ordinary = (stage['phase'] == 'build' and fixed == standard
+                        or stage['phase'] in PHASES[4:] and fixed == visit_result_paths(state, stage))
             repair_artifacts: list[str] = []
             if not ordinary:
                 require(isinstance(plan_checks, list) and all(isinstance(check, dict)
@@ -503,9 +546,12 @@ def advance(state: dict[str, Any], phase: str, *, output_path: str | None = None
         result = output_path or prefix + "/output.json"
         s["scope"]["paths"][phase] = list(dict.fromkeys([
             result, prefix + "/tasks.json", prefix + "/report.md", prefix + "/checks.json"]))
-    elif output_path:
-        require(output_path in s["scope"]["paths"][phase], "scope_violation",
-                "An explicit existing phase scope cannot be widened by advance.")
+    renewed = renewed_result_paths(s)
+    if renewed:
+        s['visits'][next_index]['artifact_paths'] = renewed
+    if phase != 'build' and output_path:
+        require(output_path in phase_write_paths(s), "scope_violation",
+                "An explicit phase output must use its current result ownership.")
     s["revision"] += 1
     revision_id = s.get('active_requirements_revision')
     if revision_id and phase == 'build':

@@ -804,6 +804,12 @@ class Controller:
             w.require(evidence.changed(self.workspace, state) is None, "stale_checkpoint", "Accepted inputs changed.")
             self.adapter.before_action(state, "update-tasks")
             previous = deepcopy(state)
+            renewed = w.renewed_result_paths(state)
+            if renewed:
+                # The same root operation also repairs old unsubmitted visits;
+                # no checkpoint, production permission or approval is invented.
+                stage = state['visits'][state['index']]
+                stage['artifact_paths'] = [*renewed, *stage.get('artifact_paths', [])]
             state["task_context"] = {"visit": w.current(state)["id"], "tasks": frozen, "base_revision": revision}
             if self.adapter.profile == 'native_workflow':
                 from .workflow_collision import require_claims

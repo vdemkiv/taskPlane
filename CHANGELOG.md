@@ -5,6 +5,7 @@
 - Protect controller metadata and exact task ownership; preserve literal shell quoting and reject multiply-linked write targets.
 - Preserve verification retries and select the complete newest history, including retained repair evidence; require eligible inputs before inherited reuse.
 - Recover pending requirement revisions in the same run, conservatively expand unknown graph coverage, and validate repair selections before sealing.
+- Derive renewed phase results from the current visit, share task/write ownership, and recover missing unsubmitted metadata through normal task attachment without rewriting historical results.
 - Publish complete durable context objects, reconcile snapshot capacity, bound advisory locks, and terminate timed-out check descendants.
 - Reconcile accepted task progress, keep graph labels readable and keyboard focus visible, and preserve Unicode labels.
 - Correct contributor, lens, evaluation and package instructions. Preserve explicit optional automatic approval with manual approval as the default.

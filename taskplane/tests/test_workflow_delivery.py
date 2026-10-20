@@ -959,6 +959,150 @@ def test_governed_evidence_does_not_hide_a_real_owned_configuration_change(tmp_p
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('legacy_visit', [False, True])
+def test_evaluate_after_repair_and_plan_amendment_owns_fresh_results(
+        tmp_path, host, legacy_visit, monkeypatch):
+    from copy import deepcopy
+    from taskplane import depgraph, workflow_evidence as evidence
+    from taskplane.context import digest
+    from taskplane.tests.test_workflow_local import decision
+
+    delivery = _RealVerificationDelivery(tmp_path, host, covered_packets=True)
+    for name in delivery.checks:
+        delivery.run(name, delivery.history, delivery.logs[name][0])
+    delivery.submit_build()
+    delivery.decide()
+    delivery.advance('evaluate')
+    delivery.submit({'criterion_results': {'AC': {
+        'status': 'pass', 'evidence': delivery.logs['primary'][0],
+        'explanation': 'Both actual checks passed before requesting a repair.'}}})
+    old_state = delivery.state
+    old_files = {p: (tmp_path/p).read_bytes() for p in
+                 w.current(old_state)['packet']['manifest']}
+    old_decisions = deepcopy(old_state['decisions'])
+    c = delivery.controller
+    delivery.state = c.apply('repair', old_state['run'],
+        expected_revision=old_state['revision'], native_reference=json.dumps({
+            'tasks': ['BUILD'], 'decision': decision(old_state, event='fixture/repair-before-amendment')}))
+
+    scope = deepcopy(delivery.state['scope'])
+    scope['paths']['plan'] = ['amended-plan.json', 'amended-tasks.json']
+    delivery.output_paths['build'] = 'pkg/amended-build.json'
+    delivery.history = 'pkg/amended-history.json'
+    delivery.logs = {'primary': ['pkg/amended-primary.log'],
+                     'secondary': ['pkg/amended-secondary.log']}
+    scope['paths']['build'] = ['pkg/app.py', delivery.config, delivery.output_paths['build'],
+                              delivery.history, *delivery.logs['primary'], *delivery.logs['secondary']]
+    original_plan = w.accepted_plan(delivery.state)['packet']
+    product = next(v['packet']['output'] for v in delivery.state['visits']
+                   if v['phase'] == 'product' and v['decision'] == 'approved')
+    request = {'schema': 'taskplane.requirements-revision/v1', 'request_id': 'amend-after-evaluate',
+        'request_reference': 'fixture/human-requests-fresh-build-outputs', 'run': delivery.state['run'],
+        'expected_revision': delivery.state['revision'],
+        'expected_generation': delivery.state.get('storage_generation', 0),
+        'scope_digest': digest(delivery.state['scope']), 'requirements_digest': digest(product),
+        'plan_digest': digest(original_plan), 'changes': {}, 'affected_artifacts': {},
+        'scope_amendment': scope, 'reason': 'Keep historical Evaluate evidence and renew Build outputs.',
+        'return_phase': 'plan'}
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    preview = c.revise(delivery.state['run'], 'preview', request)
+    c.revise(delivery.state['run'], 'begin', request, preview_digest=preview['preview_digest'])
+    delivery.state = c.report(diagnostics=False)
+    plan = deepcopy(original_plan['output'])
+    task = plan['task_dag'][0]
+    task['paths'] = scope['paths']['build']
+    for check in plan['verification_strategy']['checks']:
+        check['evidence_outputs'] = delivery.logs[check['id']]
+        delivery.checks[check['id']] = check
+    plan.update(write_scope=scope['paths']['build'], requirements_revision=request['request_id'],
+                run=delivery.state['run'], visit=w.current(delivery.state)['id'])
+    delivery.task_path = 'amended-tasks.json'
+    (tmp_path/delivery.task_path).write_text(json.dumps({'tasks': [task]}))
+    delivery.output_paths['plan'] = 'amended-plan.json'
+    delivery.submit(plan)
+    delivery.decide()
+    delivery.advance('build')
+    for name in delivery.checks:
+        delivery.run(name, delivery.history, delivery.logs[name][0])
+    delivery.draft({'requirements_revision': request['request_id']})
+    # submit_build retains its real check records and binds the amended visit.
+    original_draft = delivery.draft
+    delivery.draft = lambda extra: original_draft({**extra, 'requirements_revision': request['request_id']})
+    delivery.submit_build()
+    delivery.decide()
+    if legacy_visit:
+        original_advance = w.advance
+        def old_allocator(*args, **kwargs):
+            state = original_advance(*args, **kwargs)
+            state['visits'][state['index']].pop('artifact_paths', None)
+            return state
+        with monkeypatch.context() as patch:
+            patch.setattr(w, 'advance', old_allocator)
+            delivery.advance('evaluate')
+    else:
+        following = next(v for v in delivery.state['visits'][delivery.state['index']+1:]
+                         if not v['superseded'])
+        occupied = tmp_path/w.visit_result_paths(delivery.state, following)[0]
+        occupied.parent.mkdir(parents=True, exist_ok=True)
+        occupied.write_text('An existing destination must not be overwritten.')
+        stable = c._path().read_bytes()
+        with pytest.raises(w.Refusal, match='fresh safe paths'):
+            delivery.advance('evaluate')
+        assert c._path().read_bytes() == stable
+        occupied.unlink()
+        delivery.advance('evaluate')
+    c = h.Controller(tmp_path, 'root', h.installed_adapter(host))
+    delivery.controller = c
+    delivery.state = c.report(diagnostics=False)
+    canonical = w.visit_result_paths(delivery.state, w.current(delivery.state))
+    fresh_output, fresh_tasks, fresh_report, fresh_checks = canonical
+    assert set(canonical) <= set(c.context(delivery.state['run'])['brief']['write_scope'])
+    assert not set(old_files) & set(w.phase_write_paths(delivery.state))
+    evaluate_task = {'id': 'EVALUATE', 'phase': 'evaluate', 'execution': 'root', 'owner': 'root',
+        'dependencies': [], 'paths': canonical, 'read_inputs': [delivery.history],
+        'criteria': ['AC'], 'verification': 'Review current immutable attempts without rewriting Build.'}
+    (tmp_path/fresh_tasks).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path/fresh_tasks).write_text(json.dumps({'tasks': [evaluate_task]}))
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match='Expected task revision'):
+        c.update_tasks(delivery.state['run'], delivery.state['revision']-1, fresh_tasks)
+    assert c._path().read_bytes() == before
+    widened = deepcopy(evaluate_task)
+    widened['paths'].append('pkg/app.py')
+    (tmp_path/fresh_tasks).write_text(json.dumps({'tasks': [widened]}))
+    with pytest.raises(w.Refusal, match='exceeds accepted paths'):
+        c.update_tasks(delivery.state['run'], delivery.state['revision'], fresh_tasks)
+    assert c._path().read_bytes() == before
+    (tmp_path/fresh_tasks).write_text(json.dumps({'tasks': [evaluate_task]}))
+    c.principal = 'foreign-reviewer'
+    with pytest.raises(w.Refusal, match='Only the root'):
+        c.update_tasks(delivery.state['run'], delivery.state['revision'], fresh_tasks)
+    c.principal = c.root
+    delivery.state = c.update_tasks(delivery.state['run'], delivery.state['revision'], fresh_tasks)
+    stable = c._path().read_bytes()
+    assert c.update_tasks(delivery.state['run'], delivery.state['revision'], fresh_tasks) == delivery.state
+    assert c._path().read_bytes() == stable
+    for path in canonical:
+        c.guard({'tool_name': 'Write', 'tool_input': {'path': path}}, delivery.state['run'])
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name': 'Write', 'tool_input': {'path': delivery.output_paths['evaluate']}}, delivery.state['run'])
+    (tmp_path/fresh_report).write_text('Reviewed both current passing checks; old results preserved.')
+    (tmp_path/fresh_checks).write_text(json.dumps({'checks': 'Both current immutable attempts pass.'}))
+    delivery.output_paths['evaluate'], delivery.task_path = fresh_output, fresh_tasks
+    delivery.draft({'criterion_results': {'AC': {'status': 'pass',
+        'evidence': delivery.logs['primary'][0], 'explanation': 'Current amended Build checks pass.'}}})
+    c.worker(delivery.state['run'], 'accept-result', revision=delivery.state['revision'], task='EVALUATE',
+        request={'outputs': canonical, 'checks': [{'name': 'Evaluate evidence review',
+                 'status': 'pass', 'evidence': fresh_report}]})
+    delivery.submit({'criterion_results': {'AC': {'status': 'pass',
+        'evidence': delivery.logs['primary'][0], 'explanation': 'Current amended Build checks pass.'}}})
+    assert w.current(delivery.state)['packet']['output_path'] == fresh_output
+    assert all(delivery.state['decisions'][key] == value for key, value in old_decisions.items())
+    assert all((tmp_path/path).read_bytes() == data for path, data in old_files.items())
+    assert {row['status'] for row in evidence.effective_checks(delivery.state)} == {'pass'}
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
 @pytest.mark.parametrize('tamper', ['log', 'history'])
 def test_governed_output_identity_preserves_immutable_evidence_checks(tmp_path, host, tamper):
     from taskplane import workflow_evidence as evidence

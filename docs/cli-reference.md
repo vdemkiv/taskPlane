@@ -120,6 +120,16 @@ inline, or reuse accepted current task context. `flow advance` allocates the nex
 when `--output` is omitted. Exact run/visit metadata paths do not widen the Plan's
 production write scope.
 
+After a repair or Plan amendment, renewed Evaluate, Engineering and Retro results
+use the current run/visit namespace when earlier phase paths refer to historical
+results. The accepted production scope and previous files stay unchanged.
+`flow context` reports the same effective paths used by task and write admission.
+For an existing unsubmitted visit missing this allocation, normal
+`flow attach --update-context --tasks PATH --expected-revision REV` validates the
+fresh current task and retains its canonical metadata in the same transaction.
+It still requires the owning root, current revision, quiescence and unchanged
+accepted inputs; it grants no phase approval or production write permission.
+
 Flow start and checkpoint actions publish the dashboard. Show its link/open result
 with the concrete phase result; a queued open is not a verified display. Publication
 failure calls for a view retry, not replay of the committed workflow action.
