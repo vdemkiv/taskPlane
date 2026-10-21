@@ -57,7 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     if arguments[:1] == ["workspace"]:
         return workspace_binding.main(arguments[1:])
     if arguments[:1] == ["flow"]:
-        return flow.main(arguments[1:], compact=True)
+        return flow.main(arguments[1:], compact=not any(
+            arg == "--mods" or arg == "--mods-request-json" or arg.startswith("--mods-request-json=")
+            for arg in arguments[1:]))
     if arguments and arguments[0] in flow.HOOK_NAMES:
         if len(arguments) != 1:
             print(json.dumps({"error": "Named native hooks accept their event on stdin only."}))

@@ -251,7 +251,7 @@ def append_instrument(path: str, record: dict[str, Any], *, strict: bool = False
             raise
 
 
-def atomic_write_json(path: str, data: Any, *, indent: int=1, sort_keys: bool=False, private: bool=False) -> None:
+def atomic_write_json(path: str, data: Any, *, indent: int | None=1, sort_keys: bool=False, private: bool=False) -> None:
     """Keep enforcement's exact encoding through the shared durable writer."""
     _durable_makedirs(os.path.dirname(path) or '.')
     atomic_json(path, data, indent=indent, sort_keys=sort_keys, trailing_newline=False, strict_directory_sync=True)

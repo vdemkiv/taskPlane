@@ -462,6 +462,21 @@ def _finding_packets(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [next(recorded) if entry["revision"] is not None else entry for entry in ordered]
 
 
+def finding_key(state: dict[str, Any], declaration: dict[str, Any]) -> tuple[str, str]:
+    """Keep a replacement's unambiguous inherited ID in its original namespace.
+
+    Explicit origins always win, including an explicitly new current-run finding.
+    An ambiguous inherited ID must not silently collapse independent obligations.
+    This is a projection rule: sealed packets and decision bindings stay intact.
+    """
+    if "origin_run" in declaration:
+        return declaration["origin_run"], declaration["id"]
+    inherited = state.get("inherited_findings", {})
+    rows = inherited.get("findings", []) if isinstance(inherited, dict) else inherited
+    origins = {row["origin_run"] for row in rows or [] if row["id"] == declaration["id"]}
+    return (next(iter(origins)) if len(origins) == 1 else state["run"], declaration["id"])
+
+
 def finding_register(state: dict[str, Any]) -> list[dict[str, Any]]:
     inherited = state.get("inherited_findings", {})
     rows = inherited.get("findings", []) if isinstance(inherited, dict) else inherited
@@ -480,7 +495,7 @@ def finding_register(state: dict[str, Any]) -> list[dict[str, Any]]:
         for declaration in [*output.get("finding_references", []), *output.get("findings", [])]:
             if not isinstance(declaration, dict) or not isinstance(declaration.get("id"), str):
                 continue
-            key = (declaration.get("origin_run", state["run"]), declaration["id"])
+            key = finding_key(state, declaration)
             if key not in registry:
                 criteria = declaration.get("criteria", [declaration["criterion"]] if declaration.get("criterion") else [])
                 registry[key] = {"origin_run": key[0], "id": key[1],
@@ -507,10 +522,10 @@ def finding_register(state: dict[str, Any]) -> list[dict[str, Any]]:
         for update in packet.get("output", {}).get("finding_updates", []):
             if not isinstance(update, dict):
                 continue
-            key = (update.get("origin_run", state["run"]), update.get("id"))
-            if key not in registry:
+            update_key = (update.get("origin_run", state["run"]), update.get("id"))
+            if update_key not in registry:
                 continue
-            row = registry[key]
+            row = registry[update_key]
             historical = {"visit": packet["visit"], "packet_digest": entry["digest"], "update": deepcopy(update)}
             if historical not in row.setdefault("update_history", []):
                 row["update_history"].append(historical)

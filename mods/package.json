@@ -1,0 +1,9 @@
+{
+  "name": "taskplane-mod-checks",
+  "private": true,
+  "scripts": {
+    "test": "claude plugin test ..",
+    "typecheck": "node -e \"const ts=require('typescript'),path=require('path');const p=ts.readConfigFile('tsconfig.json',ts.sys.readFile);if(p.error)throw Error(ts.flattenDiagnosticMessageText(p.error.messageText,'\\n'));const host=process.env.CLAUDE_CODE_TYPES||'../.claude-plugin/types/claude-code/index.d.ts';if(!ts.sys.fileExists(host))throw Error('Set CLAUDE_CODE_TYPES to official or installed host declarations');p.config.files=[path.resolve(host)];const c=ts.parseJsonConfigFileContent(p.config,ts.sys,process.cwd());const program=ts.createProgram(c.fileNames,c.options);const errors=[...c.errors,...ts.getPreEmitDiagnostics(program)];for(const d of errors)console.error(ts.formatDiagnostic(d,{getCurrentDirectory:()=>process.cwd(),getCanonicalFileName:x=>x,getNewLine:()=> '\\n'}));process.exitCode=errors.length?1:0;\""
+  },
+  "devDependencies": { "typescript": "5.9.3" }
+}

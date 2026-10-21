@@ -141,7 +141,12 @@ def test_extracted_packages_recover_displaced_state_through_declared_hooks(tmp_p
     extracted = tmp_path/'installed'
     with zipfile.ZipFile(built['archive']) as archive:
         for member in archive.namelist():
-            assert archive.read(member) == (ROOT/member).read_bytes()
+            expected = (ROOT/member).read_bytes()
+            if package_host == 'openai' and member == 'hooks/hooks.json':
+                hooks = json.loads(expected)
+                hooks.pop('modules', None)
+                expected = (json.dumps(hooks, indent=2) + '\n').encode()
+            assert archive.read(member) == expected
         archive.extractall(extracted)
     # Only the extracted runtime is importable in this isolated child. Events are
     # fixture observations, never claims about live Cowork or Windows coverage.

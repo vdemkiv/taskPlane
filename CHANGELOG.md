@@ -1,5 +1,15 @@
 # taskplane changelog
 
+## v2.35.0 — Claude Mods on the restored 2.31.7 baseline
+
+- Build directly from restored main 2.31.7. The abandoned 2.32–2.34 runtime and workflow changes remain archived; the new version avoids reusing historical package identities.
+- Add the persistent status band, checkpoint pane and sequential evidence browser, with explicit freshness and separate run/context usage.
+- Bind explicit decisions and preserved comments to the exact checkpoint; keep preview read-only, retries idempotent and 2.31.7 host/session permissions authoritative.
+- Preserve inherited finding identity when a replacement redeclares findings, preventing duplicate counts without discarding obligations.
+- Package the Claude UI only for Claude; retain the existing command guards on both hosts and exclude generated tooling.
+
+Automated UI/controller/package verification applies to this port. Previously reported live-host acceptance belongs to the earlier candidate; no further host test was requested.
+
 ## v2.31.7 — visible Cowork onboarding and review continuation
 
 - Deliver first-run execution prompts and router skills with actionable setup guidance instead of rejecting them before initialization can run.

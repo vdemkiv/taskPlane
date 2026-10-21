@@ -14,6 +14,14 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def package_input(path: Path) -> bool:
+    """Generated host declarations and local tooling are never shipped."""
+    relative = path.relative_to(ROOT)
+    return (not set(relative.parts) & {"node_modules", "__pycache__", ".cache", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+            and relative.parts[:2] not in {(".claude-plugin", "types"), (".codex-plugin", "types")}
+            and not path.name.endswith((".d.ts", ".d.mts", ".d.cts", ".pyc", ".pyo", ".tsbuildinfo")))
+
+
 def read_member(path: Path) -> bytes:
     """Reject indirect symlinks before any package input is read."""
     root = ROOT.resolve()
@@ -82,16 +90,29 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
         if (ROOT / directory).is_symlink():
             raise ValueError(f"Package directory cannot be a symlink: {directory}")
         files.update(p for p in (ROOT / directory).rglob("*")
-                     if p.is_file() and "__pycache__" not in p.parts)
+                     if p.is_file() and package_input(p))
     files.update((ROOT / "taskplane").glob("*.py"))
     files.update(p for p in (ROOT / "lenses").rglob("*") if p.suffix == ".md" or p.name == "catalog.json")
     files.update(ROOT / "docs" / name for name in ("cli-reference.md", "lens-catalog.md", "onboarding.md"))
     files.update(ROOT / "docs/assets" / name for name in
                  ("taskplane-cowork-flow.gif", "taskplane-flow-source.html"))
+    if host == "claude":
+        # Keep the runtime and reproducible checks explicit; never sweep tooling
+        # directories or generated host declarations into the plugin.
+        files.update(ROOT / "mods" / name for name in
+                     ("taskplane.tsx", "taskplane.test.ts", "tsconfig.json",
+                      "package.json", "package-lock.json"))
+        files.add(ROOT / "docs/claude-mods.md")
     for path in files:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"Package member must be a regular file: {path}")
     members = {path.relative_to(ROOT).as_posix(): read_member(path) for path in sorted(files)}
+    if host == "openai":
+        hooks = json.loads(members["hooks/hooks.json"])
+        if "modules" in hooks:
+            # Codex shares the command guards, but does not load Claude Mods.
+            del hooks["modules"]
+            members["hooks/hooks.json"] = (json.dumps(hooks, indent=2) + "\n").encode("utf-8")
     identity = source_identity(members)
     output_dir.mkdir(parents=True, exist_ok=True)
     name = f"taskplane-{version}-openai.zip" if host == "openai" else f"taskplane-{version}.{suffix}"
