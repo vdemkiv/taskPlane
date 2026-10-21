@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from . import workflow as w
-from .context import Store, REFERENCE_SCHEMA
-from .storage import encode_controller
+from .context import Store, encode, REFERENCE_SCHEMA
 
 WATERMARK = 4 * 1024 * 1024
 
@@ -23,7 +22,7 @@ def compact(workspace: Path, db: dict[str, Any]) -> dict[str, Any]:
     immutable objects are harmless; only references in the index select history.
     Protected-host adapters must continue to use their owner's protected store.
     """
-    if db.get("profile") != "native_workflow" or len(encode_controller(db)) < WATERMARK:
+    if db.get("profile") != "native_workflow" or len(encode(db)) < WATERMARK:
         return db
     result = deepcopy(db)
     store = Store(workspace)
@@ -34,7 +33,7 @@ def compact(workspace: Path, db: dict[str, Any]) -> dict[str, Any]:
         w.require(store.resolve(ref) == state, "state_unavailable", "History archive verification failed.")
         result.setdefault("archives", {})[key] = ref
         del result["runs"][key]
-        if len(encode_controller(result)) < WATERMARK:
+        if len(encode(result)) < WATERMARK:
             break
     return result
 
@@ -65,7 +64,7 @@ def read(workspace: Path, db: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def capacity(db: dict[str, Any], limit: int, workspace: Path | None = None) -> dict[str, Any]:
-    used = len(encode_controller(db))
+    used = len(encode(db)) + 1
     result: dict[str, Any] = {"bytes": used, "limit_bytes": limit, "remaining_bytes": max(0, limit - used),
             "watermark_bytes": WATERMARK, "resident_runs": len(db["runs"]),
             "archived_runs": len(db.get("archives", {})),

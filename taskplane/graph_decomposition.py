@@ -367,11 +367,9 @@ def dependency_decomposition(graph: dict, *, task_owners: dict[str, str] | None 
             raise ValueError("Plan dependency ownership is foreign or incomplete")
         components = [row for row in components if row["module"] in task_owners]
     modules = sorted({row["module"] for row in components})
-    module_set = set(modules)
     edges = sorted({(row["to"], row["from"], row["kind"])
         for row in graph["edges"] if row.get("source") == "scanner"
-        and graph_primitives.is_dependency_edge(row)
-        and row["from"] in module_set and row["to"] in module_set and row["from"] != row["to"]})
+        and row["from"] in modules and row["to"] in modules and row["from"] != row["to"]})
     groups = (graph_primitives.strongly_connected_components(modules,
         [(a, b) for a, b, _ in edges]) if task_owners is None else
         [sorted(node for node in modules if task_owners[node] == owner)
@@ -379,29 +377,16 @@ def dependency_decomposition(graph: dict, *, task_owners: dict[str, str] | None 
     owners = (task_owners if task_owners is not None else
         {node: "dependency-" + _coverage_fingerprint({"nodes": group})[:16]
             for group in groups for node in group})
-    dependencies = {owners[group[0]]: set() for group in groups}
-    consumers = {key: set() for key in dependencies}
-    for producer, consumer, _ in edges:
-        left, right = owners[producer], owners[consumer]
-        if left != right:
-            dependencies[right].add(left)
-            consumers[left].add(right)
-    pending = {owners[group[0]]: {"id": owners[group[0]], "nodes": group,
-               "deps": sorted(dependencies[owners[group[0]]])} for group in groups}
-    remaining = {key: len(value) for key, value in dependencies.items()}
-    ready = sorted(key for key, count in remaining.items() if not count)
+    tasks = [{"id": owners[group[0]], "nodes": group,
+        "deps": sorted({owners[a] for a, b, _ in edges if b in group and a not in group})}
+        for group in groups]
+    pending = {row["id"]: row for row in tasks}
     ordered = []
-    while ready:
-        following = []
-        for key in ready:
-            ordered.append(pending.pop(key))
-            for consumer in consumers[key]:
-                remaining[consumer] -= 1
-                if remaining[consumer] == 0:
-                    following.append(consumer)
-        ready = sorted(following)
-    if pending:
-        raise ValueError("dependency task cycle after SCC decomposition")
+    while pending:
+        ready = sorted(key for key, row in pending.items() if not set(row["deps"]) & pending.keys())
+        if not ready:
+            raise ValueError("dependency task cycle after SCC decomposition")
+        ordered.extend(pending.pop(key) for key in ready)
     value = {"schema": DEPENDENCY_DECOMPOSITION_SCHEMA,
         "source_tree": coverage["source_tree"], "coverage_fingerprint": coverage["fingerprint"],
         "components": [{key: row[key] for key in ("id", "module", "files", "symbols", "fingerprint")}

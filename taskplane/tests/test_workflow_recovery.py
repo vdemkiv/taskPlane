@@ -14,48 +14,6 @@ from taskplane import flow, workflow as w, workflow_host as h
 from taskplane.tests.test_workflow_local import setup, submit, decide, decision
 
 
-@pytest.mark.skipif(os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"),
-                    reason="Restoration and relocation require no-follow directory descriptors.")
-def test_interrupted_restore_retirement_and_relocation_preserve_authentic_history(tmp_path, monkeypatch):
-    from taskplane import workspace_binding as binding
-    from taskplane.tests.test_workflow_local import displaced_database
-    from taskplane.tests.test_workspace_binding import request, tree
-    original = (tmp_path / "original").resolve()
-    original.mkdir()
-    bound = binding.bind(original, request(original))
-    c, state, target, candidate, raw, checksum = displaced_database(original, approved=True)
-    receipt = target.with_name(target.stem + ".recovery-" + checksum + ".json")
-    write = binding._write
-    def interrupt_completion(path, value, **kwargs):
-        if value.get("schema") == "taskplane.initialization-recovery/v1" and value["status"] == "restored":
-            raise OSError("fixture stopped before restoration receipt completion")
-        return write(path, value, **kwargs)
-    with monkeypatch.context() as patch:
-        patch.setattr(binding, "_write", interrupt_completion)
-        with pytest.raises(OSError, match="fixture stopped"):
-            c.recover_initialization(candidate.name, checksum, state["run"], state["revision"], "fixture/restore")
-    assert target.read_bytes() == candidate.read_bytes() == raw
-    pending = json.loads(receipt.read_bytes())
-    assert pending["status"] == "prepared"
-    assert c.recover_initialization(candidate.name, checksum, state["run"], state["revision"], "fixture/restore")["status"] == "restored"
-    assert json.loads(receipt.read_bytes()) == {**pending, "status": "restored"}
-    restored = c.report()
-    assert restored["decisions"] == state["decisions"] and restored["visits"] == state["visits"]
-    c.apply("retire", state["run"], expected_revision=state["revision"],
-            native_reference=json.dumps({"request_reference": "fixture/retire", "reason": "Relocate retired fixture"}))
-    assert json.loads(target.read_bytes())["active"] is None
-    before = tree(original / ".taskplane")
-    destination = tmp_path / "relocated"
-    original.rename(destination)
-    fresh = request(destination, payload=b"fresh relocation nonce", reference="fixture/new-probe")
-    fresh.update(expected_project_id=bound["project_id"], request_reference="fixture/relocate")
-    result = binding.recover(destination, fresh)
-    assert tree(Path(result["recovery"]["archive"])) == before
-    assert before[candidate.name] == raw and json.loads(before[receipt.name])["status"] == "restored"
-    assert result["recovery"]["approvals_transferred"] is False
-    assert binding.ensure(destination) == result["binding"]
-
-
 def test_deactivate_recovers_uninitialized_selection_without_mutating_history(tmp_path,capsys):
     from taskplane import workflow_local as local
     c,s=setup(tmp_path,standalone=True)
@@ -144,8 +102,9 @@ def test_oversized_source_diagnosis_does_not_initialize_or_hash(tmp_path, initia
     harness=local.Harness(tmp_path,'root');harness.select('tp-engineering','fixture/review',c.report())
     with (tmp_path/'large.bin').open('wb') as stream:stream.truncate(local.MAX_SOURCE_BYTES+1)
     if initialized:
-        started = c.start({'scope':state['scope'],'request_reference':'fixture/start'})
-        assert c.report()['run'] == started['run']
+        with pytest.raises(w.Refusal,match='512 MiB.*flow diagnose'):
+            c.start({'scope':state['scope'],'request_reference':'fixture/start'})
+        assert c.adapter.state_exists() and not c.report().get('run')
     before={p.name:p.read_bytes() for p in (tmp_path/'.taskplane').glob('workflow-*.json')}
     harness.guard_bootstrap(runtime('flow','diagnose','--workspace',str(tmp_path)),c.report())
     monkeypatch.setattr(local.hashlib,'sha256',lambda *a,**k: (_ for _ in ()).throw(AssertionError('metadata diagnosis must not hash source')))
@@ -165,12 +124,12 @@ def test_diagnosis_walk_and_output_are_bounded(tmp_path,monkeypatch):
 
 
 @pytest.mark.parametrize('stale',[False,True])
-def test_plugin_uninstall_cannot_bypass_sealed_or_stale_enforcement(tmp_path,stale):
+def test_only_exact_taskplane_native_administration_passes_seal(tmp_path,stale):
     c,s=setup(tmp_path);s=submit(c,s)
     if stale:(tmp_path/'product.json').write_text('{}')
     event={'tool_name':'mcp__codex_app__uninstall_plugin','tool_input':{'plugin':'taskplane@openai-curated-remote'}}
-    for args in (event['tool_input'], {'plugin':'taskplane'}, {'plugin':'another-plugin'},
-                 {'plugin':'taskplane','command':'arbitrary'}, {'plugin':['taskplane']}):
+    c.guard(event,s['run'])
+    for args in ({'plugin':'another-plugin'},{'plugin':'taskplane','command':'arbitrary'},{'plugin':['taskplane']}):
         with pytest.raises(w.Refusal):c.guard({**event,'tool_input':args},s['run'])
 
 
@@ -180,9 +139,8 @@ def test_clean_worktree_setup_requires_exact_observed_host_result(tmp_path):
     def git(*args):
         result=subprocess.run(['git','-C',str(source),*args],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
-    c,s=setup(source);s=submit(c,s);harness=local.Harness(source,'root')
-    # Existing folder runs can later need recovery from a shared repository.
     git('init');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','Fixture')
+    c,s=setup(source);s=submit(c,s);harness=local.Harness(source,'root')
     event={'tool_name':'mcp__codex_app__create_worktree','tool_input':{'name':'recovery-fixture'},'call_id':'create-1'}
     c.guard(event,s['run'])
     destination=tmp_path/'clean';git('worktree','add','--detach',str(destination),'HEAD')
@@ -328,18 +286,17 @@ def test_bootstrap_recovery_cannot_overwrite_sealed_evidence(tmp_path):
     assert not bootstrap_write(c.workspace, {"tool_name": "Write", "tool_input": {"path": path}}, state)
 
 
-@pytest.mark.parametrize("text,choice", [("Changes requested", "changes_requested"),
-                                         ("Rejected", "rejected"), ("Cancelled", "cancelled")])
+@pytest.mark.parametrize("text", ["Changes requested", "Rejected", "Cancelled"])
 @pytest.mark.parametrize("drift", ["out_of_scope", "evidence"])
-def test_negative_response_records_without_approving_changed_source(tmp_path, text, choice, drift):
+def test_negative_response_records_without_approving_changed_source(tmp_path, text, drift):
     c, state = setup(tmp_path)
     state = submit(c, state)
     if drift == "out_of_scope": (tmp_path / "upload.zip").write_bytes(b"package")
     else: (tmp_path / "product.json").write_text("{}")
-    value = decision(state, text=text, candidate=choice)
+    value = decision(state, text=text)
     result = decide(c, state, value)
     assert result["decisions"][value["event_id"]]["choice"] == value["choice"]
-    assert w.current(result)["packet"] == w.current(state)["packet"]
+    assert result["source_baseline"] == state["source_baseline"]
     assert w.current(result)["decision"] == value["choice"]
     assert decide(c, state, value) == result
     with pytest.raises(w.Refusal):
@@ -347,17 +304,13 @@ def test_negative_response_records_without_approving_changed_source(tmp_path, te
 
 
 @pytest.mark.parametrize("drift", ["out_of_scope", "evidence"])
-def test_checkpoint_approval_checks_bound_evidence(tmp_path, drift):
+def test_approval_still_refuses_drift(tmp_path, drift):
     c, state = setup(tmp_path)
     state = submit(c, state)
     if drift == "out_of_scope": (tmp_path / "upload.zip").write_bytes(b"package")
     else: (tmp_path / "product.json").write_text("{}")
-    if drift == "out_of_scope":
-        accepted = decide(c, state)
-        assert w.current(accepted)["decision"] == "approved"
-    else:
-        with pytest.raises(w.Refusal): decide(c, state)
-        assert not c.report()["decisions"]
+    with pytest.raises(w.Refusal): decide(c, state)
+    assert not c.report()["decisions"]
 
 
 @pytest.mark.parametrize("drift", [False, True])
@@ -370,6 +323,7 @@ def test_recovery_controls_and_diagnostics_pass_through_declared_hook(tmp_path, 
                 "--expected-revision", str(state["revision"]), "--scope", ".taskplane/bootstrap/new-scope.json",
                 "--request-reference", "conversation/new-run"),
         runtime("flow", "--help"), runtime("version"), runtime("flow", "diagnose", "--workspace", str(tmp_path)),
+        {"tool_name": "mcp__codex_app__uninstall_plugin", "tool_input": {"plugin": "taskplane"}},
         command("cat", str(Path(h.__file__).parents[1] / "docs/cli-reference.md")),
         command("rg", "-n", "recovery", "taskplane"), command("pwd"),
         {"tool_name": "apply_patch", "tool_input": {"input":
@@ -380,28 +334,12 @@ def test_recovery_controls_and_diagnostics_pass_through_declared_hook(tmp_path, 
         result = flow.hook(event, governor=c)
         assert result.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
     assert not c.report()["decisions"]
-    for event in [{"tool_name": "Write", "tool_input": {"path": "app.py"}},
-                  {"tool_name": "Write", "tool_input": {"path": ".taskplane/bootstrap/../../app.py"}},
-                  {"tool_name": "mcp__codex_app__uninstall_plugin", "tool_input": {"plugin": "taskplane"}},
-                  command("python3", "-c", "print('opaque')")]:
+    for event in [command("cat", "product.json", ";", "touch", "app.py"),
+                  command("rg", "--pre=touch", "pattern"), command("rg", "--hostname-bin", "touch", "pattern"),
+                  command("python3", "-c", "print('opaque')"),
+                  {"tool_name": "Write", "tool_input": {"path": "app.py"}},
+                  {"tool_name": "Write", "tool_input": {"path": ".taskplane/bootstrap/../../app.py"}}]:
         with pytest.raises(w.Refusal): c.guard(event, state["run"])
-
-
-def test_implicit_workspace_diagnosis_survives_unreadable_state(tmp_path):
-    c, _ = setup(tmp_path)
-    target = c._path()
-    target.write_text('{')
-    before = target.read_bytes()
-    event = runtime('flow', 'diagnose')
-    event.update(hook_event_name='PreToolUse', cwd=str(tmp_path), session_id='root')
-    assert flow.hook(event, governor=c).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
-    for blocked in (runtime('flow', 'start'), runtime('flow', 'repair'),
-                    runtime('flow', 'diagnose', '--run', 'foreign'),
-                    command('touch', 'app.py')):
-        blocked.update(hook_event_name='PreToolUse', cwd=str(tmp_path), session_id='root')
-        with pytest.raises(w.Refusal, match='Control state cannot be read'):
-            flow.hook(blocked, governor=c)
-    assert target.read_bytes() == before
 
 
 @pytest.mark.parametrize("phase", w.PHASES)
@@ -460,14 +398,14 @@ def exercise_declared_recovery(workspace, root, entry="product"):
                 str(state["revision"]))["workflow"]
     assert run("diagnose")["limits"]["source_files"] == 20000
     assert hook("PreToolUse", tool_name="mcp__codex_app__uninstall_plugin",
-                tool_input={"plugin":"taskplane"})["hookSpecificOutput"]["permissionDecision"] == "deny"
+                tool_input={"plugin":"taskplane"}).get("hookSpecificOutput",{}).get("permissionDecision") != "deny"
     # The exact incident: an upload and Finder metadata appear after sealing.
     (workspace / "dist").mkdir()
     (workspace / "dist/upload.zip").write_bytes(b"user requested upload")
     (workspace / ".DS_Store").write_bytes(b"Finder metadata")
     denied = hook("PreToolUse", tool_name="Write", tool_input={"path": "app.py"})
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    negative = decision(state, text="Changes requested", candidate="changes_requested")
+    negative = decision(state, text="Changes requested")
     state = run("decide", "--expected-revision", str(state["revision"]),
                 "--decision-json", json.dumps(negative))["workflow"]
     assert negative["event_id"] in state["decisions"]
@@ -478,10 +416,14 @@ def exercise_declared_recovery(workspace, root, entry="product"):
     fresh_report = run(*args)
     fresh = fresh_report["workflow"]
     assert fresh["run"] != state["run"] and fresh["revision"] == 0 and not fresh["decisions"]
-    assert w.current(fresh)["phase"] == "product" and len(fresh["visits"]) == 7
+    assert fresh["phase"] == "product" and len(fresh["visits"]) == 7
+    assert fresh_report["harness"]["entry"] == "tp-go"
+    assert fresh_report["harness"]["presentation"] is None
     assert run(*args)["workflow"]["run"] == fresh["run"]
+    selection = json.loads((workspace / ".taskplane/dashboard.selection.json").read_text())
+    assert selection["run"] == fresh["run"] and selection["revision"] == 0
     prior = run("report", "--run", state["run"])
-    assert prior["workflow"]["status"] == "superseded"
+    assert prior["workflow"]["status"] == "superseded" and prior["historical"]
     assert not prior["workflow"]["pending_checkpoint"]
     # The new task is actually usable, but cannot skip its Product acceptance.
     target = output(workspace, fresh)

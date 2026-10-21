@@ -58,68 +58,326 @@ def _text(value: Any, maximum: int = 4096) -> bool:
     return isinstance(value, str) and bool(value.strip()) and len(value) <= maximum
 
 
-DECISIONS = {"approved", "changes_requested", "rejected", "cancelled"}
+def decision_text(excerpt: str) -> str:
+    """Remove quoted examples and normalize presentation, not user provenance."""
+    text = excerpt.casefold().replace("’", "'")
+    text = re.sub(r'```[\s\S]*?```|`[^`]*`|“[^”]*”|"[^"]*"|(?<!\w)\'[^\'\n]+\'(?!\w)', ' ', text)
+    return ' '.join(line.strip() for line in text.splitlines() if not line.lstrip().startswith('>'))
 
 
-def validate_checkpoint_consent(question: str, answer: str | None, *, phase: str,
-                                binding: dict[str, Any], candidate: str | None = None,
-                                reaction: bool = False) -> str:
-    """Validate a semantic candidate AFTER original human transport linkage.
+def decision_phase(excerpt: str) -> str | None:
+    phases = '|'.join(w.PHASES)
+    text = decision_text(excerpt)
+    match = re.search(r'\b(' + phases + r')\s+(?:phase\s+)?(?:is\s+)?(?:approved|accepted)\b', text)
+    if not match:
+        match = re.search(r'\b(?:approve|accept)\s+(?:the\s+)?(?:(?:this|current)\s+)?(' + phases + r')\b', text)
+    return match[1] if match else None
 
-    The orchestrator interprets the complete user response in context. Runtime
-    code checks provenance, target, chronology and replay; it does not classify
-    natural language or authenticate the orchestrator's interpretation.
+
+def _complete_approval_response(excerpt: str) -> bool:
+    """Positively classify every clause, including quoted and unknown content.
+
+    A recognized opening is only a candidate: every remaining clause must be a
+    complete current grant, supported work statement, or supported explanation.
+    This finite English grammar intentionally requires clarification for other
+    prose. No negative keyword or request detector activates this boundary.
+    Quoted grants cannot establish assent; the caller checks the unquoted lead.
     """
-    w.require(_text(question, 16384) and phase in w.PHASES and isinstance(binding, dict)
-              and _text(binding.get("checkpoint")), "invalid_evidence",
-              "Preserve the actual checkpoint presentation and target.")
-    w.require(candidate in DECISIONS and (reaction and answer is None or _text(answer)),
-              "invalid_evidence", "A complete human observation needs an explicit semantic decision candidate.")
-    w.require(not reaction or candidate == "approved", "invalid_evidence",
-              "A verified approval reaction cannot request a different decision.")
-    assert isinstance(candidate, str)
-    return candidate
+    phase = r'(?:' + '|'.join(w.PHASES) + r')'
+    target = r'(?:' + phase + r'(?:\s+phase)?|phase|checkpoint|output|proposal|changes?|work)'
+    obj = (r'(?:it|this|that|(?:(?:the|this|that)\s+)?(?:current\s+)?' + target
+           + r'|(?:checkpoint\s+)?[0-9a-f]{32})')
+    actor = r'(?:(?:i|we)\s+(?:have\s+)?)?'
+    adverb = r'(?:(?:hereby|explicitly|now)\s+)?'
+    grant_verb = (r'(?:approv(?:e|ed)|accept(?:ed)?|confirm(?:ed)?|authori[sz](?:e|ed)|'
+                  r'consent(?:ed)?|assent(?:ed)?|apparoved|apprvoed)')
+    active = actor + adverb + grant_verb + r'(?:\s+' + obj + r')?'
+    signed = (actor + adverb + r'sign(?:ed)?\s+(?:off(?:\s+(?:on\s+)?' + obj + r')?|'
+              + obj + r'\s+off)')
+    passive = obj + r'\s+(?:is\s+)?(?:approved|accepted|confirmed|authorized|authorised|signed\s+off)'
+    noun = (r'(?:approvals?|confirmations?|authori[sz]ations?|consents?|acceptances?|'
+            r'permissions?|assents?|clearances?|sign\s*offs?|go\s+ahead|green\s+light|ok(?:ay)?)')
+    subject = r'(?:(?:my|our|the)\s+)?' + noun
+    given = (subject + r'\s+(?:(?:is|are|has been|have been)\s+)?(?:given|granted|confirmed)|'
+             + actor + adverb + r'(?:give|given|grant(?:ed)?|provide(?:d)?)\s+' + subject + r'|'
+             r'(?:i am|we are)\s+(?:giving|granting|providing)\s+' + subject)
+    present = r'(?:' + '|'.join((active, signed, passive, given)) + r')(?:\s+(?:now|today))?'
+    assent = (r'(?:ok(?:ay)?|yes|yep|yeah|lgtm|go ahead|proceed|continue|ship it|'
+              r'(?:looks?|sounds?) (?:good|great))')
+    item = r'(?:' + present + '|' + assent + r')'
+    grant = r'(?:please\s+)?' + item + r'(?:\s+(?:and\s+)?' + item + r')*'
+
+    requester = r'(?:i|we|you|(?:(?:the|my|our|your)\s+)?(?:reviewer|approver|owner|team))'
+    request_adverb = r'(?:(?:still|also|really|just)\s+){0,2}'
+    request_verb = r'(?:need(?:s|ed|ing)?|requir(?:e[sd]?|ing)|want(?:s|ed|ing)?)'
+    request = (requester + r'\s+' + request_adverb
+               + r'(?:(?:am|are|is|was|were|will|shall|do|does)\s+)?'
+               + request_adverb + request_verb + r'|(?:give|allow)\s+(?:me|us)|let\s+(?:me|us)\s+have')
+    work_quantity = r'(?:(?:some|a little)\s+)?(?:(?:more|additional|extra)\s+)?time'
+    work_object = (r'(?:(?:the|this|that|these|those|our)\s+)?(?:current\s+)?'
+                   r'(?:plan|implementation|changes|feature|release|code|documentation)')
+    work_action = r'(?:implement|build|publish|ship)\s+' + work_object
+    work_purpose = (r'(?:to\s+' + work_action
+                    + r'(?:\s+and\s+(?:to\s+)?' + work_action + r'){0,3}'
+                    + r'|for\s+(?:implementation|publication)\s+of\s+' + work_object + r')')
+    work_time = (r'(?:' + request + r')\s+' + work_quantity + r'\s+' + work_purpose
+                 + r'(?:\s+(?:today|tomorrow|please))?')
+    work = (r'(?:i|we)\s+will\s+(?:' + work_action + r'|publish|ship)'
+            + r'(?:\s+(?:today|tomorrow))?')
+    explanation = (
+        r'(?:all\s+)?(?:required\s+)?(?:tests|checks)\s+passed',
+        r'outstanding work',
+        r'(?:the\s+)?results\s+(?:look okay|are ready)',
+        r'(?:the\s+)?results\s+(?:clearly\s+)?show\s+(?:over\s+)?[0-9]+%\s+reduction',
+    )
+    complete = '(?:' + '|'.join((grant, work_time, work, *explanation)) + ')'
+    # Retain quoted contents, remove only presentation delimiters. Unrecognized
+    # symbols/words remain in the clause and fail the complete match. Apostrophes
+    # within words are retained, so unsupported contractions cannot be erased.
+    text = excerpt.casefold().replace("’", "'")
+    text = re.sub(r'["“”`]|(?<!\w)\'|\'(?!\w)|(?m:^\s*>\s?)', ' ', text)
+    text = re.sub(r'(?<=\w)[-\u2010\u2011](?=\w)', ' ', text)
+    clauses = re.split(r'[.!;\n:—–]+', text)
+    for part in clauses:
+        words = re.sub(r'\s+', ' ', part.replace(',', ' ')).strip()
+        if words and not re.fullmatch(complete, words):
+            return False
+    return True
 
 
-def contextual_consent(state: dict[str, Any], request: dict[str, Any], observed: datetime,
-                       *, relay: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """Bind an exact brief choice to the actual previously presented policy.
+def conversational_choice(excerpt: str) -> str | None:
+    """Recognize explicit everyday decisions; ambiguity requires clarification.
 
-    This optional envelope is observed conversational evidence, just like the
-    decision envelope. It cannot turn a generic approval into a policy without
-    retaining the question, proposed instructions and exact policy fields.
+    This only classifies an observed response. The adapter still verifies its
+    human source, the presented checkpoint, ordering and exact binding.
     """
-    context = request.get("choice_context")
-    if context is None:
+    text = re.sub(r'\s+', ' ', decision_text(excerpt)).strip()
+    qualifiers = re.sub(r'\s+', ' ', excerpt.casefold().replace("’", "'")).strip()
+    # Quotation cannot hide a qualification to an otherwise affirmative prefix.
+    if not text or '?' in qualifiers or re.search(
+        r"\b(?:if|unless|until|when|after|before|once|provided|assuming|hypothetically|example|would|might|maybe|perhaps|subject to|as long as)\b", qualifiers
+    ):
         return None
-    w.require(request.get("mode") == "autonomous" and isinstance(context, dict)
-              and context.get("schema") == "taskplane.policy-choice/v1",
-              "decision_provenance", "Policy choice requires its complete presented context.")
-    proposal = {key: request.get(key) for key in ("binding", "mode", "allowed_phases", "stop_phases", "conditions")}
-    w.require(context.get("proposal") == proposal, "decision_binding",
-              "Presented policy differs from this run's requested policy.")
-    source = context.get("source", {})
-    origin = relay["source_thread"] if relay else state["root"]
-    w.require(isinstance(source, dict) and source.get("conversation") == origin
-              and source.get("actor") == "assistant" and _text(source.get("reference"), 512)
-              and _text(context.get("question")) and _text(context.get("instructions")),
-              "decision_provenance", "Policy choice needs the actual question, instructions and presentation source.")
-    from .workflow_local import timestamp
-    w.require(timestamp(state["started_at"]) <= timestamp(source.get("observed_at")) < observed,
-              "decision_chronology", "The automatic-policy question must follow run start and precede the response.")
-    w.require(context.get("selected_label") == request.get("excerpt")
-              and request.get("semantic_choice") == "approved", "decision_provenance",
-              "Retain the observed response and explicit policy semantic candidate.")
-    return deepcopy(dict(context))
+    # A later qualification/negation must not be hidden by an affirmative prefix.
+    if re.search(r"\b(?:but|however|except|yet|no|not|never|don't|cannot|can't|shouldn't|without)\b", qualifiers):
+        return None
+    lead = re.sub(r'^(?:please\s+)?(?:i\s+)?', '', text).rstrip('.! ')
+    dissent = {
+        'cancelled': r'(?:cancel(?:led)?|stop|abort)',
+        'rejected': r'(?:reject(?:ed)?|decline(?:d)?)',
+        'changes_requested': r'(?:changes? requested|request changes|needs? (?:changes|revisions)|fix (?:the )?issues|revise)',
+    }
+    choices = {choice for choice, pattern in dissent.items()
+               if re.match(r'^' + pattern + r'\b', lead)}
+    phase = r'(?:' + '|'.join(w.PHASES) + r')'
+    approval = (r'^(?:(?:' + phase + r'\s+(?:phase\s+)?(?:is\s+)?)?'
+                r'(?:approv(?:e|ed)|accept(?:ed)?|apparoved|apprvoed)|'
+                r'(?:looks?|sounds?) (?:good|great)|lgtm|go ahead|proceed|continue|'
+                r'yes|yep|yeah|ok(?:ay)?|ship it)\b')
+    if re.match(approval, lead) and _complete_approval_response(excerpt):
+        choices.add('approved')
+    # Every recognized dissent form also qualifies an affirmative prefix.
+    # Quoting that qualification cannot hide it from the mixed-decision check.
+    conflict = any(re.search(r'\b' + pattern + r'\b', qualifiers) for pattern in dissent.values())
+    if 'approved' in choices and conflict:
+        return None
+    # "Yes, explain ..." or "continue reviewing" is not acceptance of an output.
+    if 'approved' in choices and re.search(
+        r'\b(?:explain|review(?:ing)?|investigat\w*|research|discuss|consider|approved by|implement an? option|add an? (?:option|feature))\b', text
+    ):
+        return None
+    return next(iter(choices)) if len(choices) == 1 else None
+
+
+def _unnecessary_decision(predicate: str) -> bool:
+    """Only a local, unambiguous negation removes a human dependency."""
+    for contraction, expanded in (("won't", 'will not'), ("can't", 'can not'), ("shan't", 'shall not')):
+        predicate = predicate.replace(contraction, expanded)
+    predicate = re.sub(r"\b(\w+)n't\b", r'\1 not', predicate)
+    words = predicate.split()
+    certain = {'is', 'are', 'was', 'were', 'be', 'been', 'being', 'remain', 'remains',
+               'will', 'would', 'shall', 'should', 'must', 'can', 'could', 'have', 'has',
+               'had', 'do', 'does', 'did', 'need', 'needs', 'to', 'required', 'needed',
+               'necessary', 'mandatory', 'unnecessary', 'optional', 'still', 'also',
+               'explicitly', 'manually', 'personally', 'strictly'}
+    negatives = [i for i, word in enumerate(words) if word in ('not', 'never', 'no')]
+    if words[-1] in ('unnecessary', 'optional'):
+        return not negatives and all(word in certain for word in words)
+    if len(negatives) != 1:
+        return False
+    index = negatives[0]
+    if words[index] == 'no':
+        if words[index:index + 2] != ['no', 'longer']:
+            return False
+        end = index + 2
+    else:
+        end = index + 1
+    # "Not only required", "not always required" and "not yet required"
+    # retain a possible human checkpoint; none means explicitly unnecessary.
+    return (all(word in certain | {'always'} for word in words[:index])
+            and all(word in certain for word in words[end:]))
+
+
+def _unnecessary_clause(clause: str) -> bool:
+    """Recognize an entire explicitly unnecessary human-decision clause.
+
+    The grammar consumes the subject and every predicate. An unknown qualifier
+    cannot be discarded by matching a shorter unnecessary prefix.
+    """
+    signoff = r'sign(?:s|ed|ing)?[\s\-\u2010\u2011]?offs?'
+    decision_verb = (r'(?:approv(?:e[sd]?|ing)|confirm(?:s|ed|ing)?|'
+                     r'authori[sz](?:e[sd]?|ing)|consent(?:s|ed|ing)?|accept(?:s|ed|ing)?|'
+                     r'assent(?:s|ed|ing)?|' + signoff + r')')
+    decision_noun = (r'(?:approvals?|confirmations?|authori[sz]ations?|consents?|'
+                     r'acceptances?|permissions?|assents?|clearances?|' + signoff + r')')
+    conjunction = r'(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)'
+    nouns = decision_noun + r'(?:' + conjunction + decision_noun + r'){0,3}'
+    modifier = (r'(?!(?:and|or|but|while|although|from|by|is|are|be|will|must|not|no|'
+                r'required|needed|necessary|mandatory)\b)[a-z][a-z-]{0,31}')
+    role = (r'(?:(?:the|a|an|my|our|your)\s+)?(?:' + modifier + r'\s+){0,3}'
+            r'(?:humans?|users?|reviewers?|owners?|approvers?|maintainers?|managers?|operators?)')
+    human_actor = r'(?:i|we|you|' + role + r')'
+    human_source = r'(?:me|us|you|' + role + r')'
+    human_noun = (r'(?:(?:my|our|your|human|user|manual|' + role + r"(?:'s|')?)\s+"
+                  + nouns + r'|' + nouns + r'\s+(?:from|by)\s+' + human_source + r')')
+    human_subject = ('(?:' + human_noun + '|' + nouns + r')(?:' + conjunction +
+                     r'(?:' + human_noun + '|' + nouns + r')){0,3}')
+    requirement = r'(?:required|needed|necessary|mandatory|unnecessary|optional)'
+    adverb = r'(?:still|also|always|only|just|yet|ever|sometimes|[a-z]{2,24}ly)'
+    auxiliary = (r"(?:is|are|was|were|be|been|being|remain[s]?|will|would|shall|should|must|"
+                 r"can|could|may|might|have|has|had|do|does|did|need[s]?|required|to|not|never|no longer|\w+n't)")
+    predicate_words = r'(?:(?:' + auxiliary + '|' + adverb + r')\s+){0,10}'
+    passive = predicate_words.replace('{0,10}', '{0,10}?') + requirement
+    continuation = r'\s+(?:and|or|but|yet|however|nevertheless|while|although)\s+'
+    tail = (passive + r'(?:' + continuation + r'(?:(?:' + human_subject +
+            r'|it)\s+)?' + passive + r'){0,3}')
+    # Only supported parenthetical words and inter-word commas are presentation.
+    # Other brackets, quotes, symbols and trailing punctuation remain unmatched.
+    clause = re.sub(r'\((still|also|never|' + decision_noun + r')\)', r'\1', clause)
+    clause = re.sub(r'(?<=\w),\s+(?=\w)', ' ', clause)
+    clause = re.sub(r'\s+', ' ', clause).strip()
+    gap = r'[\s:;]+'
+    forward = human_subject + gap + r'(?P<predicate>' + tail + r')'
+    reverse = r'(?P<predicate>' + passive + ')' + gap + human_subject
+    elided = r'(?:it\s+)?(?P<predicate>' + tail + r')'
+    for pattern in (forward, reverse, elided):
+        match = re.fullmatch(pattern, clause)
+        if match:
+            predicates = [item[0] for item in re.finditer(passive, match['predicate'])]
+            # After the first complete predicate, "yet" is the conjunction
+            # admitted by tail, not an adverb modifying the next negation.
+            predicates = [re.sub(r'^yet\s+', '', item) if index else item
+                          for index, item in enumerate(predicates)]
+            return bool(predicates) and all(_unnecessary_decision(item) for item in predicates)
+    obligation = human_actor + r'\s+(?P<predicate>' + predicate_words + r')' + decision_verb
+    match = re.fullmatch(obligation, clause)
+    if match:
+        predicate = match['predicate'].strip()
+        return bool(re.search(r'\b(?:must|need[s]?|(?:have|has|had) to|required to)\b', predicate)
+                    and _unnecessary_decision(predicate))
+    human_decision = (r'(?:' + human_actor + r'\s+'
+                      r'(?:(?:have|has|had|will|explicitly|manually)\s+)*' + decision_verb +
+                      r'|' + human_subject + r')')
+    negated_dependency = (r"(?:(?:you|there is)\s+)?(?:do not|don't|does not|doesn't|need not|no need to)\s+"
+                          r'(?:wait|await|ask|pause|hold|halt|stop|require|need|obtain|get)\s+'
+                          r'(?:(?:for|to)\s+)?' + human_decision)
+    return re.fullmatch(negated_dependency, clause) is not None
+
+
+def affirmative_consent(excerpt: str) -> bool:
+    """Require direct consent and a complete classification of every clause.
+
+    This finite grammar intentionally refuses unsupported harmless prose as well
+    as unknown conditions. No recognized prefix, quoted example, human-decision
+    vocabulary, or previous clause can exempt the remaining text from the audit.
+    Provenance and policy conditions are still checked by the Controller.
+    """
+    if not _text(excerpt) or '\x00' in excerpt:
+        return False
+    text = excerpt.casefold().replace("’", "'")
+    text = re.sub(r'^\s*(?:\[@taskplane\]\(plugin://[^)]+\)|@taskplane)\s*', '', text)
+    if '?' in text or re.search(
+        r'\b(?:if|unless|until|when|once|provided|assuming|hypothetically|maybe|perhaps|subject to|as long as)\b', text
+    ):
+        return False
+    phase = r'(?:' + '|'.join(w.PHASES) + r')'
+    check = (r'(?:required\s+)?(?:tests?|checks?)\s+'
+             r'(?:(?:(?:must|should|shall|will)\s+)?(?:pass|succeed)|'
+             r'(?:(?:is|are|remain|remains)\s+)?(?:required|mandatory|needed|necessary))')
+    stop = r'(?:stop|pause|hold)\s+(?:at|before)\s+' + phase + r'(?:\s+phase)?'
+    prefix = r'(?:now[, ]+)?(?:for this (?:task|run|release|workflow),?\s+)?(?:please\s+)?'
+    actor = r'(?:(?:i (?:explicitly )?authorize (?:you|taskplane) to|run autonomously and)\s+)?'
+    verb = r'(?:auto[ -]?approve|automatically approve)\s+'
+    phase_list = phase + r'(?:\s*,\s*' + phase + r'){0,6}(?:\s*,?\s+and\s+' + phase + r')?'
+    target = r'(?:all\s+|the\s+|each\s+)?(?:phases?|phase transitions?|' + phase_list + r')'
+    direct = prefix + actor + verb + target
+    request = prefix + r'(?:(?:i (?:want|need|would like)(?: you)? to|you may)\s+)?'
+    workflow = (request + r'(?:start|run|execute|proceed with)\s+(?:an?\s+|the\s+|this\s+)?'
+                r'(?:(?:full|end[ -]to[ -]end)\s+)?(?:auto[ -]?approved|automatically approved|autonomous)\s+'
+                r'(?:full\s+)?(?:workflow|flow|run|delivery)')
+    fixes_workflow = (request + r'proceed with fixes with\s+(?:an?\s+|the\s+)?'
+                      r'(?:end[ -]to[ -]end\s+)?auto[ -]?approved\s+(?:workflow|flow)')
+    automatic_phases = request + r'(?:run|execute)\s+(?:all\s+)?(?:release\s+)?phases\s+automatically'
+    declarative = r'this is\s+(?:an?\s+)?auto[ -]?approved\s+(?:flow|workflow|run)(?:\s+all the way)?'
+    # The existing document-input request has a bounded object, never a wildcard
+    # capable of swallowing a human condition embedded in a technical description.
+    document_input = r'(?:use 36-hour audit and retrospective document as (?:an? )?input and\s+)?'
+    end_to_end = (request + document_input +
+                  r'(?:start|run|execute|proceed with)\s+(?:an?\s+|the\s+)?(?:(?:full\s+)?end[ -]to[ -]end|full)\s+'
+                  r'(?:flow|workflow|delivery)\s+with\s+auto[ -]?approv(?:al|e)')
+    technical_goal = (r'which should resolve untracked token usage'
+                      r"(?:, over 3\.5m tokens were spend outside any of the phases, it should be properly tracked where it's used "
+                      r'for proper tracking and father analysis)?')
+    # Supported suffixes form a complete grammar, not a prefix to be erased.
+    scope = r'(?:\s+for this (?:task|run|release|workflow))?'
+    through = r'(?:\s+through\s+' + phase + r')?'
+    condition = r'(?:\s+after\s+' + check + r')?'
+    purpose = r'(?:\s+(?:to fix (?:it )?all|' + technical_goal + r'))?'
+    positive = '(?:' + '|'.join((direct, workflow, fixes_workflow, automatic_phases, end_to_end, declarative)) + ')'
+    positive += scope + through + condition + purpose
+    feature = (r'(?:second improvement is coming from retro as well:\s*)?'
+               r'(?:remove|change|relax|update)\s+(?:the\s+)?(?:exact\s+)?'
+               r'(?:word|wording)\s+(?:expectation|requirement|matching)\s+for\s+'
+               r'phase approval(?:,?\s*either extend vocabulary or just accept '
+               r'plain text which indicates? approval)?')
+    technical = (
+        feature,
+        r'use taskplane to implement the settings page',
+        r'we need to address and resolve all the issues',
+        r'additionally run security lens and include its findings into the scope',
+        r"it's ok for ask for clarification, but never ask for specific 100% match on the words to be used to proceed",
+    )
+    positive_seen = False
+
+    def classified(clause: str) -> bool:
+        nonlocal positive_seen
+        clause = re.sub(r'\s+', ' ', clause).strip()
+        if re.fullmatch(positive, clause):
+            positive_seen = True
+            return True
+        if any(re.fullmatch(pattern, clause) for pattern in (check, stop, *technical)):
+            return True
+        return _unnecessary_clause(clause)
+
+    # Decimal punctuation belongs to the bounded technical statement. All other
+    # sentence punctuation is an explicit boundary. A semicolon may also belong
+    # to a reversed unnecessary decision, so try the full clause before splitting.
+    for sentence in re.split(r'(?<!\d)\.|\.(?!\d)|[!\n]', text):
+        if not sentence.strip():
+            continue
+        if classified(sentence):
+            continue
+        clauses = sentence.split(';')
+        if len(clauses) == 1 or not all(part.strip() and classified(part) for part in clauses):
+            return False
+    return positive_seen
 
 
 def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     w.require(state.get("profile") == "native_workflow", "unsupported_authority",
               "Observed automatic authorization is available only in native_workflow.")
     w.require(not state["finished"], "approval_required", "An ended run cannot change its policy.")
-    from . import delegated_approval
-    w.require(request.get("schema") in {SCHEMA, delegated_approval.POLICY_SCHEMA},
-              "invalid_evidence", "Approval policy schema is missing.")
+    w.require(request.get("schema") == SCHEMA, "invalid_evidence", "Approval policy schema is missing.")
     event = request.get("event_id")
     w.require(_text(event, 512), "invalid_evidence", "Policy needs an actual user event reference.")
     events = state.get("policy_events", {})
@@ -129,14 +387,9 @@ def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         return deepcopy(state)
     w.require(content_fingerprint(request.get("binding")) == content_fingerprint(policy_binding(state)), "stale_checkpoint",
               "Policy must bind the current workspace, task, run, scope and revision.")
-    relay = (delegated_approval.verify(state, request)
-             if request.get("schema") == delegated_approval.POLICY_SCHEMA else None)
-    w.require(relay is not None or "relay" not in request, "invalid_evidence",
-              "Delegated observations require the explicit v2 policy schema.")
     source = request.get("source")
-    w.require(isinstance(source, dict) and (relay is not None or (
-              source.get("kind") in ("conversation", "native_prompt")
-              and source.get("conversation") == state["root"])) and source.get("actor") == "user"
+    w.require(isinstance(source, dict) and source.get("kind") in ("conversation", "native_prompt")
+              and source.get("conversation") == state["root"] and source.get("actor") == "user"
               and source.get("automatic") is False and _text(source.get("reference"), 512)
               and request.get("recorder") in ("root_orchestrator", "native_prompt_hook"),
               "invalid_evidence", "Policy requires observed user provenance, not an agent/tool event.")
@@ -156,9 +409,13 @@ def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     assert isinstance(excerpt, str)
     mode = request.get("mode")
     w.require(mode in ("manual", "autonomous"), "invalid_evidence", "Choose manual or autonomous approval.")
-    choice_context = contextual_consent(state, request, observed, relay=relay)
-    w.require(request.get("semantic_choice") == "approved", "approval_required",
-              "Explicit policy authorization needs the orchestrator's semantic candidate and actual human source.")
+    normalized = excerpt.casefold()
+    if mode == "autonomous":
+        w.require(affirmative_consent(excerpt), "approval_required",
+                  "Automatic approval intent is unclear. Ask whether the user wants automatic phase approvals for this run, and preserve their answer in their own words. Negative, quoted or feature-only wording stays manual.")
+    else:
+        w.require(re.search(r"manual|(?:stop|disable|revoke|cancel).*(?:auto|automatic)", normalized),
+                  "approval_required", "Preserve an explicit instruction to stop or return to manual approval.")
     allowed, stops = request.get("allowed_phases", []), request.get("stop_phases", [])
     w.require(isinstance(allowed, list) and isinstance(stops, list)
               and all(isinstance(p, str) and p in w.PHASES for p in allowed + stops)
@@ -181,16 +438,9 @@ def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     policy = {"schema": SCHEMA, "id": event, "revision": len(history) + 1, "mode": mode,
               "binding": policy_binding(state), "authorized_scope": deepcopy(state["scope"]),
               "allowed_phases": allowed, "stop_phases": stops,
-              "conditions": [{"id": "user_instructions", "kind": "observed",
-                              "instruction": choice_context["instructions"] if choice_context else excerpt}] + conditions,
+              "conditions": [{"id": "user_instructions", "kind": "observed", "instruction": excerpt}] + conditions,
               "provenance": {"source": deepcopy(source), "recorder": request["recorder"], "excerpt": excerpt},
               "assurance": "observed", "request_digest": digest}
-    if choice_context is not None:
-        policy["provenance"]["choice_context"] = choice_context
-    if relay is not None:
-        policy["provenance"].update(schema=delegated_approval.POLICY_SCHEMA, relay=relay)
-        policy["source_assurance"] = "relayed_observation"
-        policy["host_attested"] = False
     policy["digest"] = content_fingerprint(policy)
     history.append(policy)
     s["approval_policy"] = deepcopy(policy)

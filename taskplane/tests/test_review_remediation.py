@@ -41,6 +41,18 @@ def shell_hook(event, monkeypatch, capsys):
     return json.loads(capsys.readouterr().out)
 
 
+@pytest.mark.parametrize('text', ['Okay. Hold for my approval.', 'LGTM. Wait for my sign-off.'])
+def test_controller_refuses_original_deferred_human_responses(root, text):
+    controller, state = setup(root)
+    state = submit(controller, state)
+    envelope = decision(state, text=text)
+    envelope['choice'] = 'approved'  # An affirmative label cannot override the full response.
+    before = controller._path().read_bytes()
+    with pytest.raises(w.Refusal, match='unclear'):
+        decide(controller, state, envelope)
+    assert controller._path().read_bytes() == before
+    assert not controller.report()['decisions']
+    assert decide(controller, state)['decisions']
 
 
 @pytest.mark.parametrize('selector', ['duplicate', 'equals', 'mixed', 'abbreviation', 'abbrev_equals'])
@@ -104,7 +116,7 @@ def test_runtime_collision_reports_both_paths_and_keeps_foreign_denial(root, too
 @pytest.mark.parametrize('tool', ['exec_command', 'Bash'])
 @pytest.mark.parametrize('tail', [('version', '--verify'), ('help', '--md')])
 @pytest.mark.parametrize('directory_support', [False, True])
-def test_required_binding_diagnostics_and_structured_write_boundary(root, tool, tail, monkeypatch, capsys, directory_support):
+def test_required_binding_allows_only_exact_installed_diagnostics(root, tool, tail, monkeypatch, capsys, directory_support):
     if not directory_support:
         monkeypatch.setattr(os, 'supports_dir_fd', set())
     monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
@@ -114,10 +126,12 @@ def test_required_binding_diagnostics_and_structured_write_boundary(root, tool, 
     assert result['hookSpecificOutput'].get('permissionDecision') != 'deny'
     assert 'binding' in result['hookSpecificOutput']['additionalContext']
     assert not (root / '.taskplane').exists()
-    bad = {'hook_event_name': 'PreToolUse', 'cwd': str(root), 'session_id': 'root',
-           'tool_name': 'Write', 'tool_input': {'path': str(root / 'request.json'), 'content': '{}'}}
-    assert shell_hook(bad, monkeypatch, capsys)['hookSpecificOutput']['permissionDecision'] == 'deny'
-
+    for bad in [runtime(root, *tail, '--extra'), runtime(root, *tail, parent_session_id='parent'),
+                runtime(root, tail[0], tail[1][:3]), command(root, sys.executable, '-c', 'print(1)'),
+                command(root, 'sh', '-c', 'touch file'),
+                {'hook_event_name': 'PreToolUse', 'cwd': str(root), 'session_id': 'root',
+                 'tool_name': 'Write', 'tool_input': {'path': str(root / 'request.json'), 'content': '{}'}}]:
+        assert shell_hook(bad, monkeypatch, capsys)['hookSpecificOutput']['permissionDecision'] == 'deny'
     assert not (root / '.taskplane').exists()
 
 
@@ -130,20 +144,18 @@ def request():
 @pytest.mark.parametrize('after', [False, True])
 def test_first_creation_recovers_each_write_interruption_without_read_repair(root, monkeypatch, write_number, after):
     controller = h.Controller(root, 'root', h.installed_adapter('codex'))
-    originals = {name: getattr(primitives, name) for name in ('atomic_json', 'atomic_write_bytes')}
-    publications = []
-    def interrupt(name):
-        def interrupted(path, value, **kwargs):
-            publications.append((Path(path).name, name, json.loads(value) if isinstance(value, bytes) else deepcopy(value)))
-            if len(publications) == write_number and not after:
-                raise OSError('injected before publication')
-            result = originals[name](path, value, **kwargs)
-            if len(publications) == write_number and after:
-                raise OSError('injected after publication/directory sync')
-            return result
-        return interrupted
-    for name in originals:
-        monkeypatch.setattr(primitives, name, interrupt(name))
+    original = primitives.atomic_json
+    count = 0
+    def interrupted(path, value, **kwargs):
+        nonlocal count
+        count += 1
+        if count == write_number and not after:
+            raise OSError('injected before publication')
+        result = original(path, value, **kwargs)
+        if count == write_number and after:
+            raise OSError('injected after publication/directory sync')
+        return result
+    monkeypatch.setattr(primitives, 'atomic_json', interrupted)
     if write_number == 6:  # The run is durable before the advisory harness binding.
         committed = controller.start(request())
         assert committed['start_observation_errors']
@@ -151,19 +163,7 @@ def test_first_creation_recovers_each_write_interruption_without_read_repair(roo
     else:
         with pytest.raises((OSError, w.Refusal), match='injected'):
             controller.start(request())
-    # Keep all six durable publications covered, including the compact CAS
-    # bytes between the initialization receipt and advisory harness binding.
-    transaction = 'initialization-' + controller._path().stem.removeprefix('workflow-') + '.json'
-    expected = [(transaction, 'atomic_json'), (controller.adapter.markername, 'atomic_json'),
-                (controller.adapter.filename, 'atomic_json'), (transaction, 'atomic_json'),
-                (controller.adapter.filename, 'atomic_write_bytes'), (local.Harness(root, 'root').path.name, 'atomic_json')]
-    assert [(path, writer) for path, writer, _ in publications] == expected[:write_number]
-    if write_number >= 3:
-        assert publications[2][2] == controller.adapter.empty_database()
-    if write_number >= 5:
-        assert len(publications[4][2]['runs']) == 1 and publications[4][2]['storage_generation'] == 1
-    for name, original in originals.items():
-        monkeypatch.setattr(primitives, name, original)
+    monkeypatch.setattr(primitives, 'atomic_json', original)
     before = {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')}
     try:
         controller.report()
@@ -194,20 +194,6 @@ def test_pending_initialization_resumes_through_hook_and_flow_cli(root, monkeypa
     local.Harness(root, 'root').select('tp-go', 'user/first-start', {})
     (root / 'scope.json').write_text(json.dumps(request()['scope']))
     args = ['start', '--workspace', str(root), '--scope', 'scope.json', '--request-reference', 'user/first-start']
-    before = {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')
-              if p != local.Harness(root, 'root').path}
-    # Reconciliation must be a read-only no-op until the exact start resumes;
-    # unsupported commands, foreign ownership and unknown handles still refuse.
-    for rejected in [runtime(root, 'flow', 'unknown', '--workspace', str(root)),
-                     runtime(root, 'flow', 'report', '--workspace', str(root)),
-                     command(root, sys.executable, '-c', 'print(1)'), stdin(root, 6000)]:
-        with pytest.raises(w.Refusal):
-            flow.hook(rejected, governor=controller)
-    worker = h.Controller(root, 'root', h.installed_adapter('codex'), principal='foreign-worker')
-    with pytest.raises(w.Refusal):
-        flow.hook(runtime(root, 'flow', *args, call_id=call_id), governor=worker)
-    assert {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')
-            if p != local.Harness(root, 'root').path} == before
     flow.hook(runtime(root, 'flow', *args, call_id=call_id), governor=controller)
     flow.hook(runtime(root, 'flow', *args, call_id=call_id, name='PostToolUse', tool_response={'session_id': 6000}),
               governor=controller)
@@ -216,12 +202,10 @@ def test_pending_initialization_resumes_through_hook_and_flow_cli(root, monkeypa
     for handle, chars in [(6001, ''), (6000, 'print(1)\n')]:
         with pytest.raises(w.Refusal):
             flow.hook(stdin(root, handle, chars), governor=controller)
-    assert not controller._path().exists() and controller.adapter.pending_initialization()
     assert flow.main(args, governor=controller) == 0
     capsys.readouterr()
     assert controller.report()['run']
     assert controller.report()['observed_handles']['6000']['state'] == 'running'
-    assert not controller.report().get('parent_hook_readiness')
 
 
 @pytest.mark.parametrize('kind', ['legacy_marker', 'established_missing', 'corrupt_database', 'foreign_proof', 'nonempty_pending'])
@@ -404,7 +388,11 @@ def test_different_workdir_keeps_absolute_matching_workspace_executable(root, mo
     assert flow.main(args, governor=controller) == 0
     capsys.readouterr()
     assert list(foreign.iterdir()) == []
-
+    # An explicitly relative dashboard output follows command cwd too.
+    board = runtime(selected, 'dashboard', '--workspace', str(selected), '--out', '.taskplane/dashboard.html')
+    board['tool_input']['workdir'] = str(foreign)
+    with pytest.raises(w.Refusal):
+        flow.hook(board, governor=controller)
 
 
 def test_same_workdir_relative_workspace_uses_execution_cwd(root, monkeypatch):
@@ -416,8 +404,119 @@ def test_same_workdir_relative_workspace_uses_execution_cwd(root, monkeypatch):
     flow.hook(event, governor=controller)
 
 
+@pytest.mark.parametrize('text', [
+    'Okay. I am withholding approval.', "Okay. I'll sign it off tomorrow.",
+    'LGTM. My approval is still to come.', 'Okay. Approval is to follow.',
+    'Okay. I still need to sign this off.', 'Okay. Approval is forthcoming.',
+    'Okay. Approval remains my responsibility.',
+    'Okay. I will give the go-ahead tomorrow.', 'Okay. My green light will come later.',
+    "Okay. I'll give my OK tomorrow.", 'Okay. I need more time.',
+    'Okay. Let me think about it.', 'Okay. I will decide tomorrow.',
+    'LGTM; "Allow us to consider this".',
+    'Okay. I need more time to think about it.',
+    'Okay. We require additional time to deliberate.',
+    'Okay. I need time to think about it.',
+    'Okay. We need some more time to deliberate.',
+    'Okay. I need more time to really think this through.',
+    'Okay. We require additional time for consideration.',
+    'Okay. We need more time to finalize.',
+    'Okay. "I need more time to think about it."',
+    'Okay. “We require additional time to deliberate.”',
+    "Okay. 'I need time to think about it.'",
+    'Okay. `We need some more time to deliberate.`',
+    'Okay.\n> I need more time to really think this through.',
+    'Okay.\n```\nWe require additional time for consideration.\n```',
+    'Approved. "We need more time to finalize." Approved.',
+    'I need more time to think about it. Okay.',
+    'We require additional time to deliberate. Okay.',
+    'Go ahead. For further consideration, we need some more time. Approved.',
+    'Approved. I need. More time to really think this through.',
+    'Okay. We require additional; time for consideration.',
+    'Approved. I need more time to think. We need more time to implement the plan.',
+    'Approved. We need more time to implement the plan. I need more time to think.',
+    'Approved. To deliberate, we need more time to implement the plan.',
+    'Approved. We need more time to implement the plan; to think about it, I need time.',
+    'Approved. I need. We need more time to implement the plan. More time to think.',
+    # Shared purposes must remain part of the complete time request.
+    'Okay. We need more time to implement the plan\nand to deliberate.',
+    'Okay. We need more time to implement the plan; and to deliberate.',
+    'Okay. We need more time to implement the plan and to deliberate.',
+    'Okay. We need more time to implement the plan. And to deliberate.',
+    'Okay. We need more time to implement the plan, and to deliberate.',
+    'Okay. We need more time to implement the plan: and to deliberate.',
+    'Okay. We need more time to implement the plan — and to deliberate.',
+    'Approved. "We need more time to implement the plan; and to deliberate." Approved.',
+    'Okay. We need more time to implement the plan; “and to deliberate”.',
+    'Okay. We need more time to implement the plan; `and to deliberate`.',
+    'Okay. We need more time to implement the plan\n> and to deliberate.',
+    'Okay. We need more time to implement the plan.\n```\nand to deliberate\n```',
+    'Okay. We need more time to deliberate\nand to implement the plan.',
+    'Go ahead. For contemplation; we need more time to implement the plan. Approved.',
+    'We need more time to implement the plan; and to deliberate. Okay.',
+    'Okay. We need more time to implement the plan; for further contemplation.',
+    'Okay. We need more time to implement the plan\nand for carefully considering the plan.',
+    'Okay. We need more time to implement the plan; and to finalize.',
+    'Okay. We need more time to implement the plan; for the next step.',
+    'Okay. We need more time to implement the plan; to quuxify the decision process.',
+    'Okay. We need more time to implement the plan; this remains undecided.',
+    'Approved. We need more time to implement the plan. Approved. quux.',
+    'Approved. We need more time to implement the plan; and to publish the release.',
+    'Approved. We need more time to implement the plan\nplease and thank you.',
+    # Broad time-request detection must not grant unknown quantity modifiers.
+    'Approved. We need deliberation time to implement the plan.',
+    'Okay. We need thinking time to build the feature. I approve this phase now.',
+    'Approved. We need further consideration time to implement the plan.',
+    'Go ahead. “I require my approval time for implementation of these changes”.',
+    'Approved. We need permission time to implement the plan.',
+    'Okay. We need quux time to build the feature. I approve this phase now.',
+])
+def test_controller_retained_consent_refusal_preserves_pending_store(root, text):
+    controller, state = setup(root)
+    state = submit(controller, state)
+    envelope = decision(state, text=text)
+    assert envelope['choice'] is None
+    envelope['choice'] = 'approved'
+    before = controller._path().read_bytes()
+    with pytest.raises(w.Refusal, match='unclear') as refusal:
+        decide(controller, state, envelope)
+    assert refusal.value.reason == 'invalid_evidence'
+    assert controller._path().read_bytes() == before
+    with pytest.raises(w.Refusal) as refusal:
+        controller.apply('advance', state['run'], expected_revision=state['revision'], phase='design')
+    assert refusal.value.reason == 'approval_required'
+    assert controller._path().read_bytes() == before
+    pending = controller.report()
+    assert w.current(pending)['decision'] == 'awaiting_human_approval'
+    assert pending['revision'] == state['revision'] and not pending['decisions']
 
 
+@pytest.mark.parametrize('text', [
+    'Approved.', 'Looks good, proceed.', 'Okay. I sign this off now.',
+    'Okay. I give my green light now.', 'Okay. I grant the go-ahead.',
+    'Approved. We will publish tomorrow.',
+    'Approved. We need more time to implement the plan.',
+    'Product approved. Results clearly show over 50% reduction.',
+    'Approved. We need time to implement the plan and to build the feature.',
+    'Approved. We need time to build the feature and publish the release.',
+    'Okay. I require additional time for implementation of these changes.',
+    'LGTM. We need time to ship the code.\nWe need time to publish the documentation.',
+    'Go ahead. "We need more time to implement the plan". Approved.',
+    'Approved. Our team needs a little extra time to publish the release tomorrow.',
+    'Okay. We need more time to implement the plan. I approve this phase now.',
+    'Okay. My approval is granted. We need time to build the feature. I sign this off now.',
+])
+def test_controller_clear_consent_advances_and_retains_exact_excerpt(root, text):
+    controller, state = setup(root)
+    state = submit(controller, state)
+    envelope = decision(state, text=text)
+    assert envelope['choice'] == 'approved'
+    accepted = decide(controller, state, envelope)
+    assert w.current(accepted)['decision'] == 'approved'
+    assert accepted['decisions'][envelope['event_id']]['provenance']['excerpt'] == text
+    advanced = controller.apply('advance', state['run'], expected_revision=accepted['revision'], phase='design')
+    assert w.current(advanced)['phase'] == 'design'
+    assert advanced['decisions'][envelope['event_id']]['provenance']['excerpt'] == text
+    assert controller.report()['decisions'][envelope['event_id']]['provenance']['excerpt'] == text
 
 
 @pytest.fixture
@@ -459,8 +558,57 @@ def test_windows_interpreter_search_respects_current_directory_policy(interprete
     assert runtime_command.interpreter(PYTHON_NAME, execution) == expected
 
 
+@pytest.mark.parametrize('mode', ['relative-executable', 'relative-PATH', 'empty-PATH'])
+@pytest.mark.parametrize('route', ['activate', 'diagnostic'])
+@pytest.mark.parametrize('lifecycle', ['bootstrap', 'active', 'sealed'])
+def test_exact_argv_foreign_interpreter_refused_in_execution_directory(interpreters, mode, route, lifecycle, monkeypatch):
+    import subprocess
+    selected, execution, _ = interpreters
+    if lifecycle == 'bootstrap':
+        controller = h.Controller(selected, 'root', h.installed_adapter('codex'))
+        local.Harness(selected, 'root').select('tp-go', 'user/request', controller.report())
+    else:
+        controller, state = setup(selected)
+        if lifecycle == 'sealed':
+            submit(controller, state)
+    tail = ['flow', 'activate', '--workspace', str(selected)] if route == 'activate' else ['version', '--verify']
+    event = interpreter_event(interpreters, mode, tail, monkeypatch)
+    words = local.runtime_words(event)
+    assert runtime_command.installed(words, selected)
+    assert not runtime_command.installed(words, execution)
+    if os.name != 'nt':  # The foreign executable fixture is a POSIX shell script.
+        actual = subprocess.run(words, cwd=execution, capture_output=True, text=True, check=True)
+        assert actual.stdout.strip() == 'foreign-interpreter'
+    with pytest.raises(w.Refusal, match='interpreter mismatch'):
+        flow.hook(event, governor=controller)
+    if lifecycle != 'bootstrap':
+        # Direct Controller admission must not fall back to opaque shell permission.
+        with pytest.raises(w.Refusal, match='interpreter mismatch'):
+            controller.guard(event, state['run'])
+    assert not controller.adapter.control_action(event, controller.report())
+    assert not local.Harness(selected, 'root').bootstrap_command(event)
 
 
+@pytest.mark.parametrize('mode', ['relative-executable', 'relative-PATH', 'empty-PATH'])
+@pytest.mark.parametrize('tail', [('version', '--verify'), ('help', '--md'),
+                                  ('workspace', 'inspect'), ('workspace', 'bind'),
+                                  ('workspace', 'recover'), ('flow', 'report'), ('flow', 'diagnose')])
+def test_missing_binding_exemptions_resolve_actual_interpreter(interpreters, mode, tail, monkeypatch):
+    selected, _, _ = interpreters
+    monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
+    monkeypatch.setenv('TASKPLANE_WORKSPACE', str(selected))
+    args = list(tail)
+    if tail[0] not in {'version', 'help'}:
+        args += ['--workspace', str(selected)]
+    if tail[0] == 'workspace' and tail[1] in {'bind', 'recover'}:
+        args += ['--request-json', '{}']
+    event = interpreter_event(interpreters, mode, args, monkeypatch)
+    assert not flow._workspace_admin(event)
+    assert not flow._onboarding_read(event)
+    assert not flow._state_admin(event, selected)
+    with pytest.raises(w.Refusal, match='interpreter mismatch'):
+        flow.hook(event)
+    assert not (selected / '.taskplane').exists()
 
 
 @pytest.mark.parametrize('mode', ['relative-executable', 'relative-PATH', 'empty-PATH', 'absolute'])
@@ -482,9 +630,7 @@ def test_valid_interpreter_identity_uses_execution_cwd(interpreters, mode, diffe
         else:
             event['tool_input']['workdir'] = str(selected)
     assert runtime_command.installed(local.runtime_words(event), execution if different_cwd else selected)
-    result = flow.hook(event, governor=controller)
-    assert 'do not create or validate workspace binding' in result['hookSpecificOutput']['additionalContext']
-    assert 'taskplane_admission' not in event
+    flow.hook(event, governor=controller)
     controller.guard(event, state['run'])
     assert flow._onboarding_read(event)
 
@@ -607,3 +753,96 @@ def test_concurrent_terminal_setup_observations_preserve_each_completion(root):
     for handle in [904, 905]:
         with pytest.raises(w.Refusal):
             flow.hook(stdin(root, handle), governor=controller)
+
+
+def _assert_unclassified_response_preserves_pending_checkpoint(root, text):
+    controller, state = setup(root)
+    state = submit(controller, state)
+    before = controller._path().read_bytes()
+    envelope = decision(state, text=text)
+    assert envelope['choice'] is None
+    envelope['choice'] = 'approved'  # An asserted label cannot supply missing consent.
+    with pytest.raises(w.Refusal, match='unclear') as refusal:
+        decide(controller, state, envelope)
+    assert refusal.value.reason == 'invalid_evidence'
+    assert controller._path().read_bytes() == before
+    pending = controller.report()
+    assert pending['revision'] == state['revision']
+    assert pending['decisions'] == {}
+    assert w.current(pending)['decision'] == 'awaiting_human_approval'
+    with pytest.raises(w.Refusal) as refusal:
+        controller.apply('advance', state['run'], expected_revision=state['revision'], phase='design')
+    assert refusal.value.reason == 'approval_required'
+    assert controller._path().read_bytes() == before
+    reloaded = h.Controller(root, 'root', h.installed_adapter('codex')).report()
+    assert reloaded['revision'] == state['revision']
+    assert reloaded['decisions'] == {}
+    assert w.current(reloaded)['phase'] == 'product'
+    assert w.current(reloaded)['decision'] == 'awaiting_human_approval'
+    assert controller._path().read_bytes() == before
+
+
+@pytest.mark.parametrize('clause', [
+    "I'll need more time to deliberate", 'I’ll need more time to deliberate',
+    'I need 5 minutes to think it over', 'We need a day to think it over',
+    'The reviewers need more time to deliberate',
+    'I will need more time to deliberate', 'I need five minutes to think it over',
+    'The reviewer needs more time to deliberate',
+    'The release council needs another week for contemplation',
+])
+@pytest.mark.parametrize('template', [
+    'Okay. {}.', 'LGTM; “{}”. Approved.', '{}.\nOkay.',
+])
+def test_controller_request_form_never_bypasses_complete_response(root, clause, template):
+    _assert_unclassified_response_preserves_pending_checkpoint(root, template.format(clause))
+
+
+@pytest.mark.parametrize('residue', [
+    'The amber lantern must glow', 'Quux', 'Zeta owns the final call', '△',
+])
+@pytest.mark.parametrize('template', [
+    'Approved, {}!', 'Okay. `{}`.', 'Approved.\n> {}.',
+    'Approved.\n```\n{}\n```', '{}. Looks good, proceed.',
+    'Okay. We will publish tomorrow. {}. I approve this phase now.',
+])
+def test_controller_unknown_residue_requires_no_negative_keyword(root, residue, template):
+    _assert_unclassified_response_preserves_pending_checkpoint(root, template.format(residue))
+
+
+@pytest.mark.parametrize('request_text', [
+    "I'll need 5 minutes", 'We need a day', 'The reviewers need more time',
+    'The release council needs another week',
+])
+@pytest.mark.parametrize('template', [
+    'Okay. {} to implement the plan; and to deliberate.',
+    'Go ahead. "{} to deliberate\nand to implement the plan". Approved.',
+    'Approved. We need time to implement the plan. {} to think it over.',
+])
+def test_controller_mixed_work_cannot_exempt_unknown_request(root, request_text, template):
+    _assert_unclassified_response_preserves_pending_checkpoint(root, template.format(request_text))
+
+
+@pytest.mark.parametrize('clause', [
+    'All required checks passed', 'The results are ready',
+    'Results clearly show over 50% reduction', 'We will implement the plan',
+    'We need time to implement the plan and publish the release',
+    'I sign this off now',
+])
+@pytest.mark.parametrize('template', [
+    'Looks good, proceed. {}.', 'Okay; “{}”. I approve this phase now.',
+])
+def test_controller_complete_clear_work_and_explanation_retain_provenance(root, clause, template):
+    text = template.format(clause)
+    controller, state = setup(root)
+    state = submit(controller, state)
+    envelope = decision(state, text=text)
+    assert envelope['choice'] == 'approved'
+    accepted = decide(controller, state, envelope)
+    assert w.current(accepted)['decision'] == 'approved'
+    assert accepted['decisions'][envelope['event_id']]['provenance']['excerpt'] == text
+    advanced = controller.apply('advance', state['run'], expected_revision=accepted['revision'], phase='design')
+    assert w.current(advanced)['phase'] == 'design'
+    assert advanced['decisions'][envelope['event_id']]['provenance']['excerpt'] == text
+    reloaded = h.Controller(root, 'root', h.installed_adapter('codex')).report()
+    assert w.current(reloaded)['phase'] == 'design'
+    assert reloaded['decisions'][envelope['event_id']]['provenance']['excerpt'] == text

@@ -7,7 +7,7 @@ import subprocess
 import sys
 from unittest.mock import patch
 
-from taskplane import flow, live_telemetry
+from taskplane import flow
 from taskplane.tests.test_native_session_meter import _write_segment
 
 
@@ -15,8 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def start(workspace, session="root"):
-    from taskplane.tests.test_workflow_local import setup
-    return setup(workspace)[1]
+    row = {"kind": "start", "run": "run-1", "session": session, "goal": "Ship a fix"}
+    flow.append(workspace, row)
+    return row
 
 
 def event(workspace, transcript=None, **values):
@@ -25,23 +26,19 @@ def event(workspace, transcript=None, **values):
             "transcript_path": str(transcript) if transcript else None, **values}
 
 
-def observe(state, payload):
-    return flow._observe_hook({**payload, '_telemetry_state': state})
-
-
 def test_native_counters_are_deltas_and_private_content_is_not_recorded(tmp_path):
     run = start(tmp_path)
     transcript = tmp_path / "native.jsonl"
     _write_segment(transcript, session_id="root", total=1000, cached=100, output=100)
-    assert observe(run, event(tmp_path, transcript, tool_use_id="a")) == {}
+    assert flow._observe_hook(event(tmp_path, transcript, tool_use_id="a")) == {}
     _write_segment(transcript, session_id="root", total=1400, cached=200, output=150)
-    observe(run, event(tmp_path, transcript, tool_use_id="b"))
-    observe(run, event(tmp_path, transcript, tool_use_id="b"))
-    result = live_telemetry.summary(live_telemetry.read(tmp_path, run), run)
+    flow._observe_hook(event(tmp_path, transcript, tool_use_id="b"))
+    flow._observe_hook(event(tmp_path, transcript, tool_use_id="b"))
+    result = flow.summarize(flow.read_events(tmp_path), run)
     assert result["tokens"]["total_tokens"] == 400
     assert result["tokens"]["cached_input_tokens"] == 100
     assert result["tool_calls"] == 2
-    journal = live_telemetry.path(tmp_path, run["run"]).read_text()
+    journal = (tmp_path / flow.JOURNAL).read_text()
     assert "private command" not in journal and "private conversation" not in journal
 
 
@@ -49,28 +46,31 @@ def test_missing_usage_is_unknown_and_repetition_is_only_advice(tmp_path):
     run = start(tmp_path)
     result = {}
     for i in range(4):
-        result = observe(run, event(tmp_path, tool_use_id=str(i)))
+        result = flow._observe_hook(event(tmp_path, tool_use_id=str(i)))
     assert "advisory" in result["hookSpecificOutput"]["additionalContext"]
     assert "permissionDecision" not in json.dumps(result)
-    report = live_telemetry.summary(live_telemetry.read(tmp_path, run), run)
+    report = flow.summarize(flow.read_events(tmp_path), run)
     assert report["tokens"] is None
     assert report["token_coverage"]["unmeasured_sessions"] == 1
 
 
-def test_unselected_hooks_do_not_create_observations(tmp_path):
+def test_unrelated_sessions_and_finished_runs_are_inert(tmp_path):
+    start(tmp_path)
     assert flow._observe_hook(event(tmp_path, session_id="unrelated")) == {}
-    assert not (tmp_path / flow.JOURNAL).exists()
-    assert not list((tmp_path / '.taskplane').glob('live-telemetry-*.json'))
+    assert len(flow.read_events(tmp_path)) == 1
+    flow.append(tmp_path, {"kind": "finish", "run": "run-1", "session": "root"})
+    assert flow._observe_hook(event(tmp_path)) == {}
+    assert len(flow.read_events(tmp_path)) == 2
 
 
 def test_child_counter_attaches_to_parent_flow(tmp_path):
     run = start(tmp_path)
     transcript = tmp_path / "child.jsonl"
     _write_segment(transcript, session_id="child", parent="root", total=500, output=50)
-    observe(run, event(tmp_path, transcript, session_id="child"))
+    flow._observe_hook(event(tmp_path, transcript, session_id="child"))
     _write_segment(transcript, session_id="child", parent="root", total=900, output=80)
-    observe(run, event(tmp_path, transcript, session_id="child"))
-    report = live_telemetry.summary(live_telemetry.read(tmp_path, run), run)
+    flow._observe_hook(event(tmp_path, transcript, session_id="child"))
+    report = flow.summarize(flow.read_events(tmp_path), run)
     assert report["tokens"]["total_tokens"] == 400
     assert report["token_coverage"]["unmeasured_sessions"] == 1
 
@@ -99,17 +99,14 @@ def test_installed_hook_commands_abstain_without_workspace_setup(tmp_path):
 
 
 def test_progress_is_observation_and_cannot_accept_a_stage(tmp_path, capsys):
-    from taskplane import workflow
-    from taskplane.tests.test_workflow_local import setup
-    controller, state = setup(tmp_path)
+    start(tmp_path)
     with patch.dict(os.environ, {"CODEX_THREAD_ID": "root"}):
         assert flow.main(["progress", "--phase", "product", "--note", "work produced",
-                          "--workspace", str(tmp_path)], governor=controller) == 0
+                          "--workspace", str(tmp_path)]) == 0
         report = json.loads(capsys.readouterr().out)
-        assert workflow.current(report['workflow'])['decision'] == 'not_requested'
-        assert report['run'] == state['run']
+        assert report["status"] == "legacy_unverified"
         for action in (["progress", "--phase", "build"], ["finish"]):
-            assert flow.main([*action, "--workspace", str(tmp_path), '--expected-revision', str(state['revision'])], governor=controller) == 2
+            assert flow.main([*action, "--workspace", str(tmp_path)]) == 2
             assert json.loads(capsys.readouterr().out)["reason"] in {"approval_required", "state_unavailable"}
     assert not any(row["kind"] == "finish" for row in flow.read_events(tmp_path))
 
@@ -118,12 +115,12 @@ def test_large_usage_and_activity_only_generate_advice(tmp_path):
     run = start(tmp_path)
     transcript = tmp_path / "native.jsonl"
     _write_segment(transcript, session_id="root", total=1000, output=100)
-    observe(run, event(tmp_path, transcript, tool_use_id="baseline"))
+    flow._observe_hook(event(tmp_path, transcript, tool_use_id="baseline"))
     _write_segment(transcript, session_id="root", total=2_000_000, output=100_000)
     for i in range(25):
-        response = observe(run, event(tmp_path, transcript, tool_use_id=str(i)))
+        response = flow._observe_hook(event(tmp_path, transcript, tool_use_id=str(i)))
         assert "permissionDecision" not in json.dumps(response)
         assert response.get("decision") != "block"
-    report = live_telemetry.summary(live_telemetry.read(tmp_path, run), run)
+    report = flow.summarize(flow.read_events(tmp_path), run)
     assert report["tokens"]["total_tokens"] == 1_999_000
     assert len(report["advice"]) == 3

@@ -49,4 +49,4 @@ Source paths, content and dependency impact suggest relevant lenses. The orchest
 
 ## Adding a lens
 
-Append an entry to `lenses/_catalog_data.json` (id, name, group, charter, boundary, globs, task_types, baseline?, deep_globs), author its guide in `lenses/_guides_data.json`, then run `python3 lenses/_generate_catalog.py`, `python3 lenses/_generate_lens_prompts.py`, then `python3 scripts/gen_lens_catalog.py`. The generated catalog, lens prompts and this document are outputs; do not edit them directly. The router picks the lens up automatically.
+Append an entry to `lenses/catalog.json` (id, name, group, charter, boundary, globs, task_types, baseline?, deep_globs), author its `lenses/<id>.md` evaluator prompt, then run `python3 scripts/gen_lens_catalog.py` to refresh this doc. The router picks the lens up automatically.

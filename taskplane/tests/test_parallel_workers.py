@@ -40,9 +40,7 @@ def test_capacity_reduction_blocks_launch_and_root_cannot_take_reserved_output(t
     c.worker(s['run'],'abandon',revision=s['revision'],grant=items[-1]['grant']['grant_id'])
     launch(c,s,items[0])
     assert c.worker(s['run'],'status')['live']==1
-    # Abandonment ends the attempt; it does not transfer the task's ownership.
-    with pytest.raises(w.Refusal, match='outside'):
-        c.guard({'tool_name':'Write','tool_input':{'path':'T2.md'}},s['run'])
+    c.guard({'tool_name':'Write','tool_input':{'path':'T2.md'}},s['run'])
 
 
 def test_root_prerequisite_fingerprints_are_rechecked_before_native_launch(tmp_path):

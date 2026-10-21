@@ -90,13 +90,10 @@ def main(*, check=False):
              "remain visibly unavailable and never stop delivery.\n")
 
     L.append("## Adding a lens\n")
-    L.append("Append an entry to `lenses/_catalog_data.json` (id, name, group, "
+    L.append("Append an entry to `lenses/catalog.json` (id, name, group, "
              "charter, boundary, globs, task_types, baseline?, deep_globs), "
-             "author its guide in `lenses/_guides_data.json`, then run "
-             "`python3 lenses/_generate_catalog.py`, "
-             "`python3 lenses/_generate_lens_prompts.py`, then "
-             "`python3 scripts/gen_lens_catalog.py`. The generated catalog, "
-             "lens prompts and this document are outputs; do not edit them directly. The "
+             "author its `lenses/<id>.md` evaluator prompt, then run "
+             "`python3 scripts/gen_lens_catalog.py` to refresh this doc. The "
              "router picks the lens up automatically.")
 
     rendered = "\n".join(L) + "\n"

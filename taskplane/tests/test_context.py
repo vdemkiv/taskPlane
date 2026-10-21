@@ -5,22 +5,8 @@ import json
 import pytest
 
 from taskplane.context import Store, digest, encode, OBJECT_LIMIT, PAGE_LIMIT
-from taskplane.context_views import summary
+from taskplane.context_views import view, summary, PHASE_BYTES
 from taskplane.workflow import Refusal
-
-
-def test_killed_publication_never_leaves_a_partial_canonical_object(tmp_path):
-    import subprocess
-    import sys
-    script = ("import os; from pathlib import Path; from taskplane.context import Store; "
-              "os.replace=lambda *a: os._exit(41); Store(Path(" + repr(str(tmp_path)) + ")).put('fixture', {'answer':42})")
-    result = subprocess.run([sys.executable, '-B', '-c', script], check=False)
-    assert result.returncode == 41
-    objects = tmp_path / '.taskplane/context-v1/objects'
-    assert not list(objects.glob('*.json'))
-    store = Store(tmp_path)
-    reference = store.put('fixture', {'answer': 42})
-    assert store.resolve(reference) == {'answer': 42}
 
 
 @pytest.mark.parametrize('value', [
@@ -87,6 +73,23 @@ def test_large_small_entry_collection_uses_pages_not_one_read_per_item(tmp_path)
     assert len(store.descendants(reference)) < 100
 
 
+@pytest.mark.parametrize('phase', PHASE_BYTES)
+def test_each_phase_bounds_context_and_retains_required_refs(tmp_path, phase):
+    store = Store(tmp_path)
+    inputs = [{'id': 'requirements', 'body': {'AC1': 'Retain the failed check'}},
+              {'id': 'blocker', 'body': {'status': 'fail', 'detail': 'large ' * 40000}},
+              {'id': 'duplicate', 'body': {'AC1': 'Retain the failed check'}}]
+    result = view(store, {'run': 'one', 'visit': phase}, phase, ['T1'], ['AC1'],
+                  {'decision': 'not_requested'}, inputs, {'graph': 'complete'})
+    assert len(encode(result)) <= PHASE_BYTES[phase]
+    assert result['digest'] == digest({k:v for k,v in result.items() if k != 'digest'})
+    refs = store.resolve(result['required_inputs']['details'])
+    assert len(refs) == 3
+    assert store.resolve(next(r['ref'] for r in refs if r['id'] == 'blocker'))['status'] == 'fail'
+    assert result['omissions'][0]['count'] >= 1
+    assert len([v for v in result['inline'].values() if v == {'AC1': 'Retain the failed check'}]) == 1
+    assert result == view(store, {'run': 'one', 'visit': phase}, phase, ['T1'], ['AC1'],
+                          {'decision': 'not_requested'}, inputs, {'graph': 'complete'})
 
 
 def test_summary_retains_blocking_spine_under_growth(tmp_path):
@@ -115,35 +118,3 @@ def test_summary_preserves_legacy_and_graph_coverage(tmp_path):
     assert result['status'] == 'legacy_unverified' and result['phase'] == 'product'
     assert result['coverage']['graph'] == 'legacy unverified'
     assert 'Initialize' in result['next_action']
-
-
-@pytest.mark.parametrize('observation', ['initialization_pending', 'initialization_stale', 'unavailable', 'active'])
-@pytest.mark.parametrize('status, next_action', [
-    ('not_requested', 'complete phase evidence'),
-    ('awaiting_human_approval', 'human decision'),
-    ('approved', 'Advance to the next authorized phase'),
-])
-def test_summary_callback_observation_cannot_block_root_progress(tmp_path, observation, status, next_action):
-    payload = {'status': status, 'phase': 'build',
-               'harness': {'status': observation, 'run_created': True,
-                           'parent_hook': {'status': 'missing', 'detail': 'No matching callback pair observed.'}}}
-    result = summary(Store(tmp_path), payload, 'report')
-    assert result['status'] == status and next_action in result['next_action']
-    assert result['errors']['blocking'] is False and result['errors']['reason'] is None
-    assert result['errors']['total'] == 0
-    assert result['initialization']['parent_hook'] == payload['harness']['parent_hook']
-    assert 'advisory for root work' in result['initialization']['detail']
-    assert 'native workers still require readiness' in result['initialization']['detail']
-
-
-@pytest.mark.parametrize('reason', ['approval_required', 'native_readiness', 'scope_violation'])
-def test_summary_callback_observation_preserves_actual_controller_refusal(tmp_path, reason):
-    payload = {'status': 'blocked', 'reason': reason, 'detail': 'Actual controller refusal.',
-               'harness': {'status': 'unavailable', 'run_created': True,
-                           'parent_hook': {'status': 'missing'}}}
-    store = Store(tmp_path)
-    result = summary(store, payload, 'report')
-    assert result['errors']['blocking'] is True and result['errors']['reason'] == reason
-    assert result['next_action'] == 'Resolve the reported refusal before continuing.'
-    assert result['errors']['total'] == 1 and result['errors']['items'] == []
-    assert store.resolve(result['errors']['details']) == ['Actual controller refusal.']

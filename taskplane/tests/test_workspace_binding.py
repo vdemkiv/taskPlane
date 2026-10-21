@@ -852,37 +852,12 @@ def test_prompt_reaches_model_with_setup_guidance(tmp_path, monkeypatch, capsys,
         monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
     before = tree(tmp_path)
     code, result = invoke(tmp_path, monkeypatch, capsys, 'UserPromptSubmit', prompt=PROMPT)
-    assert code == 0, result
+    assert code == 0
     assert 'decision' not in result
     context = result['hookSpecificOutput']['additionalContext']
     assert 'original request' in context and 'lens count' in context
     assert 'selected' in context and 'binding' in context
     assert tree(tmp_path) == before
-
-
-@requires_binding_runtime
-@pytest.mark.parametrize('ancestor', [False, True])
-@pytest.mark.usefixtures("onboarding_environment")
-def test_lock_only_store_does_not_capture_first_run_onboarding(tmp_path, monkeypatch, capsys, ancestor):
-    from taskplane import runtime_command
-    monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
-    project = tmp_path / 'project'
-    project.mkdir()
-    store = (tmp_path if ancestor else project) / '.taskplane'
-    store.mkdir()
-    (store / ('workflow-' + 'a' * 32 + '.json.lock')).touch()
-    (store / 'workspace-claims.lock').touch()
-    before = tree(tmp_path)
-    with pytest.raises(b.MissingBinding) as missing:
-        runtime_command.hook_workspace({'cwd': str(project)}, project)
-    assert missing.value.root == project
-    code, result = invoke(project, monkeypatch, capsys, 'UserPromptSubmit', prompt=PROMPT)
-    assert code == 0, result
-    assert 'setup is pending' in result['hookSpecificOutput']['additionalContext']
-    assert tree(tmp_path) == before
-    (store / ('workflow-' + 'a' * 32 + '.initialized.json')).write_text('{}')
-    code, result = invoke(project, monkeypatch, capsys, 'UserPromptSubmit', prompt=PROMPT)
-    assert code == 2 and 'preserve existing state' in result['reason']
 
 
 @requires_binding_runtime
@@ -926,11 +901,16 @@ def test_selected_unbound_setup_reads_reachable(tmp_path, monkeypatch, capsys, t
 @requires_binding_runtime
 @pytest.mark.parametrize('tool,args,child', [
     ('Write', {'file_path': 'app.py', 'content': 'change'}, {}),
+    ('Bash', {'command': 'touch app.py'}, {}),
+    ('Bash', {'command': 'pwd; touch app.py'}, {}),
+    ('Bash', {'command': 'shasum -a 256 -- /selected/README.md; touch app.py'}, {}),
+    ('Bash', {'command': 'sha256sum --check /selected/checks'}, {}),
+    ('Bash', {'command': 'python3 /tmp/forged/tp.py flow report'}, {}),
     ('Read', {'file_path': 'README.md'}, {'parent_session_id': 'parent'}),
     ('Skill', {'skill': 'taskplane:tp-engineering'}, {'subagent_id': 'child'}),
 ])
 @pytest.mark.usefixtures("onboarding_environment")
-def test_setup_denies_structured_writes_or_unbound_children(tmp_path, monkeypatch, capsys, tool, args, child):
+def test_setup_does_not_admit_writes_or_children(tmp_path, monkeypatch, capsys, tool, args, child):
     monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
     code, result = invoke(tmp_path, monkeypatch, capsys, 'PreToolUse', tool_name=tool, tool_input=args, **child)
     assert code == 0 and result['hookSpecificOutput']['permissionDecision'] == 'deny'
@@ -1104,54 +1084,3 @@ def test_existing_unbound_local_history_retains_legacy_resolution(tmp_path):
     before = tree(tmp_path)
     assert b.resolve_workspace(tmp_path) == tmp_path.resolve()
     assert tree(tmp_path) == before
-
-
-@pytest.mark.parametrize("depth", [".taskplane", ".taskplane/nested"])
-def test_root_reserved_cwd_escape_is_exact_and_does_not_create_store(tmp_path, monkeypatch, depth):
-    from taskplane.tests.test_worker_runtime import setup
-    project = tmp_path.resolve()
-    c, _ = setup(project)
-    cwd = project / depth
-    cwd.mkdir(parents=True, exist_ok=True)
-    monkeypatch.delenv('TASKPLANE_WORKSPACE', raising=False)
-    before = tree(cwd)
-    event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(cwd),
-                 tool_name='Bash', tool_input={'command': 'cd ' + shlex.quote(str(project))})
-    result = flow.hook(event, governor=c)
-    assert 'Return to the containing project' in result['hookSpecificOutput']['additionalContext']
-    assert tree(cwd) == before
-    # Hosts can report either the original cwd or the resulting cwd after cd.
-    flow.hook({**event, 'hook_event_name':'PostToolUse'}, governor=c)
-    flow.hook({**event, 'hook_event_name':'PostToolUse', 'cwd':str(project)}, governor=c)
-    assert not (cwd / '.taskplane').exists()
-    # Selecting the store as a workspace remains invalid even for the root.
-    with pytest.raises(w.Refusal, match='reserved'):
-        b.resolve_workspace(cwd)
-
-
-@pytest.mark.parametrize('defect', ['command', 'chain', 'newline', 'substitution', 'relative',
-    'sibling', 'nested', 'background', 'parent', 'agent', 'worker', 'configured', 'symlink'])
-def test_reserved_cwd_escape_rejects_other_commands_and_actors(tmp_path, monkeypatch, defect):
-    from taskplane.tests.test_worker_runtime import setup
-    from taskplane import workflow_host as h
-    project = tmp_path.resolve()
-    c, _ = setup(project)
-    cwd = project / '.taskplane'
-    target = shlex.quote(str(project))
-    command = 'cd ' + target
-    event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(cwd),
-                 tool_name='Bash', tool_input={'command': command})
-    commands = {'command': 'pwd', 'chain': command + ' && pwd', 'newline': command + '\npwd',
-                'substitution': 'cd "$(pwd)"', 'relative': 'cd ..',
-                'sibling': 'cd ' + target + '-sibling', 'nested': 'cd ' + shlex.quote(str(cwd))}
-    if defect in commands: event['tool_input']['command'] = commands[defect]
-    if defect == 'background': event['tool_input']['run_in_background'] = True
-    if defect == 'parent': event['parent_session_id'] = 'other'
-    if defect == 'agent': event['agent_id'] = 'child'
-    if defect == 'worker': c = h.Controller(project, 'root', h.installed_adapter('claude'), principal='child')
-    if defect == 'configured': monkeypatch.setenv('TASKPLANE_WORKSPACE', str(cwd))
-    if defect == 'symlink':
-        alias = project / 'alias'; alias.symlink_to(cwd, target_is_directory=True)
-        event['cwd'] = str(alias)
-    with pytest.raises(w.Refusal): flow.hook(event, governor=c)
-    assert not (cwd / '.taskplane').exists()

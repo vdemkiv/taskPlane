@@ -1,23 +1,23 @@
 # Taskplane runtime
 
-One compact shared controller serves Codex and Claude new runs with
-`taskplane.workflow/v2`, durable `brief/v1` and scoped `ownership/v1`.
-Product → Design → Plan → Build → Evaluate → Engineering → Retro each retain a
-separate decision. Manual human approval is the default; optional automatic mode
-requires explicit run-bound policy authorization, scoped conditions, stop phases
-and assessments. Ordinary intent is interpreted in context with observed
-provenance, unchanged target, chronology and replay checks; one phase assent
-never enrolls a policy or approves future results.
+One Controller serves manual approval and explicitly user-authorized automatic
+phase decisions in `native_workflow`. Policy history and exact checkpoint evidence
+remain separate from optional observations. See [CLI commands](../docs/cli-reference.md),
+[onboarding and hook trust](../docs/onboarding.md), and
+[the shared flow](../skills/tp-go/references/shared-flow.md).
 
-Direct submission validates concrete output once. Graph/dashboard/telemetry and
-prevalidation are optional. Root/serial/useful native ownership is valid; actual
-native identity and terminal/cancellation evidence remain required. Relevant
-inputs govern reuse, and immutable check history preserves latest fail/unknown.
+The native dashboard renderer consumes one selected-run snapshot with phase/visit
+usage, coverage and graph provenance. Static HTML requires regeneration and reload.
+Missing telemetry never becomes zero or permission. Protected-host capabilities
+remain unavailable without a verified integration.
 
-Workspace-local state, atomic/CAS storage, native locks and authentic import
-provenance survive; receipt/startup accounting and unrelated-file acknowledgement
-do not. Old-contract records remain historical/readable, without active mutation
-or approval transfer. See [shared flow](../skills/tp-go/references/shared-flow.md),
-[CLI](../docs/cli-reference.md), [state](../docs/state-spec.md) and
-[package verification](../docs/ci-performance.md). Tests/packages do not certify
-installation, loaded hooks, live native journeys or publication.
+Usage reports reconcile measured tokens into phase execution, non-phase follow-up
+and explained unresolved intervals, with session and boundary provenance. A missing
+revision inside one visit preserves phase ownership but leaves the work/review split
+unknown. Historical root totals can close against the next run's observed baseline.
+Conversational approval wording is supported with the same checkpoint, provenance
+and ordering checks; unclear intent gets a normal clarification, not a magic phrase.
+
+Run `python3 scripts/ci_local.py` for non-browser tests, quality checks and both host
+packages. Add `--browser` for independent rendered dashboard fixtures. Package tests
+exercise manual and autonomous journeys from the extracted Codex/Claude runtimes.

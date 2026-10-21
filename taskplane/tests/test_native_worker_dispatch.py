@@ -11,43 +11,6 @@ from taskplane.tests.test_worker_runtime import setup, reserve, launch, consume
 from taskplane.tests.test_farm_workers import requires_native_reader
 
 
-def test_partial_recovery_persists_cursor_without_releasing_reservation(tmp_path, monkeypatch):
-    from taskplane import host_capabilities as hc
-    from taskplane.tests.test_unbound_worker_recovery import transcript_fixture, write_fixture
-    if not hc.supported_recovery_reader():
-        pytest.skip('Requires no-follow nonblocking reader')
-    c, s = setup(tmp_path, count=1)
-    prepared = reserve(c, s); grant = prepared['grant']['grant_id']
-    worker, root, child, paths = transcript_fixture(tmp_path, monkeypatch, prepared['grant'])
-    filler = {'type': 'event_msg', 'timestamp': worker['prepared_at'],
-              'payload': {'padding': 'x' * 500000}}
-    root[1:1] = [filler] * 6
-    write_fixture(root, child, paths)
-    monkeypatch.setattr(hc, 'MAX_RECOVERY_BYTES', 2 * 1024 * 1024)
-    request = {'request_reference': 'fixture/user-recovery', 'launch_call_id': 'launch',
-               'terminal_call_id': 'terminal'}
-    before = c.report()
-    partial = c.worker(s['run'], 'recover-unbound', revision=s['revision'], grant=grant, request=request)
-    after = c.report()
-    assert partial['status'] == 'incomplete' and partial['state'] == 'prepared'
-    assert 'cursor' not in partial
-    row = after['workers'][grant]
-    assert row['recovery_cursor']['parent']['offset'] > 0
-    for key in ('state', 'worker_id', 'call_id', 'events', 'context_receipt', 'claimed_at'):
-        assert row.get(key) == before['workers'][grant].get(key)
-    for key in ('decisions', 'revision', 'scope', 'history', 'task_results'):
-        assert after.get(key) == before.get(key)
-    for _ in range(10):
-        result = c.worker(s['run'], 'recover-unbound', revision=s['revision'], grant=grant, request=request)
-        if result.get('state') == 'failed':
-            break
-    else:
-        pytest.fail('Recovery continuation never completed')
-    assert result['recovery']['scan']['status'] == 'complete'
-    assert result['terminal_status'] == 'unadmitted_launch_revoked'
-    assert 'recovery_cursor' not in result and not result.get('accepted_at')
-
-
 def metadata(path, state, row, child='native-uuid'):
     path.write_text(json.dumps({'type':'session_meta','payload':{'id':child,'timestamp':wr.now(),
         'parent_thread_id':state['root'],'source':{'subagent':{'thread_spawn':{
@@ -66,7 +29,7 @@ def test_desktop_child_actor_guards_scope_and_records_actual_binding(tmp_path, m
     event = dict(host='codex', cwd=str(workspace), session_id='root', agent_id='native-0',
                  agent_type='default', hook_event_name='PreToolUse', tool_name='Write',
                  call_id='before-context', tool_input={'path':'T0.md'})
-    with pytest.raises(w.Refusal): flow.hook(event)
+    with pytest.raises(w.Refusal, match='consume'): flow.hook(event)
     consume(c, s, item['grant'], 'native-0')
     flow.hook({**event, 'call_id':'own-write'})
     with pytest.raises(w.Refusal, match='outside'):
@@ -74,18 +37,22 @@ def test_desktop_child_actor_guards_scope_and_records_actual_binding(tmp_path, m
     flow.hook({**event, 'call_id':'parent-progress', 'tool_name':'collaborationsend_message',
                'tool_input':{'target':'/root', 'message':'Scoped progress'}})
     flow.hook({**event, 'hook_event_name':'PostToolUse', 'call_id':'own-write'})
-    assert wr.readiness(c.report()['workers'][item['grant']['grant_id']])['status'] == 'ready'
-    from taskplane import live_telemetry
-    value = live_telemetry.read(workspace, s)
-    assert set(value['sessions']) == {'native-0', 'root'}
-    assert value['outcomes']['denied'] >= 2
-    admissions = c._read(c._path())['admissions'].values()
-    assert any(r['principal'] == 'native-0' for r in admissions)
+    # Hook entry derives executing bytes itself; caller-provided runtime identity
+    # cannot replace them. A matched automatic pair combines with claim/context.
+    readiness_event = {**event, 'call_id':'readiness-pair', 'taskplane_runtime_identity':{'member_sha256':{'forged':'value'}}}
+    flow.hook(readiness_event)
+    flow.hook({**readiness_event, 'hook_event_name':'PostToolUse'})
+    readiness = wr.readiness(c.report()['workers'][item['grant']['grant_id']])
+    assert readiness['status'] == 'ready'
+    assert readiness['runtime_root'] == str(Path(__file__).resolve().parents[2])
+    rows = [r for r in flow.read_events(workspace) if r.get('kind') == 'hook']
+    assert all(r['session'] == 'native-0' for r in rows)
+    assert all(r['binding_observation']['principal'] == 'native-0' for r in rows)
+    assert next(r for r in rows if r['call_id'] == 'sibling-write')['outcome'] == 'denied'
+    assert next(r for r in rows if r['call_id'] == 'parent-progress')['outcome'] == 'admitted'
     root_event = {k:v for k,v in event.items() if k not in {'agent_id','agent_type'}}
-    with pytest.raises(w.Refusal, match='outside'):
-        flow.hook({**root_event, 'call_id':'root-write', 'tool_input':{'path':'T1.md'}})
-    assert 'root' in live_telemetry.read(workspace, s)['sessions']
-
+    flow.hook({**root_event, 'call_id':'root-write', 'tool_input':{'path':'T1.md'}})
+    assert flow.read_events(workspace)[-1]['binding_observation']['principal'] == 'root'
 
 
 @pytest.mark.parametrize('parent,extra', [
@@ -143,50 +110,28 @@ def test_historical_name_only_spawn_and_list_status_resolve_actual_uuid(tmp_path
 
 
 @requires_native_reader
-@pytest.mark.parametrize('background', [None, True])
-@pytest.mark.parametrize('delivery', ['user', 'attachment'])
-@pytest.mark.parametrize('completion_defect', [None, 'no_notification', 'no_stop', 'wrong_body', 'wrong_path',
-    'stop_hook_active', 'changed_after_delivery', 'raw_notification', 'decoded_literal', 'numeric_entity',
-    'double_escaped', 'escaped_quotes', 'changed_whitespace'])
-def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypatch, background, delivery, completion_defect):
-    from html import escape
+def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypatch):
     import re
     from taskplane import flow
     c,s=setup(tmp_path)
     c.adapter.name = 'claude'
-    home=tmp_path.parent/(tmp_path.name+'-native-home')
-    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
-    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
-    parent=home/'.claude/projects'/re.sub(r'[^A-Za-z0-9]', '-', str(tmp_path))/'root.jsonl'
-    parent.parent.mkdir(parents=True)
-    prefix=json.dumps({'sessionId':'root','cwd':str(tmp_path),'type':'user'})+'\n'
-    parent.write_text(prefix)
-    source_event=dict(hook_event_name='PreToolUse', session_id='root', cwd=str(tmp_path),
-                      transcript_path=str(parent), tool_use_id='prepare-source', tool_name='Read',
-                      tool_input={'file_path':'input.py'})
-    flow.hook(source_event, governor=c)
-    flow.hook({**source_event, 'hook_event_name':'PostToolUse'}, governor=c)
     item=reserve(c,s);row=item['grant']
     event={'hook_event_name':'PreToolUse','tool_name':'Agent','tool_use_id':'claude-call',
-           'session_id':'root', 'cwd':str(tmp_path), 'transcript_path':str(parent),
-           'tool_input':{'prompt':item['message'],'description':'bounded review','subagent_type':'general-purpose'}}
-    if background is not None:
-        event['tool_input']['run_in_background'] = background
+           'tool_input':{'prompt':item['message'],'description':'bounded review','subagent_type':'general-purpose',
+                         'run_in_background':True}}
+    c.guard(event,s['run'])
+    home=tmp_path/'native-home'
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    parent=home/'.claude/projects'/re.sub(r'[^A-Za-z0-9]', '-', str(tmp_path))/'root.jsonl'
+    parent.parent.mkdir(parents=True)
     called=wr.now()
-    call=dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=called,
-              message={'content':[dict(type='tool_use', id='claude-call', name='Agent', input=event['tool_input'])]})
-    # Exercise the already-flushed order; deferred flushing has separate coverage.
-    with parent.open('a') as stream: stream.write(json.dumps(call)+'\n')
-    flow.hook(event, governor=c)
-    admitted=c.report()['workers'][row['grant_id']]
-    assert called < admitted['launch_requested_at']
-    assert admitted['transcript_admission_offset'] == len(prefix.encode()) < parent.stat().st_size
     header=dict(sessionId='root', agentId='claude-child', isSidechain=True, cwd=str(tmp_path), timestamp=wr.now())
-    records=[call,
+    records=[dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=called,
+                  message={'content':[dict(type='tool_use', id='claude-call', name='Agent', input=event['tool_input'])]}),
              dict(type='user', sessionId='root', cwd=str(tmp_path), timestamp=wr.now(),
                   message={'content':[dict(type='tool_result', tool_use_id='claude-call', content='untrusted text')]},
-                  toolUseResult=dict(isAsync=True, status='async_launched', agentId='claude-child', outputFile='/fixture/child.output'))]
-    parent.write_text(prefix+''.join(json.dumps(r)+'\n' for r in records))
+                  toolUseResult=dict(isAsync=True, status='async_launched', agentId='claude-child'))]
+    parent.write_text(''.join(json.dumps(r)+'\n' for r in records))
     child=parent.with_suffix('')/'subagents/agent-claude-child.jsonl'
     child.parent.mkdir(parents=True)
     child.write_text(json.dumps(header)+'\n')
@@ -203,9 +148,9 @@ def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypa
         tool_input={'path':'T0.md'}, transcript_path=str(parent))
     flow.hook(child_event)
     flow.hook({**child_event, 'hook_event_name':'PostToolUse'})
-    from taskplane import live_telemetry
-    assert 'claude-child' in live_telemetry.read(tmp_path, s)['sessions']
-    assert any(r['principal'] == 'claude-child' for r in c._read(c._path())['admissions'].values())
+    recorded=flow.read_events(tmp_path)[-1]
+    assert recorded['binding_observation']['principal']=='claude-child'
+    assert recorded['admission']['principal']=='claude-child'
     with pytest.raises(w.Refusal, match='outside'):
         flow.hook({**child_event, 'tool_use_id':'sibling-write', 'tool_input':{'path':'T1.md'}})
     engine=Path(w.__file__).with_name('tp.py')
@@ -213,82 +158,7 @@ def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypa
         command=shlex.join([sys.executable,str(engine),'flow',action,'--workspace',str(tmp_path)])
         with pytest.raises(w.Refusal):worker.guard({'tool_name':'exec_command','tool_input':{'cmd':command}},s['run'])
     c.observe({'hook_event_name':'SubagentStop','host':'claude','session_id':'root','agent_id':'claude-child'},s['run'])
-    assert c.report()['workers'][row['grant_id']]['state']=='running'
-    assert c.report()['claude_terminal_observation']['status']=='unsupported'
-
-    from taskplane.tests.test_claude_worker_lifecycle import notification_record, attachment_notification_record
-    final_answer = ('The actual final answer: 1 <= port <= 65535 and port > 0 & ready.\n'
-                    'Literal entities: &lt; &amp; &#60; &quot;. Quotes: "double" and \'single\'.')
-    stop = dict(hook_event_name='SubagentStop', session_id='root', agent_id='claude-child',
-                cwd=str(tmp_path), transcript_path=str(parent), agent_transcript_path=str(child),
-                last_assistant_message=final_answer, stop_hook_active=False)
-    if completion_defect == 'wrong_body': stop['last_assistant_message'] = 'Different result'
-    if completion_defect == 'wrong_path': stop['agent_transcript_path'] += '-other'
-    if completion_defect == 'stop_hook_active': stop['stop_hook_active'] = True
-    if completion_defect != 'no_stop': flow.hook(stop, governor=c)
-    assert c.report()['workers'][row['grant_id']]['state'] == 'running'
-    if completion_defect != 'no_notification':
-        current = c.report()['workers'][row['grant_id']]
-        note = notification_record(current, records[-1], final_answer)
-        note['sessionId'] = 'root'
-        body = escape(final_answer, quote=False)
-        if completion_defect == 'raw_notification': body = final_answer
-        if completion_defect == 'decoded_literal': body = body.replace('&amp;lt;', '&lt;')
-        if completion_defect == 'numeric_entity': body = body.replace('&lt;=', '&#60;=')
-        if completion_defect == 'double_escaped': body = escape(body, quote=False)
-        if completion_defect == 'escaped_quotes': body = escape(final_answer, quote=True)
-        if completion_defect == 'changed_whitespace': body = body.replace('\n', '\n ')
-        note['message']['content'] = note['message']['content'].replace(
-            f'<result>{escape(final_answer, quote=False)}</result>', f'<result>{body}</result>')
-        if delivery == 'attachment':
-            note = attachment_notification_record(note)
-            # Enqueue is only waiting to be delivered; it cannot complete this worker.
-            queued = dict(type='queue-operation', operation='enqueue', sessionId='root',
-                          timestamp=note['timestamp'], content=note['attachment']['prompt'])
-            with parent.open('a') as stream: stream.write(json.dumps(queued) + '\n')
-            flow.hook({**source_event, 'tool_use_id':'parent-before-delivery'}, governor=c)
-            assert c.report()['workers'][row['grant_id']]['state'] == 'running'
-        with parent.open('a') as stream: stream.write(json.dumps(note) + '\n')
-    observed = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(tmp_path),
-                    transcript_path=str(parent), tool_use_id='parent-after-stop',
-                    tool_name='Read', tool_input={'file_path':'input.py'})
-    flow.hook(observed, governor=c)
-    current = c.report()['workers'][row['grant_id']]
-    if completion_defect in {'no_stop', 'no_notification', 'wrong_path', 'stop_hook_active'}:
-        assert current['state'] == 'running'
-        assert current.get('handback', {}).get('status') != 'delivered'
-        return
-    if completion_defect in {'wrong_body', 'raw_notification', 'decoded_literal', 'numeric_entity',
-                             'double_escaped', 'escaped_quotes', 'changed_whitespace'}:
-        assert current['state'] == 'unknown' and current['completion_conflict']
-        # Fresh exact launch observations cannot revive a conflicting completion.
-        flow.hook({**observed, 'hook_event_name':'PostToolUse'}, governor=c)
-        flow.hook({**observed, 'tool_use_id':'parent-after-conflict'}, governor=c)
-        current = c.report()['workers'][row['grant_id']]
-        assert current['state'] == 'unknown' and current['completion_conflict']
-        assert current.get('handback', {}).get('status') != 'delivered'
-        assert not c.adapter.can_seal(c.report())
-        with pytest.raises(w.Refusal, match='not joined'):
-            c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0', grant=row['grant_id'],
-                     request={'outputs':['T0.md'], 'checks':[{'name':'Fixture', 'status':'pass', 'evidence':'T0.md'}]})
-        return
-    assert current['state'] == 'result_pending'
-    assert current['handback']['status'] == 'delivered'
-    assert current['handback']['schema'] == 'claude.session-task-notification/v1'
-    assert current['stop_observation']['body_digest'] == wr.digest(final_answer)
-    assert current['stop_observation']['notification_body_digest'] == wr.digest(escape(final_answer, quote=False))
-    assert current['handback']['body_digest'] == current['stop_observation']['notification_body_digest']
-    assert 'The actual final answer' not in json.dumps(current)
-    (tmp_path/'T0.md').write_text('Verified fixture output')
-    if completion_defect == 'changed_after_delivery':
-        parent.write_text(parent.read_text().replace('The actual final answer', 'The edited final answer'))
-        with pytest.raises(w.Refusal):
-            c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0', grant=row['grant_id'],
-                     request={'outputs':['T0.md'], 'checks':[{'name':'Fixture', 'status':'pass', 'evidence':'T0.md'}]})
-    else:
-        c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0', grant=row['grant_id'],
-                 request={'outputs':['T0.md'], 'checks':[{'name':'Fixture', 'status':'pass', 'evidence':'T0.md'}]})
-        assert c.report()['workers'][row['grant_id']]['state'] == 'accepted'
+    assert c.report()['workers'][row['grant_id']]['state']=='result_pending'
 
 
 def test_no_suffix_alias_and_reused_attempt_needs_new_context(tmp_path):
@@ -301,7 +171,7 @@ def test_no_suffix_alias_and_reused_attempt_needs_new_context(tmp_path):
     event={'tool_name':'followup_task','call_id':'followup','tool_input':{'target':'native-0','message':next_item['message']}}
     c.guard(event,s['run'])
     c.observe({**event,'hook_event_name':'PostToolUse','tool_response':{'agent_id':'native-0'}},s['run'])
-    with pytest.raises(w.Refusal):worker.guard({'tool_name':'Write','tool_input':{'path':'T0.md'}},s['run'])
+    with pytest.raises(w.Refusal,match='consume'):worker.guard({'tool_name':'Write','tool_input':{'path':'T0.md'}},s['run'])
 
 
 @pytest.mark.parametrize('prefix', ['', 'collaboration.', 'functions.collaboration.', 'collaboration'])
@@ -398,8 +268,7 @@ def test_independently_bound_fork_uses_own_cli_and_hook_authority(tmp_path, monk
     observed = event['taskplane_observed_binding']
     assert observed['root'] == observed['principal'] == 'fork'
     if journal:
-        from taskplane import live_telemetry
-        assert live_telemetry.read(tmp_path, own)['root'] == 'fork'
+        assert flow.read_events(tmp_path)[-1]['binding_observation']['root'] == 'fork'
 
 
 def test_dual_bound_real_worker_keeps_parent_authority(tmp_path, monkeypatch, capsys):
@@ -425,71 +294,3 @@ def test_dual_bound_real_worker_keeps_parent_authority(tmp_path, monkeypatch, ca
     with pytest.raises(w.Refusal): flow.hook(event)
     assert flow.main(['report','--workspace',str(tmp_path)]) == 2
     capsys.readouterr()
-
-
-@pytest.mark.parametrize('background', [False, None, 'true', 1])
-def test_claude_explicit_foreground_or_malformed_background_refuses(tmp_path, background):
-    c, s = setup(tmp_path)
-    c.adapter.name = 'claude'
-    item = reserve(c, s)
-    event = dict(hook_event_name='PreToolUse', tool_name='Agent', tool_use_id='launch',
-                 tool_input={'prompt':item['message'], 'description':'fixture', 'run_in_background':background})
-    with pytest.raises(w.Refusal, match='asynchronous launch'):
-        c.guard(event, s['run'])
-    assert c.report()['workers'][item['grant']['grant_id']]['state'] == 'prepared'
-
-
-@requires_native_reader
-@pytest.mark.parametrize('defect', [None, 'late_source', 'replaced_source', 'foreign_source'])
-def test_claude_launch_requires_source_pinned_before_preparation(tmp_path, monkeypatch, defect):
-    from taskplane import flow
-    c, s = setup(tmp_path)
-    c.adapter.name = 'claude'
-    home = tmp_path.parent / (tmp_path.name + '-native-home')
-    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
-    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
-    parent = home / '.claude/projects/original-project/root.jsonl'
-    parent.parent.mkdir(parents=True)
-    parent.write_text(json.dumps({'sessionId':'root', 'cwd':str(tmp_path), 'type':'user'}) + '\n')
-    source_event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(tmp_path),
-                        transcript_path=str(parent), tool_use_id='source', tool_name='Read',
-                        tool_input={'file_path':'input.py'})
-    if defect != 'late_source':
-        flow.hook(source_event, governor=c)
-        flow.hook({**source_event, 'hook_event_name':'PostToolUse'}, governor=c)
-    item = reserve(c, s)
-    row = item['grant']
-    if defect == 'late_source':
-        flow.hook(source_event, governor=c)
-    if defect == 'replaced_source':
-        saved = parent.with_suffix('.saved')
-        parent.rename(saved)
-        parent.write_bytes(saved.read_bytes())
-    if defect == 'foreign_source':
-        foreign = parent.parent.with_name('foreign-project') / parent.name
-        foreign.parent.mkdir()
-        foreign.write_bytes(parent.read_bytes())
-        parent = foreign
-    event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(tmp_path),
-                 transcript_path=str(parent), tool_use_id='launch', tool_name='Agent',
-                 tool_input={'prompt':item['message'], 'description':'fixture'})
-    if defect:
-        with pytest.raises(w.Refusal, match='prepared and fresh automatic root transcript source'):
-            flow.hook(event, governor=c)
-        assert c.report()['workers'][row['grant_id']]['state'] == 'prepared'
-        return
-    with parent.open('a') as stream:
-        stream.write(json.dumps(dict(sessionId='root', cwd=str(tmp_path), timestamp=wr.now(),
-            message={'content': [dict(type='tool_use', id='launch', name='Agent', input=event['tool_input'])]})) + '\n')
-    flow.hook(event, governor=c)
-    admitted = c.report()['workers'][row['grant_id']]
-    # Exact duplicate admission is idempotent. It cannot move the frozen boundary.
-    with parent.open('a') as stream: stream.write(json.dumps({'progress':'later'}) + '\n')
-    flow.hook(event, governor=c)
-    replayed = c.report()['workers'][row['grant_id']]
-    assert replayed['transcript_source'] == admitted['transcript_source'] == row['transcript_source']
-    assert replayed['transcript_admission_offset'] == row['transcript_admission_offset']
-    assert replayed['launch_requested_at'] == admitted['launch_requested_at']
-    for changed in ({**event, 'tool_use_id':'other-call'},
-                    {**event, 'tool_input':{**event['tool_input'], 'description':'changed'}}):
-        with pytest.raises(w.Refusal): flow.hook(changed, governor=c)

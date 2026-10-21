@@ -6,7 +6,7 @@ from copy import deepcopy
 import pytest
 
 from taskplane import workflow as w, workflow_host as h, worker_runtime as wr
-from taskplane.context_handoff import Brief
+from taskplane.context_handoff import Session, consume_required
 
 
 def setup(tmp_path, count=4, scoped_input=False, extra_inputs=()):
@@ -27,8 +27,7 @@ def setup(tmp_path, count=4, scoped_input=False, extra_inputs=()):
     (tmp_path/'tasks.json').write_text(json.dumps({'tasks':rows}))
     c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
     state = c.start(dict(scope=scope, entry='product', standalone=True, tasks='tasks.json', request_reference='fixture/request'))
-    parent_pair(c)
-    return c, c.report(state['run'], diagnostics=False)
+    return c, state
 
 
 def parent_pair(c):
@@ -148,13 +147,8 @@ def test_bound_host_alias_write_preserves_exact_scope_and_symlink_checks(tmp_pat
     from taskplane.tests.test_claude_flow import bound_workspace
     ws,_=bound_workspace(tmp_path,monkeypatch)
     c,s=setup(ws,count=1)
-    with pytest.raises(w.Refusal):
-        c.guard({'tool_name':'Write','tool_input':{'file_path':'/Users/fixture/farm-viewer/T0.md'}},s['run'])
-    prepared = reserve(c, s)
-    launch(c, s, prepared)
-    worker = consume(c, s, prepared['grant'], 'native-0')
     def write(path):
-        worker.guard({'hook_event_name':'PreToolUse','tool_name':'Write','tool_input':{'file_path':path}},s['run'])
+        c.guard({'hook_event_name':'PreToolUse','tool_name':'Write','tool_input':{'file_path':path}},s['run'])
     write('/Users/fixture/farm-viewer/T0.md')
     write(str(ws/'T0.md'))
     for path in ('/Users/fixture/farm-viewer-neighbor/T0.md',
@@ -177,12 +171,9 @@ def consume(c, s, row, child):
     worker = h.Controller(c.workspace, c.root, h.installed_adapter('codex'), principal=child)
     worker.worker(s['run'], 'claim', grant=row['grant_id'])
     context = worker.context(s['run'], task=row['task_id'])
-    from taskplane import flow
-    event = dict(hook_event_name='PreToolUse', host='codex', cwd=str(c.workspace),
-                 session_id=child, parent_session_id=c.root, call_id='fixture-read/'+row['grant_id'],
-                 tool_name='Read', tool_input={'file_path':'input.py'})
-    flow._hook(event, governor=worker)
-    flow._hook({**event, 'hook_event_name':'PostToolUse'}, governor=worker)
+    result = worker.context(s['run'], task=row['task_id'], consume=context['handoff_ref']['sha256'])
+    while result['remaining_required']:
+        result = worker.context(s['run'], task=row['task_id'], read_required=context['handoff_ref']['sha256'])
     return worker
 
 
@@ -196,30 +187,13 @@ def complete(c, s, prepared, child):
                     checks=[dict(name='Fixture verification', status='pass', evidence=task+'.md')]))
 
 
-def test_retained_worker_result_uses_selected_authority_without_reviving_old_grant(tmp_path):
-    c, state = setup(tmp_path, count=2)
-    prepared = reserve(c, state, task='T1')
-    launch(c, state, prepared, child='native-retained')
-    consume(c, state, prepared['grant'], 'native-retained')
-    complete(c, state, prepared, 'native-retained')
-    current = c.report()
-    result = current['task_results']['T1']
-    resumed = deepcopy(current)
-    resumed['visits'].append(w.visit('product'))
-    resumed['index'] = len(resumed['visits']) - 1
-    resumed['revision'] += 1
-    resumed['scope']['paths']['retro'].append('later-owned-result.json')
-    assert wr.native_result_valid(tmp_path, resumed, 'T1', result)
-    assert wr.result_valid(tmp_path, resumed, 'T1')
-    with pytest.raises(w.Refusal, match='old authority'):
-        wr.current(resumed, resumed['workers'][result['grant']])
-
-
-def scoped(c, s, tmp_path):
+def scoped(c, s, tmp_path, readiness=False, budget=131072):
     rows = deepcopy(s['initial_context_tasks'])
     for row in rows:
-        row.update(execution='native_required', read_inputs=['input.py'], purpose='Focused fixture review')
+        row.update(execution='native_required', read_inputs=['input.py'], context_budget_bytes=budget, purpose='Focused fixture review')
     rows[1]['read_inputs'] = ['other.py']
+    if readiness:
+        rows[1]['readiness_after'] = ['T0']
     (tmp_path/'.taskplane/scoped-tasks.json').write_text(json.dumps({'tasks': rows}))
     return c.update_tasks(s['run'], s['revision'], '.taskplane/scoped-tasks.json')
 
@@ -227,12 +201,6 @@ def scoped(c, s, tmp_path):
 def test_scoped_inputs_preserve_unaffected_native_results(tmp_path):
     c, s = setup(tmp_path, count=2, scoped_input=True, extra_inputs=['other.py'])
     s = scoped(c, s, tmp_path)
-    rows = json.loads((tmp_path/'.taskplane/scoped-tasks.json').read_text())['tasks']
-    for row in rows[:2]:
-        row['read_inputs'].extend(row['paths'])
-        (tmp_path / row['paths'][0]).write_text('Original owned source\n')
-    (tmp_path/'.taskplane/scoped-tasks.json').write_text(json.dumps({'tasks': rows}))
-    s = c.update_tasks(s['run'], s['revision'], '.taskplane/scoped-tasks.json')
     a = reserve(c, s, 'T0')
     launch(c, s, a, 'native-a'); consume(c, s, a['grant'], 'native-a')
     event = dict(session_id='native-a', call_id='ready', tool_name='exec_command',
@@ -247,19 +215,11 @@ def test_scoped_inputs_preserve_unaffected_native_results(tmp_path):
     for item, child in [(a, 'native-a'), (b, 'native-b')]:
         complete(c, s, item, child)
     state = c.report()
-    assert wr.result_valid(tmp_path, state, 'T0')
-    assert wr.result_valid(tmp_path, state, 'T1')
-    brief = wr.worker_session(tmp_path, state, state['workers'][a['grant']['grant_id']]).body
-    assert next(row for row in brief['inputs'] if row['path'] == 'T0.md')['status'] == 'available'
     (tmp_path/'input.py').write_text('value = 2\n')
     assert not wr.result_valid(tmp_path, state, 'T0')
-    with pytest.raises(w.Refusal, match='read dependencies'):
-        wr.worker_session(tmp_path, state, state['workers'][a['grant']['grant_id']])
     assert wr.result_valid(tmp_path, state, 'T1')
     state['revision'] += 1
-    assert wr.result_valid(tmp_path, state, 'T1')  # Progress revision is not an input change.
-    (tmp_path/'T1.md').write_text('Unverified later output\n')
-    assert not wr.result_valid(tmp_path, state, 'T1')
+    assert not wr.result_valid(tmp_path, state, 'T1')  # No receipt/authority transfer.
 
 
 @pytest.mark.parametrize('fork', [None, 'all', '1'])
@@ -275,22 +235,56 @@ def test_spawn_requires_explicit_no_history(tmp_path, fork):
     assert c.report()['workers'][item['grant']['grant_id']]['state'] == 'prepared'
 
 
+@pytest.mark.parametrize('explicit', [False, True])
+def test_cohort_requires_claim_context_and_matching_automatic_pair(tmp_path, explicit):
+    c, s = setup(tmp_path, count=2, extra_inputs=['other.py'])
+    s = scoped(c, s, tmp_path, readiness=explicit)
+    if explicit:
+        with pytest.raises(w.Refusal, match='startup'):
+            reserve(c, s, 'T1')
+    a = reserve(c, s, 'T0'); launch(c, s, a, 'native-a')
+    consume(c, s, a['grant'], 'native-a')
+    with pytest.raises(w.Refusal, match='startup'):
+        reserve(c, s, 'T1')
+    event = dict(hook_event_name='PreToolUse', session_id='native-a', call_id='child-context',
+        tool_name='exec_command', taskplane_observed_binding={'root':'root','principal':'native-a'},
+        taskplane_runtime_identity=a['grant']['expected_runtime'])
+    c.observe(event, s['run'])
+    with pytest.raises(w.Refusal, match='startup'):
+        reserve(c, s, 'T1')  # Pre alone is never readiness.
+    c.observe({**event, 'hook_event_name':'PostToolUse'}, s['run'])
+    b = reserve(c, s, 'T1'); launch(c, s, b, 'native-b')
+    status = c.worker(s['run'], 'status')
+    assert status['live'] == 2 and status['counts']['launched'] == 2
+    assert next(row for row in status['attempts'] if row['task_id'] == 'T0')['readiness']['status'] == 'ready'
+    assert status['context_cost']['returned_bytes'] > 0
+    c.observe({**event, 'taskplane_runtime_identity':{**a['grant']['expected_runtime'], 'root':'/stale/runtime'}}, s['run'])
+    assert wr.readiness(c.report()['workers'][a['grant']['grant_id']])['status'] == 'pending'
 
 
-@pytest.mark.parametrize('reason', [None, '', '   '])
-def test_scoped_retries_need_a_concrete_reason(tmp_path, reason):
+def test_scoped_retries_need_a_concrete_reason(tmp_path):
     c, s = setup(tmp_path, count=2, extra_inputs=['other.py'])
     s = scoped(c, s, tmp_path)
     first = reserve(c, s)
     c.worker(s['run'], 'abandon', revision=s['revision'], grant=first['grant']['grant_id'])
     with pytest.raises(w.Refusal, match='retry_reason'):
-        reserve(c, s, retry_reason=reason)
-    second = reserve(c, s, retry_reason='Retry')
+        reserve(c, s)
+    second = reserve(c, s, retry_reason='Reservation abandoned before launch to correct the dispatch payload.')
     assert second['grant']['attempt'] == 2
     counts = c.worker(s['run'], 'status')['counts']
     assert counts == {'tasks':1,'reserved':2,'launched':0,'retries':1,'failed':1}
 
 
+def test_context_budget_refuses_before_reserving_or_launching(tmp_path):
+    c, s = setup(tmp_path, count=2, extra_inputs=['other.py'])
+    s = scoped(c, s, tmp_path, budget=16384)
+    parent_pair(c)
+    s = c.report(s['run'])
+    s['goal'] = 'Required normative goal. ' * 5000
+    before = deepcopy(s.get('workers', {}))
+    with pytest.raises(w.Refusal, match='before launch'):
+        wr.prepare(tmp_path, s, 'T0', {'capacity':{'host_slots':3,'includes_root':True,'reference':'fixture'}})
+    assert s.get('workers', {}) == before
 
 
 def test_missing_declared_input_cannot_disappear_from_freshness(tmp_path):
@@ -304,7 +298,8 @@ def test_missing_declared_input_cannot_disappear_from_freshness(tmp_path):
 
 @pytest.mark.parametrize('field,value', [
     ('read_inputs', 'input.py'), ('read_inputs', ['input.py','input.py']),
-    ('read_inputs', ['../foreign.py']),
+    ('read_inputs', ['../foreign.py']), ('read_inputs', ['undeclared.py']),
+    ('readiness_after', ['T0']), ('context_budget_bytes', True),
 ])
 def test_invalid_scoped_task_contract_refuses_publication(tmp_path, field, value):
     c, s = setup(tmp_path)
@@ -374,8 +369,11 @@ def test_worker_context_paths_root_exemptions_and_identity(tmp_path):
     launch(c, s, prepared)
     worker = h.Controller(c.workspace, 'root', h.installed_adapter('codex'), principal='native-0')
     write = dict(tool_name='Write', tool_input={'path':'T0.md'})
-    with pytest.raises(w.Refusal, match='identity'): worker.guard(write, s['run'])
+    with pytest.raises(w.Refusal, match='consume'): worker.guard(write, s['run'])
+    root = Session(c.workspace, c.report(), 'T0')
+    receipt, _ = consume_required(root)
     row = c.report()['workers'][prepared['grant']['grant_id']]
+    with pytest.raises(w.Refusal): wr.worker_session(c.workspace, c.report(), row).validate(receipt)
     worker = consume(c, s, prepared['grant'], 'native-0')
     worker.guard(write, s['run'])
     worker.guard(dict(tool_name='collaborationsend_message',tool_input={'target':'/root','message':'Bound review progress'}), s['run'])
@@ -484,8 +482,7 @@ def test_prerequisite_replacement_requires_join_and_fresh_attempt(tmp_path):
     s,request = root_prerequisite(c,s)
     item = reserve(c,s,'T1')
     frozen = wr.Store(c.workspace).resolve(item['grant']['snapshot'])
-    frozen_brief = Brief(c.workspace, c.report(), 'T1', snapshot=frozen).body
-    assert frozen_brief['prerequisite_results']['T0']['outputs'] == ['T0.md']
+    assert any(i['kind']=='prerequisite-artifact' and i['body']['text']=='version A' for i in frozen['inputs'][0])
     launch(c,s,item)
     consume(c,s,item['grant'],'native-0')
     with pytest.raises(w.Refusal,match='outside'):
@@ -522,7 +519,7 @@ def test_accepted_read_inputs_stay_fresh_transitively(tmp_path):
     with pytest.raises(w.Refusal,match='prerequisites'): reserve(c,s,'DEP')
 
 
-@pytest.mark.parametrize('operation', ['prepare', 'read'])
+@pytest.mark.parametrize('operation', ['prepare', 'consume', 'read', 'read_required'])
 @pytest.mark.parametrize('transition,expected', [('stop', 'result_pending'), ('cancel', 'cancel_requested'), ('failed', 'failed')])
 def test_locked_context_never_revives_observed_attempt(tmp_path, monkeypatch, operation, transition, expected):
     c, s = setup(tmp_path, count=1)
@@ -530,9 +527,9 @@ def test_locked_context_never_revives_observed_attempt(tmp_path, monkeypatch, op
     worker = consume(c, s, item['grant'], 'native-0')
     descriptor = worker.context(s['run'], task='T0')
     original_report = worker.report
-    before = c.report()['workers'][item['grant']['grant_id']]['claimed_at']
-    def interleave(run=None, **kwargs):
-        snapshot = original_report(run, **kwargs)
+    before = c.report()['workers'][item['grant']['grant_id']]['context_receipt']
+    def interleave(run=None):
+        snapshot = original_report(run)
         if transition == 'stop':
             c.observe(dict(hook_event_name='SubagentStop', agent_id='native-0', event_id='race-stop'), s['run'])
         elif transition == 'cancel':
@@ -542,10 +539,11 @@ def test_locked_context_never_revives_observed_attempt(tmp_path, monkeypatch, op
                 tool_response={'agents':[{'agent_id':'native-0','status':'failed'}]}), s['run'])
         return snapshot
     monkeypatch.setattr(worker, 'report', interleave)
-    options = {} if operation == 'prepare' else {operation: descriptor['reference']['sha256']}
-    worker.context(s['run'], task='T0', **options)  # Read-only brief cannot revive an attempt.
+    options = {} if operation == 'prepare' else {operation: descriptor['view_ref' if operation == 'read' else 'handoff_ref']['sha256']}
+    with pytest.raises(w.Refusal, match='not live'):
+        worker.context(s['run'], task='T0', **options)
     row = c.report()['workers'][item['grant']['grant_id']]
-    assert row['state'] == expected and row['claimed_at'] == before
+    assert row['state'] == expected and row['context_receipt'] == before
     with pytest.raises(w.Refusal):
         worker.guard(dict(tool_name='Write', tool_input={'path':'T0.md'}), s['run'])
     if transition == 'stop':
@@ -610,7 +608,7 @@ def test_owned_fallback_path_does_not_become_its_own_dependency(tmp_path):
     c, s = setup(tmp_path, count=1)
     state = deepcopy(s)
     state['scope']['verification_inputs'].append('T0.md')
-    session = Brief(tmp_path, state, 'T0')
+    session = Session(tmp_path, state, 'T0')
     manifest = wr.read_input_manifest(tmp_path, session, ['T0.md'])
     assert set(manifest) == {'input.py'}
 
@@ -633,320 +631,3 @@ def test_legacy_incomplete_read_manifests_require_fresh_verification(tmp_path, n
     if native:
         state['workers'][result['grant']]['input_manifest'].pop('config.json')
     assert not wr.result_valid(tmp_path, state, 'T0')
-
-
-@pytest.mark.parametrize('host', ['claude', 'codex'])
-@pytest.mark.parametrize('limit', [None, False, -1, 0, 2])
-def test_unknown_claude_capacity_uses_explicit_budget_only(tmp_path, host, limit):
-    c, s = setup(tmp_path)
-    c.adapter.name = host
-    value = dict(host_slots=None, includes_root=False, configured_limit=limit,
-                 reference='fixture/Claude schema has no host capacity field')
-    if host != 'claude' or limit != 2:
-        with pytest.raises(w.Refusal, match='admission budget'):
-            reserve(c, s, capacity=value)
-        return
-    reserve(c, s, task='T0', capacity=value)
-    reserve(c, s, task='T1', capacity=value)
-    with pytest.raises(w.Refusal, match='No available'):
-        reserve(c, s, task='T2', capacity=value)
-    observed = c.worker(s['run'], 'status')['capacity']
-    assert observed['host_slots'] is None and observed['configured_limit'] == observed['effective_limit'] == 2
-    assert observed['includes_root'] is False
-
-
-def denied_launch(tmp_path, monkeypatch, *, legacy=False, hook_first=False):
-    """Real-shaped native refusal with an admitted call and no child."""
-    from taskplane import claude_worker_observations as observations, flow
-    from taskplane.tests.test_claude_interactive_recovery import Interactive
-    from taskplane.tests.test_claude_worker_lifecycle import DENIAL_BODY
-    from taskplane.context import digest
-    initial_hook = Interactive.root_hook
-    def root_hook_with_explicit_lineage(host):
-        host.parent.write_text(json.dumps(dict(sessionId='root', cwd=str(tmp_path),
-                                              type='user', isSidechain=False)) + '\n')
-        initial_hook(host)
-    with monkeypatch.context() as patch:
-        patch.setattr(Interactive, 'root_hook', root_hook_with_explicit_lineage)
-        host = Interactive(tmp_path, monkeypatch)
-    item = reserve(host.controller, host.state)
-    grant = item['grant']['grant_id']
-    event = host.root_control('Agent', {'prompt': item['message'], 'description': 'denial regression',
-                                      'subagent_type': 'taskplane:tp-lens'})
-    call = dict(type='assistant', sessionId='root', cwd=str(tmp_path), isSidechain=False,
-                uuid='72bc5eed-004f-4848-8400-3387f1637a59', timestamp=wr.now(),
-                message={'role': 'assistant', 'content': [dict(type='tool_use', name='Agent',
-                    id=event['tool_use_id'], input=event['tool_input'])]})
-    if not hook_first:
-        host.append(call)
-    flow.hook(event, governor=host.controller)
-    if hook_first:
-        host.append(call)
-    result = dict(type='user', sessionId='root', session_id='root', cwd=str(tmp_path), isSidechain=False,
-                  parentUuid=call['uuid'], sourceToolAssistantUUID=call['uuid'], timestamp=wr.now(),
-                  toolDenialKind='automode-blocked', toolUseResult='Error: ' + DENIAL_BODY,
-                  message={'role': 'user', 'content': [dict(type='tool_result',
-                      tool_use_id=event['tool_use_id'], is_error=True, content=DENIAL_BODY)]})
-    host.append(result)
-    if legacy:
-        db = host.controller._read(host.controller._path())
-        state = db['runs'][host.state['run']]
-        row = state['workers'][grant]
-        answer = observations.observe('root', row, {}, source=state['claude_transcript_source'])
-        assert answer['status'] == 'launch_denied'
-        cursor = deepcopy(answer['cursor'])
-        entry = cursor['entries'][digest(observations._binding('root', row))]
-        for role in ('call', 'result'):
-            for key in observations._PROJECTION_ADDITIONS[role] - {'agent_type', 'output_file_sha256'}:
-                entry[role][0]['projection'].pop(key)
-        entry['conflict'] = observations.LEGACY_LAUNCH_CONFLICT
-        state['claude_transcript_cursor'] = observations._sealed(cursor)
-        row.update(state='unknown', identity_conflict=True,
-                   identity_freshness={'status': 'conflict', 'reason': observations.LEGACY_LAUNCH_CONFLICT})
-        wr._audit(row, 'identity_observation', {'status': 'conflict', 'host': 'claude',
-                                               'reason': observations.LEGACY_LAUNCH_CONFLICT})
-        host.controller._write(host.controller._path(), db)
-    return host, grant, event, call, result
-
-
-@pytest.mark.parametrize('hook_first', [False, True])
-def test_denial_runtime_regression(tmp_path, monkeypatch, hook_first):
-    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch, hook_first=hook_first)
-    host.controller.observe({**event, 'hook_event_name': 'PostToolUse', 'host': 'claude'}, host.state['run'])
-    row = host.controller.report()['workers'][grant]
-    assert row['state'] == 'failed' and row['terminal_status'] == 'launch_denied'
-    assert row.get('revoked_at') and row.get('ended_at') and row.get('denial_proof_ref')
-    assert not any(row.get(key) for key in ('worker_id', 'claimed_at', 'context_receipt', 'events', 'launch_proof_ref'))
-    assert not host.controller.report().get('task_results')
-
-
-def recorded_denial(tmp_path, monkeypatch):
-    host, grant, event, call, result = denied_launch(tmp_path, monkeypatch)
-    host.controller.observe({**event, 'hook_event_name': 'PostToolUse', 'host': 'claude'}, host.state['run'])
-    return host, grant, event, call, result
-
-
-def denial_lifecycle_event(host, call_id, variant='start', **extra):
-    """Synthetic native payload delivered through the real lifecycle ingester."""
-    event = dict(hook_event_name='SubagentStart' if variant == 'start' else 'SubagentStop',
-        host='claude', session_id='root', agent_id='observed-child', tool_use_id=call_id,
-        taskplane_automatic_hook=True, taskplane_observed_binding={'root': 'root', 'principal': 'root'},
-        cwd=str(host.workspace), transcript_path=str(host.parent),
-        agent_transcript_path=str(host.parent.with_suffix('') / 'subagents/agent-observed-child.jsonl'))
-    if variant == 'explicit': event['status'] = 'completed'
-    if variant in {'modern', 'textless'}:
-        event['stop_hook_active'] = False
-        if variant == 'modern': event['last_assistant_message'] = 'Observed child report'
-        else: event['agent_type'] = 'taskplane:tp-lens'
-    return {**event, **extra}
-
-
-def ingest_unrelated_lifecycle(host, count):
-    # Populate via ingestion, not by inserting preconstructed cache records.
-    c = host.controller; db = c._read(c._path()); state = db['runs'][host.state['run']]
-    for index in range(count):
-        wr.observe(state, denial_lifecycle_event(host, f'unrelated-call-{index}', agent_id=f'unrelated-{index}'))
-    assert len(state.get('unbound_worker_events', {})) == count
-    c._write(c._path(), db)
-
-
-@pytest.mark.parametrize('prior_events', [0, 1023, 1024])
-@pytest.mark.parametrize('variant', ['start', 'explicit', 'modern', 'textless'])
-@pytest.mark.parametrize('timing', ['before_denial', 'after_denial'])
-def test_denial_lifecycle_ingestion_survives_cache_capacity(tmp_path, monkeypatch, prior_events, variant, timing):
-    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch)
-    c = host.controller; run = host.state['run']
-    ingest_unrelated_lifecycle(host, prior_events)
-    if timing == 'after_denial':
-        c.observe({**event, 'hook_event_name': 'PostToolUse', 'host': 'claude'}, run)
-        assert c.can_seal(run)
-    original = deepcopy(c.report()['workers'][grant])
-    lifecycle = denial_lifecycle_event(host, event['tool_use_id'], variant)
-    c.observe(lifecycle, run)
-    changed = c.report()['workers'][grant]
-    assert changed['state'] == 'unknown' and changed.get('identity_conflict') is True
-    retained = changed['denial_lifecycle_observation']
-    assert retained['parent'] == 'root' and retained['call_id'] == event['tool_use_id']
-    assert retained['worker_id'] == 'observed-child' and retained['automatic'] is True
-    assert not any(key in retained for key in ('transcript_path', 'runtime', 'body_digest'))
-    assert not wr.joined(c.report()) and not c.can_seal(run)
-    assert not any(changed.get(key) for key in ('worker_id', 'claimed_at', 'context_receipt', 'result_ref'))
-    for key in ('denial_proof_ref', 'denial_observation', 'revoked_at', 'ended_at', 'terminal_status'):
-        assert changed.get(key) == original.get(key)
-    assert len(c.report()['unbound_worker_events']) == min(prior_events + 1, 1024)
-    history = deepcopy(changed['reconciliation_events'])
-    c.observe(lifecycle, run)
-    host.append({'type': 'progress', 'message': 'unchanged denial remains readable'})
-    assert not c.can_seal(run)
-    repeated = c.report()['workers'][grant]
-    assert repeated['identity_conflict'] is True and repeated['reconciliation_events'] == history
-    assert repeated['denial_lifecycle_observation'] == retained
-    # Optional diagnostic retention cannot become the sole contradiction proof.
-    db = c._read(c._path()); db['runs'][run]['unbound_worker_events'] = {}
-    c._write(c._path(), db)
-    assert not c.can_seal(run)
-    assert c.report()['workers'][grant]['denial_lifecycle_observation'] == retained
-    assert not c.report().get('task_results')
-
-
-@pytest.mark.parametrize('defect', ['parent', 'call', 'missing_call', 'automatic', 'observed_root',
-                                   'observed_principal', 'identity', 'unsupported_stop'])
-def test_denial_saturated_ingestion_requires_exact_automatic_lifecycle(tmp_path, monkeypatch, defect):
-    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch)
-    c = host.controller; run = host.state['run']
-    ingest_unrelated_lifecycle(host, 1024)
-    c.observe({**event, 'hook_event_name': 'PostToolUse', 'host': 'claude'}, run)
-    original = deepcopy(c.report()['workers'][grant])
-    lifecycle = denial_lifecycle_event(host, event['tool_use_id'])
-    if defect == 'parent': lifecycle['session_id'] = 'foreign'
-    if defect == 'call': lifecycle['tool_use_id'] = 'unrelated-call'
-    if defect == 'missing_call': lifecycle.pop('tool_use_id')
-    if defect == 'automatic': lifecycle['taskplane_automatic_hook'] = False
-    if defect == 'observed_root': lifecycle['taskplane_observed_binding']['root'] = 'foreign'
-    if defect == 'observed_principal': lifecycle['taskplane_observed_binding']['principal'] = 'foreign'
-    if defect == 'identity': lifecycle['agent_id'] = 'root'
-    if defect == 'unsupported_stop': lifecycle.update(hook_event_name='SubagentStop', status='unknown')
-    c.observe(lifecycle, run)
-    assert c.can_seal(run) and wr.joined(c.report())
-    assert c.report()['workers'][grant] == original
-    assert len(c.report()['unbound_worker_events']) == 1024
-
-
-def test_exact_automatic_lifecycle_preserves_successful_claude_launch(tmp_path, monkeypatch):
-    from taskplane.tests.test_claude_interactive_recovery import Interactive
-    host = Interactive(tmp_path, monkeypatch)
-    original_observe = host.controller.observe
-    def observe_exact_start(event, run):
-        if event.get('hook_event_name') != 'SubagentStart':
-            return original_observe(event, run)
-        row = host.controller.report()['workers'][host.grant]
-        return original_observe({**event, 'tool_use_id': row['call_id'],
-            'taskplane_automatic_hook': True,
-            'taskplane_observed_binding': {'root': 'root', 'principal': 'root'}}, run)
-    with monkeypatch.context() as patch:
-        patch.setattr(host.controller, 'observe', observe_exact_start)
-        host.launch()
-    row = host.row()
-    assert row['worker_id'] == host.child_id and row['state'] == 'bootstrapping'
-    assert row['denial_lifecycle_observation']['worker_id'] == host.child_id
-    assert row['launch_proof_ref'] and not row.get('identity_conflict')
-    host.ready()
-    host.deliver('Successful exact-call lifecycle report')
-    host.accept()
-    assert host.row()['state'] == 'accepted'
-
-
-def test_denial_is_idempotent_unsatisfied_and_requires_fresh_grant_reason(tmp_path, monkeypatch):
-    host, grant, event, _, _ = recorded_denial(tmp_path, monkeypatch)
-    c, s = host.controller, host.controller.report()
-    original = deepcopy(s['workers'][grant])
-    assert c.can_seal(s['run'])
-    assert c.can_seal(s['run'])
-    assert c.report()['workers'][grant] == original
-    with pytest.raises(w.Refusal): c.guard(event, s['run'])
-    with pytest.raises(w.Refusal): c.worker(s['run'], 'claim', grant=grant)
-    with pytest.raises(w.Refusal):
-        c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0', grant=grant,
-                 request={'outputs': ['T0.md'], 'checks': []})
-    assert not wr.result_valid(tmp_path, s, 'T0')
-    with pytest.raises(w.Refusal, match='retry_reason'): reserve(c, s)
-    fresh = reserve(c, s, retry_reason='Host permission changed in a separate authorized request.')
-    assert fresh['grant']['grant_id'] != grant and fresh['grant']['attempt'] == 2
-    assert not fresh['grant']['worker_id']
-    assert c.report()['workers'][grant]['denial_proof_ref'] == original['denial_proof_ref']
-
-
-@pytest.mark.parametrize('defect', ['missing', 'partial', 'budget', 'changed_span', 'late_child',
-                                   'late_notification', 'late_lifecycle', 'proof', 'source', 'bound'])
-def test_revoked_denial_refresh_never_uses_stale_quiescence(tmp_path, monkeypatch, defect):
-    from taskplane import claude_worker_observations as observations
-    from taskplane.context import Store
-    from taskplane.tests.test_claude_worker_lifecycle import encoded, notification_record
-    host, grant, _, _, result = recorded_denial(tmp_path, monkeypatch)
-    c, s = host.controller, host.controller.report()
-    original = deepcopy(s['workers'][grant]); original_bytes = host.parent.read_bytes()
-    saved = host.parent.with_suffix('.saved')
-    if defect == 'missing': host.parent.rename(saved)
-    if defect == 'partial':
-        with host.parent.open('ab') as stream: stream.write(b'{"incomplete":')
-    if defect == 'budget':
-        budget_type = observations.ReadBudget
-        monkeypatch.setattr(observations, 'ReadBudget', lambda: budget_type(max_bytes=0))
-    if defect == 'changed_span':
-        host.parent.write_bytes(original_bytes.replace(b'denial regression', b'changed regression'))
-    if defect == 'late_child':
-        competing = deepcopy(result)
-        competing['toolUseResult'] = dict(agentId='late-child', isAsync=True, status='async_launched')
-        host.append(competing)
-    if defect == 'late_notification':
-        note = notification_record(original, {'toolUseResult': {'agentId': 'late-child', 'outputFile': '/native'}})
-        note['sessionId'] = 'root'
-        host.append(note)
-    if defect in {'proof', 'source', 'late_lifecycle', 'bound'}:
-        db = c._read(c._path()); current = db['runs'][s['run']]
-        if defect == 'proof':
-            path = Store(tmp_path).path(original['denial_proof_ref']['sha256'])
-            path.write_text('{}')
-        if defect == 'source': current['claude_transcript_source']['sha256'] = '0' * 64
-        if defect == 'late_lifecycle':
-            current.setdefault('unbound_worker_events', {})['late'] = dict(parent='root', call_id=original['call_id'],
-                worker_id='late-child', event='SubagentStart')
-        if defect == 'bound':
-            for index in range(observations.MAX_CANDIDATES):
-                other = deepcopy(original); other['grant_id'] = f'{index:032x}'
-                current['workers'][other['grant_id']] = other
-        c._write(c._path(), db)
-    assert c.can_seal(s['run']) is False
-    changed = c.report()['workers'][grant]
-    assert changed['state'] == 'unknown' and not wr.joined(c.report())
-    assert changed['revoked_at'] == original['revoked_at'] and changed['denial_proof_ref'] == original['denial_proof_ref']
-    assert not changed.get('worker_id') and not c.report().get('task_results')
-    sticky = defect not in {'missing', 'partial', 'budget', 'bound'}
-    assert bool(changed.get('identity_conflict')) is sticky
-    if defect == 'missing':
-        saved.rename(host.parent)
-        assert c.can_seal(s['run']) is True
-    if defect == 'partial':
-        with host.parent.open('ab') as stream: stream.write(b'1}\n')
-        assert c.can_seal(s['run']) is True
-    if defect == 'changed_span':
-        host.parent.write_bytes(original_bytes)
-        assert c.can_seal(s['run']) is False
-    if defect == 'late_child':
-        host.parent.rename(saved)
-        assert c.can_seal(s['run']) is False
-        saved.rename(host.parent)
-        assert c.can_seal(s['run']) is False
-    # Unrelated appended rows make a fresh proof while retaining the first one.
-    if defect in {'missing', 'partial'}:
-        with host.parent.open('ab') as stream: stream.write(encoded({'progress': 1}))
-        assert c.can_seal(s['run'])
-        latest = c.report()['workers'][grant]
-        assert latest['denial_proof_ref'] == original['denial_proof_ref']
-        assert latest['denial_latest_proof_ref'] != original['denial_proof_ref']
-
-
-@pytest.mark.parametrize('field', ['worker_id', 'claimed_at', 'context_receipt', 'result_ref', 'events',
-                                   'started_at', 'native_session_started_at', 'context_delivery',
-                                   'completion_conflict', 'identity_conflict'])
-def test_new_denial_refuses_existing_child_or_work(tmp_path, monkeypatch, field):
-    from taskplane import claude_worker_observations as observations
-    host, grant, _, _, _ = denied_launch(tmp_path, monkeypatch)
-    state = host.controller.report(); row = state['workers'][grant]
-    observation = observations.observe('root', row, {}, source=state['claude_transcript_source'])
-    row[field] = 'contradictory work'
-    answer = wr.reconcile(tmp_path, state, row, observation)
-    assert answer['status'] == 'conflict' and row['state'] == 'unknown'
-    assert not row.get('revoked_at') and not row.get('denial_proof_ref')
-
-
-@pytest.mark.parametrize('field', ['called_at', 'denied_at', 'observed_at', 'host', 'schema', 'assurance',
-                                   'denial_code', 'denial_kind', 'dispatch_digest', 'worker_id'])
-def test_denial_transition_requires_observation_to_match_sealed_proof(tmp_path, monkeypatch, field):
-    from taskplane import claude_worker_observations as observations
-    host, grant, _, _, _ = denied_launch(tmp_path, monkeypatch)
-    state = host.controller.report(); row = state['workers'][grant]
-    observation = observations.observe('root', row, {}, source=state['claude_transcript_source'])
-    observation[field] = 'altered-metadata'
-    assert wr.reconcile(tmp_path, state, row, observation)['status'] == 'conflict'
-    assert row['state'] == 'unknown' and not row.get('ended_at') and not row.get('denial_proof_ref')

@@ -154,43 +154,9 @@ def headline(m: dict[str, Any]) -> str:
     return f"taskplane: {m['status']} · {m['phase']} · {len(m['tasks'])} tasks · {len(m['reviews'])} lens reviews · {_number((m.get('tokens') or {}).get('total_tokens'))} flow tokens"
 
 
-def revision_details(authority: dict[str, Any]) -> str:
-    events = authority.get('requirements_revisions', {})
-    if not events:
-        return ''
-    html = '<div class="note" id="requirements-revisions"><h3>Requirements revisions</h3>'
-    for key, event in events.items():
-        proposal = event['preview']
-        status = event['status']
-        remaining = [grant for grant in proposal.get('affected_grants', [])
-                     if authority.get('workers', {}).get(grant, {}).get('state') in
-                         {'prepared', 'launch_pending', 'bootstrapping', 'running', 'unknown', 'cancel_requested'}]
-        html += '<p><strong>'+_e(key)+' · '+_e(status)+'</strong></p>'
-        html += '<p>'+_e(event['request']['reason'])+'</p>'
-        html += '<p>Changed criteria: '+_e(', '.join(proposal['criteria']) or 'none')+' · Affected tasks: '+_e(', '.join(proposal['tasks']))+'</p>'
-        html += '<p>Pending affected workers: '+_e(len(remaining))+'. '
-        html += ('New work is paused.' if authority.get('active_requirements_revision') == key
-                 else 'Review completed; retained results still require current evidence.')+'</p>'
-        html += ('<p class="muted">Product and Design remain accepted. Plan review creates no approval.</p>'
-                 if event['request']['return_phase'] == 'plan' else
-                 '<p class="muted">Earlier decisions remain historical. Returning to Product creates no approval.</p>')
-        html += '<p>'+_e(event['result']['next_action'])+'</p>'
-    return html+'</div>'
-
-
 def _workflow(m: dict[str, Any]) -> str:
     authority = m.get('workflow') or {}
-    header = revision_details(authority)
-    provenance = authority.get('workflow_provenance')
-    if provenance:
-        binding = provenance.get('binding') or {}
-        header += '<div class="note"><strong>Reusable workflow: '+_e(provenance.get('name') or binding.get('definition_id'))+'</strong>'
-        header += '<p>Version '+_e(binding.get('definition_version'))+' · Run '+_e(provenance.get('run'))+'</p>'
-        header += '<p>Package digest <code>'+_e(binding.get('package_digest'))+'</code></p>'
-        header += '<p>Compatibility and inputs: '+_e(provenance.get('status'))+' · Unresolved inputs: '+_e(provenance.get('unresolved_inputs'))+'</p>'
-        if provenance.get('diagnostics'):
-            header += '<pre>'+_e(json.dumps(provenance['diagnostics'], ensure_ascii=False, indent=2))+'</pre>'
-        header += '</div>'
+    header = ''
     if authority.get('visits'):
         from taskplane.workflow_evidence import outcome_summary
         outcome = outcome_summary(authority)
@@ -227,8 +193,6 @@ def _workflow(m: dict[str, Any]) -> str:
             details += '<p class="muted">New run carrying context from ' + _e(authority['replaces']['run']) + '. Approvals were not carried over.</p>'
         if any(v.get('superseded') for v in visits):
             details += '<p class="muted">Visit history: ' + _e(' → '.join(v['phase'].title() for v in visits)) + '</p>'
-        stale_from = next((i for i, visit in enumerate(visits)
-                           if visit['id'] == authority.get('evidence_drift', {}).get('visit')), len(visits))
         for i, visit in enumerate(visits):
             phase = visit['phase']
             anchor = 'phase-' + phase + '-' + visit['id']
@@ -237,8 +201,7 @@ def _workflow(m: dict[str, Any]) -> str:
             superseded = visit.get('superseded')
             active = i == authority['index'] and not authority.get('finished') and not authority.get('superseded_by') and not authority.get('retired')
             work = 'Produced' if packet else 'In progress' if active else 'Not started'
-            stale = decision == 'stale' or bool(packet and not superseded and i >= stale_from)
-            validated = 'Stale' if stale else 'Validated' if packet else 'Not submitted'
+            validated = 'Stale' if decision == 'stale' else 'Validated' if packet else 'Not submitted'
             records = [d for d in authority.get("decisions", {}).values()
                        if d.get("binding", {}).get("visit") == visit["id"]
                        and d.get("binding", {}).get("checkpoint") == (packet or {}).get("checkpoint")]
@@ -258,9 +221,6 @@ def _workflow(m: dict[str, Any]) -> str:
                              if d.get('binding', {}).get('visit') == visit['id']]
                 for d in decisions:
                     details += f'<p class="muted">{"Policy event" if d.get("kind") == "policy" else "Human event"} {_e(d.get("event_id"))} · {_e(d.get("choice"))} · reviewed revision {_e(d.get("binding", {}).get("revision"))} · packet {_e(d.get("binding", {}).get("manifest_digest"))}</p>'
-                    normalization = d.get('provenance', {}).get('normalization', {})
-                    if normalization.get('schema') == 'taskplane.owner-reaction-normalization/v1':
-                        details += '<p class="muted">Verified-owner reaction, relayed observation: ' + _e(normalization.get('raw_reaction')) + '. Approval is derived from the exact question; no typed approval or independent host authentication is claimed.</p>'
                 details += '<pre>' + _e(json.dumps(packet.get('output', {}), indent=2)) + '</pre>'
             details += '</details>'
     else:
@@ -300,8 +260,6 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         header += '<div><span class="muted">'+label+': </span><code>'+_e(snapshot.get(key, m.get(key)) or ('Unknown' if key.startswith('measurement') else None))+'</code></div>'
     header += '<p><strong>Static snapshot — freshness is not monitored.</strong> Regenerate this run, then refresh or reopen this file. Reload only reads the generated file.</p><button type="button" onclick="location.reload()">Reload generated snapshot</button></div>'
     policy = authority.get('approval_policy') or {}
-    if policy.get('source_assurance') == 'relayed_observation':
-        header += '<p>Authorization was recorded as a delegated user observation. Original conversation and message references are retained; human origin is not independently host-authenticated.</p>'
     header += '<div class="note"><strong>Approval mode: '+_e(policy.get('mode', 'manual'))+'</strong>'
     if policy:
         header += '<p>Policy '+_e(policy.get('id'))+' · version '+_e(policy.get('revision'))+' · stops: '+_e(', '.join(policy.get('stop_phases', [])) or 'none')+'</p>'
@@ -327,16 +285,16 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
     plan = '<section id="decomposition"><div class="section-head"><h2>02 / Task decomposition</h2><span class="muted">Dependencies and execution evidence</span></div>'
     if tasks:
         plan += '<div class="task-chain">'+''.join(f'<span>{_e(t.get("id"))} ← {_e(", ".join(t.get("dependencies",t.get("deps",[]))) or "No prerequisites")}</span>' for t in tasks)+'</div>'
-        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Owner / phase</th><th>Depends on</th><th>State</th><th>Execution / verification</th></tr></thead><tbody>'
+        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Depends on</th><th>State</th><th>Execution / verification</th></tr></thead><tbody>'
         for t in tasks:
-            timing=f'{t.get("started_at") or "Unknown start time"} → {t.get("completed_at") or "Unknown completion time"}'
-            plan += f'<tr><td><strong>{_e(t.get("id"))}</strong><br>{_e(t.get("title"))}</td><td>{_e(t.get("owner") or "Unassigned")}<br>{_e(t.get("phase") or "Unspecified")}</td><td>{_e(", ".join(t.get("dependencies",t.get("deps",[]))) or "—")}</td><td>{_e(t.get("status","unverified"))}<br><span class="muted">Phase decision: {_e(t.get("phase_decision", "not_requested"))}</span></td><td><span class="muted">{_e(timing)}</span><br><code>{_e(t.get("verification","Not recorded"))}</code>'
+            timing=f'{t.get("started_at") or "Not started"} → {t.get("completed_at") or "Not completed"}'
+            plan += f'<tr><td><strong>{_e(t.get("id"))}</strong><br>{_e(t.get("title"))}</td><td>{_e(", ".join(t.get("dependencies",t.get("deps",[]))) or "—")}</td><td>{_e(t.get("status","unknown"))}</td><td><span class="muted">{_e(timing)}</span><br><code>{_e(t.get("verification","Not recorded"))}</code>'
             if t.get('premature_completed_at'):
                 plan += '<br><span class="muted">Earlier completion corrected; history retained in task evidence.</span>'
             plan += '</td></tr>'
         plan += '</tbody></table></div>'
     else:
-        plan += '<p class="muted">Planning is unfinished: no current task definitions are available for this run.</p>'
+        plan += '<p class="muted">No task decomposition attached to this run.</p>'
     workers = (m.get('workflow') or {}).get('worker_status', {})
     if workers:
         limit = (workers.get('capacity') or {}).get('effective_limit')
@@ -345,23 +303,9 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         counts, cost = workers.get('counts', {}), workers.get('context_cost', {})
         plan += '<p>Reserved '+_e(counts.get('reserved', 'Unknown'))+' · Started '+_e(counts.get('launched', 'Unknown'))+' · Retries '+_e(counts.get('retries', 'Unknown'))+' · Failed '+_e(counts.get('failed', 'Unknown'))+'.</p>'
         plan += '<p>Context delivered: '+_e(cost.get('returned_bytes', 'Unknown'))+' bytes in '+_e(cost.get('responses', 'Unknown'))+' responses. '+_e(cost.get('unknown_attempts', 'Unknown'))+' attempts have no delivery measurement. These are context bytes, not tokens or Codex allowance.</p>'
-        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Native identity</th><th>Attempt</th><th>State</th><th>Purpose</th><th>Retry reason</th><th>Startup execution</th></tr></thead><tbody>'
+        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Native identity</th><th>Attempt</th><th>State</th><th>Purpose</th><th>Retry reason</th><th>Startup</th></tr></thead><tbody>'
         for worker in workers.get('attempts',[]):
-            startup = worker.get('startup') or {}
-            full = startup.get('full_processing_ns')
-            plan += '<tr>'+''.join('<td>'+_e(worker.get(k) or 'Unknown')+'</td>' for k in ('task_id','worker_id','attempt','state','purpose','retry_reason'))+'<td>'+_e((worker.get('readiness') or {}).get('status', 'Unknown'))
-            plan += '<br>Execution: '+_e(startup.get('execution', 'unknown'))
-            if startup.get('contract') == 'execution_only':
-                plan += '<br>Stage: '+_e(startup.get('stage', 'unknown'))
-                plan += '<br>Pending operations: '+_e(', '.join(startup.get('pending_operations', [])) or 'None')
-                plan += '<br>Stop requested: '+_e(startup.get('stop_requested', False))
-            elif 'timing_mode' in startup:
-                plan += '<br>Historical timing contract: '+_e(startup['timing_mode'])
-                plan += '<br>Full duration: '+_e(str(full)+' ns' if full is not None else 'Unknown / deferred')
-                plan += '<br>'+_e(startup.get('timing_reason', 'Coverage unavailable'))
-            elif startup.get('reason'):
-                plan += '<br>'+_e(startup['reason'])
-            plan += '</td></tr>'
+            plan += '<tr>'+''.join('<td>'+_e(worker.get(k) or 'Unknown')+'</td>' for k in ('task_id','worker_id','attempt','state','purpose','retry_reason'))+'<td>'+_e((worker.get('readiness') or {}).get('status', 'Unknown'))+'</td></tr>'
         plan += '</tbody></table></div>'
         plan += '<details><summary>Ready tasks and waiting reasons</summary><pre>'+_e(json.dumps(workers.get('scheduling',[]),indent=2))+'</pre></details>'
     outcomes = m.get('hook_outcomes')
@@ -416,17 +360,6 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
     tokens += '</tbody></table></div>'
     tokens += f'<p class="muted">Native lifetime totals for delivery sessions: {_number((m.get("native_tokens") or {}).get("total_tokens"))}. Flow totals use run-owned intervals, excluding reused-session history. Host approval review is separate: {_number((m.get("host_approval_tokens") or {}).get("total_tokens"))}. Cached input is included in input; reasoning is included in output. Token counts are not a billing estimate.</p></section>'
     evidence = '<section id="evidence"><h2>06 / Evidence and Retro</h2>'
-    links = m.get('artifact_links', [])
-    if links:
-        evidence += '<ul>'
-        for item in links:
-            label = _e(item['path'])
-            if item.get('href') and item.get('status') == 'available':
-                label = '<a href="'+_e(item['href'])+'">'+label+'</a>'
-            evidence += '<li>'+_e(item.get('phase'))+' · '+label+' · '+_e(item.get('status'))+'</li>'
-        evidence += '</ul><p class="muted">Availability was observed for this snapshot. Workspace links open the current file.</p>'
-    else:
-        evidence += '<p class="muted">No phase artifacts are available yet.</p>'
     for path in m['artifacts'].get('evidence',[]):
         evidence += f'<details><summary>{_e(path)}</summary>{_evidence(ws,path,m)}</details>'
     evidence += '</section>'

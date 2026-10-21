@@ -14,7 +14,6 @@ import os
 import re
 from pathlib import Path
 import shlex
-import shutil
 import stat
 import subprocess
 import sys
@@ -23,7 +22,6 @@ from urllib.request import url2pathname
 from typing import Any, cast
 
 from . import primitives, storage, runtime_command, workflow as w, workflow_evidence as evidence
-from .context_delivery import observed, operation
 
 PROFILE = "native_workflow"
 MAX_BYTES = 8 * 1024 * 1024
@@ -33,21 +31,9 @@ EXCLUDED = {".git", ".taskplane", ".venv", "venv", "node_modules", "__pycache__"
             ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 
 
-class DecisionRefusal(w.Refusal):
-    """Keep the decision API's refusal reason while identifying its failed contract."""
-
-    def __init__(self, category: str, detail: str):
-        self.category = category
-        super().__init__("invalid_evidence", f"{category}: {detail}")
-
-    def result(self) -> dict[str, Any]:
-        return {**super().result(), "category": self.category}
-
-
-def _require_decision(condition: object, category: str, detail: str) -> None:
-    if not condition:
-        raise DecisionRefusal(category, detail)
-
+def choice(text: str) -> str | None:
+    from .workflow_approval import conversational_choice
+    return conversational_choice(text)
 
 
 def timestamp(value: Any) -> datetime:
@@ -60,264 +46,35 @@ def timestamp(value: Any) -> datetime:
         raise w.Refusal("invalid_evidence", "Decision time is invalid.") from None
 
 
-def _relay_json(raw: str | bytes) -> dict[str, Any]:
-    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            _require_decision(key not in result, "decision_relay", "Duplicate relay JSON key.")
-            result[key] = value
-        return result
-    def nonfinite(value: str) -> Any:
-        raise DecisionRefusal("decision_relay", "Non-finite relay JSON number: " + value)
-    try:
-        value = json.loads(raw, object_pairs_hook=unique, parse_constant=nonfinite)
-    except w.Refusal:
-        raise
-    except (ValueError, UnicodeError, RecursionError):
-        raise DecisionRefusal("decision_relay", "Invalid bounded relay JSON.") from None
-    _require_decision(isinstance(value, dict), "decision_relay", "Relay JSON must be an object.")
-    return cast(dict[str, Any], value)
-
-
-def _relay_bytes(ref: Any, *, frame: bool = False) -> bytes:
-    """Read pinned original bytes through no-follow directory/file descriptors."""
-    _require_decision(isinstance(ref, dict) and set(ref) == {"path", "offset", "bytes", "sha256"},
-                      "decision_relay", "Relay needs an exact bounded byte reference.")
-    location, offset, size = ref["path"], ref["offset"], ref["bytes"]
-    _require_decision(isinstance(location, str) and 0 < len(location) <= 4096
-                      and type(offset) is int and 0 <= offset < 2**63
-                      and type(size) is int and 0 < size <= (131072 if frame else MAX_BYTES)
-                      and isinstance(ref["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", ref["sha256"]),
-                      "decision_relay", "Invalid relay byte reference bounds.")
-    target = Path(location)
-    _require_decision(target.is_absolute() and str(target) == location and ".." not in target.parts,
-                      "decision_relay", "Relay requires a literal absolute original path.")
-    _require_decision(hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd,
-                      "decision_relay", "This host cannot safely open original relay paths without following links.")
-    descriptor = -1
-    try:
-        descriptor = os.open(target.anchor, os.O_RDONLY | os.O_DIRECTORY)
-        for part in target.parts[1:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
-        child = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
-        os.close(descriptor)
-        descriptor = child
-        with os.fdopen(descriptor, "rb") as stream:
-            descriptor = -1
-            info = os.fstat(stream.fileno())
-            _require_decision(stat.S_ISREG(info.st_mode) and offset + size <= info.st_size,
-                              "decision_relay", "Relay source is not a complete regular file range.")
-            if frame and offset:
-                stream.seek(offset - 1)
-                _require_decision(stream.read(1) == b"\n", "decision_relay", "Relay frame starts inside a row.")
-            if not frame:
-                _require_decision(offset == 0 and size == info.st_size, "decision_relay", "Snapshot reference must cover the whole file.")
-            stream.seek(offset)
-            raw = stream.read(size)
-            _require_decision(len(raw) == size and hashlib.sha256(raw).hexdigest() == ref["sha256"],
-                              "decision_relay", "Relay source bytes drifted.")
-            if frame:
-                _require_decision(raw.endswith(b"\n") and raw.count(b"\n") == 1,
-                                  "decision_relay", "Relay reference must select one complete native frame.")
-            return raw
-    except w.Refusal:
-        raise
-    except (OSError, ValueError):
-        raise DecisionRefusal("decision_relay", "Original relay evidence is unavailable or contains a symlink.") from None
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-
-
-def _relay_message(row: dict[str, Any], role: str) -> str:
-    payload, metadata = row.get("payload", {}), row.get("metadata", {})
-    _require_decision(isinstance(payload, dict) and isinstance(metadata, dict),
-                      "decision_relay", "Invalid native message metadata.")
-    retained = metadata.get("retained_source", {})
-    kinds = payload.get("internal_chat_message_metadata_passthrough", {})
-    _require_decision(row.get("type") == "response_item" and payload.get("type") == "message"
-                      and payload.get("role") == role and isinstance(payload.get("id"), str) and payload["id"]
-                      and isinstance(retained, dict) and retained.get("complete") is True
-                      and isinstance(retained.get("id"), dict)
-                      and retained["id"].get("message_id") == payload["id"] and retained["id"].get("role") == role
-                      and isinstance(kinds, dict) and (role != "user" or kinds.get("content_item_kinds") == ["user.text"])
-                      and not any(obj.get(key) for obj in (row, payload, metadata, kinds)
-                                  for key in ("origin", "promptSource", "turnOrigin", "automation_id", "scheduled_task_id",
-                                              "toolUseResult", "tool_call_id", "is_automation", "isSidechain")),
-                      "decision_relay", "Relay needs a complete original human/presentation frame, not tool or automation text.")
-    blocks = payload.get("content")
-    _require_decision(isinstance(blocks, list) and blocks and all(isinstance(block, dict)
-                      and block.get("type") == ("input_text" if role == "user" else "output_text")
-                      and isinstance(block.get("text"), str) for block in blocks),
-                      "decision_relay", "Unsupported native relay message content.")
-    return "".join(block["text"] for block in blocks)
-
-
-def _relay_exec_arguments(source: str) -> dict[str, Any]:
-    """Decode one JSON-only execution expression; never run JavaScript.
-
-    Support direct text(await ...) and const/let result followed by text(result).
-    Full consumption rejects extra statements, hidden executions and aliases.
-    Structured function_call frames remain the preferred representation.
-    """
-    prefix = re.match(r"\s*(?:text\s*\(\s*await\s+tools\.exec_command\s*\(|"
-                      r"(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s+tools\.exec_command\s*\()\s*", source)
-    _require_decision(prefix is not None, "decision_relay", "Relay needs one bounded JSON exec_command expression.")
-    assert prefix is not None
-    body = source[prefix.end():]
-    try:
-        _, end = json.JSONDecoder().raw_decode(body)
-    except (ValueError, RecursionError):
-        raise DecisionRefusal("decision_relay", "Relay execution arguments must be literal JSON.") from None
-    name = prefix[1]
-    suffix = (r"\s*\)\s*;\s*text\s*\(\s*" + re.escape(name) + r"\s*\)\s*;?\s*"
-              if name else r"\s*\)\s*\)\s*;?\s*")
-    _require_decision(re.fullmatch(suffix, body[end:]) is not None, "decision_relay",
-                      "Relay must expose exactly one execution result without other statements.")
-    return _relay_json(body[:end])
-
-
-def _relay_launch(call: dict[str, Any], result: dict[str, Any], expected: dict[str, Any], flag: Any) -> None:
-    """Recognize actual direct execution frames, never evaluate JavaScript."""
-    tool, output = call.get("payload", {}), result.get("payload", {})
-    _require_decision(isinstance(tool, dict) and isinstance(output, dict)
-                      and call.get("type") == result.get("type") == "response_item"
-                      and isinstance(tool.get("call_id"), str) and tool["call_id"]
-                      and output.get("call_id") == tool["call_id"]
-                      and flag in {"--session-id", "--resume"}, "decision_relay", "Missing native parent launch/result pair.")
-    args: dict[str, Any]
-    if tool.get("type") == "function_call" and tool.get("name") in {"exec_command", "functions.exec_command"}:
-        _require_decision(output.get("type") == "function_call_output" and isinstance(tool.get("arguments"), str),
-                          "decision_relay", "Invalid direct launch frame.")
-        args = _relay_json(tool["arguments"])
-    else:
-        _require_decision(tool.get("type") == "custom_tool_call" and tool.get("name") in {"exec", "functions.exec"}
-                          and output.get("type") == "custom_tool_call_output" and isinstance(tool.get("input"), str),
-                          "decision_relay", "Unsupported relay launch tool.")
-        args = _relay_exec_arguments(tool["input"])
-    tokens = command_words({"tool_input": args})
-    _require_decision(args.get("tty") is True and args.get("workdir") == expected["workspace"] and bool(tokens),
-                      "decision_relay", "Relay launch needs the actual target workspace and TTY.")
-    executable = Path(tokens[0])
-    _require_decision(executable.is_absolute() and (executable.name == "claude" or
-                      (executable.parent.name == "versions" and executable.parent.parent.name == "claude"
-                       and re.fullmatch(r"\d+\.\d+\.\d+", executable.name))),
-                      "decision_relay", "Relay launch must directly execute Claude.")
-    options: dict[str, str] = {}
-    index = 1
-    while index < len(tokens) and tokens[index].startswith("--"):
-        key = tokens[index]
-        _require_decision(key in {"--session-id", "--resume", "--plugin-dir"} and key not in options and index + 1 < len(tokens),
-                          "decision_relay", "Unsupported or duplicate native launch option.")
-        options[key] = tokens[index + 1]
-        index += 2
-    _require_decision(index >= len(tokens) - 1 and options.get(flag) == expected["root"]
-                      and ("--resume" if flag == "--session-id" else "--session-id") not in options,
-                      "decision_relay", "Native parent launched a different target session.")
-    body = output.get("output")
-    if isinstance(body, list):
-        _require_decision(body and len(body) <= 2 and all(isinstance(block, dict)
-                          and block.get("type") == "input_text" and isinstance(block.get("text"), str) for block in body),
-                          "decision_relay", "Invalid native launch result blocks.")
-        if len(body) == 2:
-            # The first block is optional host display text. A second object
-            # would make the native result ambiguous, regardless of its prose.
-            try:
-                json.loads(body[0]["text"])
-            except (ValueError, RecursionError):
-                pass
-            else:
-                raise DecisionRefusal("decision_relay", "Multiple native launch result values.")
-        body = body[-1]["text"]
-    _require_decision(isinstance(body, str), "decision_relay", "Native launch result is missing.")
-    observed = _relay_json(body)
-    _require_decision(type(observed.get("session_id")) is int and observed["session_id"] > 0
-                      and observed.get("exit_code") is None and not observed.get("error"),
-                      "decision_relay", "Parent launch has no actual running native session result.")
-
-
-def verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
-    """Read-only v2 original-source consistency check; cooperative, not host attestation.
-
-    The target controller supplies its own state/binding. Exact original frame and
-    source references remain part of recorded provenance and replay.
-    """
-    return _verified_decision_relay(value, expected, run)[0]
-
-
-def _verified_decision_relay(value: dict[str, Any], expected: dict[str, Any],
-                             run: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    """Return the original text only after its complete source proof succeeds."""
-    try:
-        return _verify_decision_relay(value, expected, run)
-    except w.Refusal:
-        raise
-    except (KeyError, IndexError, TypeError, ValueError, OverflowError, RecursionError):
-        raise DecisionRefusal("decision_relay", "Malformed original-source relay evidence.") from None
-
-
-def _verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    relay, source = value.get("relay"), value.get("source", {})
-    fields = {"schema", "session_meta", "human", "presentation", "launch", "launch_flag"}
-    _require_decision(value.get("schema") == "taskplane.observed-decision/v2"
-                      and isinstance(relay, dict) and fields <= set(relay) <= fields | {"html", "snapshot"}
-                      and relay.get("schema") == "taskplane.original-source-relay/v1"
-                      and isinstance(source, dict) and set(source) == {"kind", "reference", "conversation", "actor", "automatic", "observed_at"}
-                      and source.get("kind") == "conversation" and source.get("actor") == "user" and source.get("automatic") is False
-                      and value.get("recorder") == "root_orchestrator"
-                      and isinstance(value.get("event_id"), str) and 0 < len(value["event_id"]) <= 512
-                      and value.get("checkpoint_explicit", False) is False
-                      and primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
-                      "decision_relay", "Invalid explicit original-source relay contract.")
-    assert isinstance(relay, dict)
-    origin = source.get("conversation")
-    _require_decision(isinstance(origin, str) and re.fullmatch(r"[0-9a-f-]{36}", origin)
-                      and origin != expected["root"], "decision_relay", "Relay must preserve its distinct original conversation.")
-    launch = relay["launch"]
-    _require_decision(isinstance(launch, dict) and set(launch) == {"segments"}
-                      and isinstance(launch["segments"], list) and len(launch["segments"]) == 2,
-                      "decision_relay", "Relay needs exactly one original launch/result pair.")
-    refs = [relay["session_meta"], *launch["segments"], relay["presentation"], relay["human"]]
-    _require_decision(all(isinstance(ref, dict) and isinstance(ref.get("path"), str) for ref in refs),
-                      "decision_relay", "Invalid original session references.")
-    original = Path(refs[0]["path"])
-    _require_decision(original.is_relative_to(Path.home() / ".codex/sessions")
-                      and re.fullmatch(r"\d{4}/\d{2}/\d{2}/rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
-                                       + re.escape(origin) + r"\.jsonl", original.relative_to(Path.home() / ".codex/sessions").as_posix())
-                      and all(ref["path"] == str(original) for ref in refs),
-                      "decision_relay", "Relay must use one original native Codex session, never a copied log.")
-    rows = [_relay_json(_relay_bytes(ref, frame=True)) for ref in refs]
-    meta, call, result, shown, human = rows
-    _require_decision(refs[0]["offset"] == 0 and meta.get("type") == "session_meta"
-                      and isinstance(meta.get("payload"), dict) and meta["payload"].get("id") == origin
-                      and meta["payload"].get("session_id", origin) == origin
-                      and meta["payload"].get("source") in {"vscode", "cli"}
-                      and not any(obj.get(key) for obj in (meta, meta["payload"])
-                                  for key in ("isSidechain", "subagent", "automation_id", "scheduled_task_id")),
-                      "decision_relay", "Foreign original native session metadata.")
-    excerpt, shown_text = _relay_message(human, "user"), _relay_message(shown, "assistant")
-    def reference(ref: dict[str, Any]) -> str:
-        return f"{ref['path']}#offset={ref['offset']}&bytes={ref['bytes']}"
-    _require_decision(source["reference"] == reference(refs[4]) and source["observed_at"] == human.get("timestamp")
-                      and value.get("excerpt") == excerpt and 0 < len(excerpt) <= 4096
-                      and value.get("choice") in {"approved", "changes_requested", "rejected", "cancelled"}
-                      and value.get("presentation") == {"checkpoint": expected["checkpoint"], "reference": reference(refs[3]), "at": shown.get("timestamp")},
-                      "decision_relay", "Relay changed original human text, reference, time or presentation.")
-    stage: dict[str, Any] = next((item for item in run.get("visits", []) if item.get("id") == expected["visit"]), {})
-    _require_decision(all(run.get(key) == expected[key] for key in ("root", "run", "workspace")) and bool(stage)
-                      and timestamp(meta.get("timestamp")) <= timestamp(run.get("started_at"))
-                      <= timestamp(stage.get("submitted_at")) <= timestamp(shown.get("timestamp")) < timestamp(human.get("timestamp"))
-                      <= datetime.now(timezone.utc)
-                      and all(timestamp(a.get("timestamp")) <= timestamp(b.get("timestamp")) for a, b in zip(rows, rows[1:]))
-                      and all(a["offset"] + a["bytes"] <= b["offset"] for a, b in zip(refs, refs[1:])),
-                      "decision_relay", "Relay evidence is stale or precedes its target checkpoint presentation.")
-    _relay_launch(call, result, expected, relay["launch_flag"])
-    return deepcopy(relay), shown_text
-
-
-@observed('source-audit')
+def inventory(workspace: Path) -> dict[str, str]:
+    """Bounded source audit, including additions/deletions and symlink identity."""
+    result: dict[str, str] = {}
+    total = 0
+    def failed(error: OSError) -> None:
+        raise w.Refusal("state_unavailable", f"Source inventory is unreadable: {error.filename}")
+    for parent, dirs, files in os.walk(workspace, followlinks=False, onerror=failed):
+        dirs[:] = sorted(d for d in dirs if d not in EXCLUDED)
+        for name in sorted([*files, *(d for d in dirs if (Path(parent)/d).is_symlink())]):
+            target = Path(parent)/name
+            relative = str(target.relative_to(workspace))
+            w.require(len(result) < MAX_SOURCE_FILES, "state_unavailable",
+                      f"Source inventory exceeds {MAX_SOURCE_FILES:,} files at {relative}. Run flow diagnose --workspace {workspace}.")
+            if target.is_symlink():
+                result[relative] = "symlink:" + os.readlink(target)
+                continue
+            fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                w.require(stat.S_ISREG(info.st_mode), "state_unavailable", "Source inventory requires regular files.")
+                total += info.st_size
+                w.require(total <= MAX_SOURCE_BYTES, "state_unavailable",
+                          f"Source inventory exceeds {MAX_SOURCE_BYTES // (1024 * 1024)} MiB at {relative}. "
+                          f"Run flow diagnose --workspace {workspace}; recover in a clean checkout without deleting source.")
+                digest = hashlib.sha256()
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+                result[relative] = digest.hexdigest()
+    return result
 
 
 def diagnose(workspace: Path) -> dict[str, Any]:
@@ -387,210 +144,6 @@ def git_identity(workspace: Path) -> dict[str, str] | None:
         return None
 
 
-def initialize_workspace(workspace: Path, root: str, host: str, scope: dict[str, Any]) -> dict[str, Any]:
-    """Inspect a new run's native Git destination; never provision or discard work."""
-    executable = shutil.which('git')
-    if not executable:
-        w.require(not (workspace / '.git').exists(), 'workspace_initialization',
-                  'Git is unavailable; select the intended native worktree before starting.')
-        return {'kind': 'folder', 'workspace': str(workspace), 'root': root}
-    environment = primitives.git_environment(Path(executable))
-    def git(*args: str, required: bool = True) -> str:
-        try:
-            result = subprocess.run([executable, '-C', str(workspace), *args],
-                                    capture_output=True, text=True, timeout=10, env=environment)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise w.Refusal('workspace_initialization', 'Git workspace inspection failed; preserve the destination.') from exc
-        w.require(not required or result.returncode == 0, 'workspace_initialization',
-                  'Git workspace identity is unavailable; select the intended clean native worktree.')
-        return result.stdout.strip() if result.returncode == 0 else ''
-    top = git('rev-parse', '--show-toplevel', required=False)
-    if not top:
-        w.require(not (workspace / '.git').exists(), 'workspace_initialization', 'Repository metadata is unreadable.')
-        return {'kind': 'folder', 'workspace': str(workspace), 'root': root}
-    w.require(Path(top).resolve() == workspace, 'workspace_initialization',
-              'Select the root of a dedicated linked native worktree, not a repository subfolder.')
-    common = git('rev-parse', '--path-format=absolute', '--git-common-dir')
-    directory = git('rev-parse', '--absolute-git-dir')
-    w.require(Path(common).resolve() != Path(directory).resolve() and (workspace / '.git').is_file(),
-              'workspace_initialization', 'New repository runs need a dedicated linked worktree. '
-              'Create/select one with the native host and execute this same task there before starting.')
-    # Compare checkout bytes using its effective line-ending rules. The closed
-    # inspection environment otherwise drops Windows' global core.autocrlf and
-    # reports a freshly checked-out CRLF file as modified. Read only these data
-    # settings; routing, executable helpers and other global config stay excluded.
-    config_environment = {k: v for k, v in os.environ.items()
-                          if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR'}}
-    normalization = []
-    for setting in ('core.autocrlf', 'core.eol'):
-        try:
-            configured = subprocess.run([executable, '-C', str(workspace), 'config', '--get', setting],
-                                        capture_output=True, text=True, timeout=10, env=config_environment)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise w.Refusal('workspace_initialization', 'Git line-ending configuration is unavailable.') from exc
-        w.require(configured.returncode in {0, 1}, 'workspace_initialization',
-                  'Git line-ending configuration is unavailable.')
-        if configured.returncode == 0:
-            normalization.extend(['-c', setting + '=' + configured.stdout.strip()])
-    # Ignore only untracked Taskplane-owned metadata; tracked edits are always dirty.
-    dirty = [line for line in git(*normalization, 'status', '--porcelain=v1', '--untracked-files=normal').splitlines()
-             if line != '?? .taskplane/']
-    w.require(not dirty, 'workspace_initialization',
-              'The native worktree is dirty. Preserve its files and select a clean dedicated worktree.')
-    head = git('rev-parse', 'HEAD')
-    base = scope.get('base_revision') or scope.get('base_ref')
-    if base is None:
-        base = git('symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD', required=False)
-        if not base:
-            base = next((ref for ref in ('refs/remotes/origin/main', 'refs/remotes/origin/master')
-                         if git('rev-parse', '--verify', ref, required=False)), None)
-    w.require(isinstance(base, str) and base and not base.startswith('-'), 'workspace_initialization',
-              'Declare the intended base_ref or base_revision in the start scope when no remote default is known.')
-    assert isinstance(base, str)
-    expected = git('rev-parse', '--verify', base + '^{commit}')
-    w.require(head == expected, 'workspace_initialization',
-              'The worktree HEAD differs from the intended base; select the correct native worktree without resetting files.')
-    origin = git('remote', 'get-url', 'origin', required=False)
-    intended = scope.get('repository')
-    w.require(intended is None or intended in {origin, common}, 'workspace_initialization',
-              'The worktree belongs to a different intended repository.')
-    from .workflow_collision import sealed_paths
-    w.require(not sealed_paths(workspace, {'root': root}), 'workspace_initialization',
-              'Another active root owns this checkout. Select a dedicated native worktree; preserve the existing run.')
-    if host == 'codex':
-        from .flow import _native_metadata
-        rows, complete = _native_metadata({}, root)
-        w.require(complete and bool(rows) and all(isinstance(row.get('cwd'), str)
-                  and Path(row['cwd']).resolve() == workspace for row in rows),
-                  'workspace_initialization', 'The actual native Codex session is not verified in this worktree. '
-                  'Use the native task workspace control, then retry this same start; shell workdir and attachments are insufficient.')
-        native = {'host': host, 'root': root, 'workspace': str(workspace),
-                  'source': [row['source_path'] for row in rows]}
-    else:
-        from .workflow_continuation import native_root
-        native = {**native_root(root, workspace), 'host': host, 'root': root, 'workspace': str(workspace)}
-    return {'kind': 'git', 'workspace': str(workspace), 'root': root, 'common': common,
-            'git_directory': directory, 'origin': origin, 'head': head, 'base_ref': base,
-            'base_revision': expected, 'clean_at_start': True, 'native': native}
-
-
-WORKFLOW_OPTIONS = {
-    "catalog": ({"--workspace"}, set()),
-    "validate": ({"--workspace", "--definition"}, set()),
-    "preview": ({"--workspace", "--definition"}, {"--inputs"}),
-    "save": ({"--workspace", "--definition", "--out"}, set()),
-    "compile": ({"--workspace", "--definition", "--inputs", "--out"}, set()),
-    "check": ({"--workspace", "--run"}, set()),
-}
-
-
-def workflow_options(arguments: list[str]) -> tuple[str, dict[str, str]]:
-    """One closed argument grammar shared by the data CLI and native guards."""
-    w.require(bool(arguments) and arguments[0] in WORKFLOW_OPTIONS,
-              "invalid_arguments", "Choose workflow catalog, validate, preview, save, compile or check.")
-    action = arguments[0]
-    required, optional = WORKFLOW_OPTIONS[action]
-    values: dict[str, str] = {}
-    index = 1
-    while index < len(arguments):
-        option, separator, value = arguments[index].partition("=")
-        w.require(option in required | optional and option not in values, "invalid_arguments",
-                  "Unknown, abbreviated or duplicate workflow option: " + option)
-        if not separator:
-            index += 1
-            value = arguments[index] if index < len(arguments) else ""
-        w.require(bool(value) and not value.startswith("--") and "\0" not in value,
-                  "invalid_arguments", "Expected one value for " + option)
-        values[option] = value
-        index += 1
-    w.require(required <= set(values), "invalid_arguments",
-              "Missing workflow options: " + ", ".join(sorted(required - set(values))))
-    return action, values
-
-
-def verify_workflow(workspace: Path, state: dict[str, Any], *,
-                    tasks: list[dict[str, Any]] | None = None,
-                    build_paths: list[str] | None = None) -> dict[str, Any] | None:
-    """Validate optional pinned provenance at use, never when loading diagnostics."""
-    scope = state.get("scope", {})
-    if "workflow_binding" not in scope:
-        return None
-    from . import blueprint, blueprint_compile
-    try:
-        plans = [v for v in state["visits"][:state["index"] + 1]
-                 if v["phase"] == "plan" and not v.get("superseded")]
-        plan = plans[-1] if plans and plans[-1].get("decision") == "approved" else None
-        if any(v["phase"] == "plan" for v in state["visits"][:state["index"]]):
-            w.require(plan is not None, "approval_required", "Continuation requires its current accepted Plan.")
-        mutable: list[str] = []
-        if plan:
-            w.validate_state(state)
-            w.require(not state.get("invalidation_pending") and evidence.changed(workspace, state) is None,
-                      "stale_checkpoint", "Accepted Plan evidence is stale.")
-            w.require(plan.get("approved_scope_digest") == primitives.content_fingerprint(scope),
-                      "scope_drift", "Current scope does not match the accepted Plan.")
-            expected_binding = {**{key: state[key] for key in ("workspace", "root", "run")},
-                                "visit": plan["id"], "checkpoint": plan["packet"]["checkpoint"],
-                                "manifest_digest": primitives.content_fingerprint(plan["packet"]),
-                                "scope_digest": plan.get("checkpoint_scope_digest")}
-            w.require(any(d.get("choice") == "approved" and all(d.get("binding", {}).get(k) == v
-                          for k, v in expected_binding.items()) for d in state["decisions"].values()),
-                      "stale_checkpoint", "Accepted Plan decision belongs to another binding.")
-            mutable = plan["packet"]["output"]["write_scope"]
-            w.require(scope["paths"]["build"] == mutable, "scope_drift",
-                      "Build paths differ from the accepted Plan.")
-        # The compiler independently authenticates the complete pinned package
-        # before its outer scope is used to admit a narrowed Plan projection.
-        checked = blueprint_compile.verify_package(workspace, scope["workflow_binding"],
-                                                    authorized_mutable_paths=mutable)
-        expected = deepcopy(checked["scope"])
-        if plan:
-            expected["paths"]["build"] = mutable
-        w.require(scope == expected, "scope_drift", "Run scope differs from the pinned workflow and accepted Plan.")
-        w.require(Path(state["workspace"]).resolve() == workspace.resolve(),
-                  "state_mismatch", "Workflow state belongs to another workspace.")
-        if checked["definition"]["route"]["kind"] == "standalone":
-            expected_tasks = checked["compilation"]["task_patterns"][checked["compilation"]["entry_phase"]]["tasks"]
-            w.require(evidence.task_definitions(evidence.context_tasks(state) if tasks is None else tasks)
-                      == evidence.task_definitions(expected_tasks),
-                      "binding_mismatch", "Current standalone tasks differ from the pinned workflow.")
-        else:
-            if plan:
-                planned_tasks = plan["packet"]["output"].get("task_dag")
-                w.require(isinstance(planned_tasks, list) and planned_tasks, "binding_mismatch",
-                          "Accepted Plan must retain compiled native obligations in its task DAG.")
-                evidence.native_refinement(checked["compilation"], planned_tasks, "plan",
-                                           build_paths=mutable, root_id=state["root"])
-            rows = evidence.context_tasks(state) if tasks is None else tasks
-            phase = evidence.context_task_phase(state) if tasks is None else w.current(state)["phase"]
-            evidence.native_refinement(checked["compilation"], rows, phase,
-                                       build_paths=mutable if plan else build_paths, root_id=state["root"])
-            if plan and w.current(state)["phase"] == "build":
-                w.require(evidence.task_definitions(rows) == evidence.task_definitions(planned_tasks),
-                          "binding_mismatch", "Build task definitions differ from the accepted Plan.")
-        return checked
-    except blueprint.BlueprintError as exc:
-        raise w.Refusal(exc.code, str(exc) + " " + exc.remedy) from None
-
-
-def workflow_status(workspace: Path, state: dict[str, Any]) -> dict[str, Any] | None:
-    binding = state.get("scope", {}).get("workflow_binding")
-    if "workflow_binding" not in state.get("scope", {}):
-        return None
-    result = {"run": state.get("run"), "binding": deepcopy(binding),
-              "status": "unknown", "unresolved_inputs": None}
-    try:
-        checked = verify_workflow(workspace, state)
-        assert checked is not None
-        result.update(status="valid", name=checked["definition"]["name"],
-                      unresolved_inputs=checked["bindings"]["unresolved_inputs"])
-    except w.Refusal as exc:
-        result.update(status="blocked", diagnostics=[{
-            "code": exc.reason, "location": "/workflow_binding", "message": str(exc),
-            "remedy": "Restore pinned inputs or explicitly recover; do not replace the active package."}])
-    return result
-
-
 class LocalWorkflow:
     """Mixin for the same Controller, with explicitly weaker local provenance."""
     profile = PROFILE
@@ -627,30 +180,24 @@ class LocalWorkflow:
         target = self.control_path(self.workspace, self.root)
         marker = storage.runtime_file(str(self.workspace), self.markername)
         transaction = storage.runtime_file(str(self.workspace), "initialization-" + target.stem.removeprefix("workflow-") + ".json")
-        from . import state_import
-        imported = state_import.initialization(self.workspace, self.root)
-        if imported is not None:
-            w.require(operation('source_stat', target.exists) and not operation('source_stat', marker.exists) and not operation('source_stat', transaction.exists), "state_unavailable",
-                      "Imported store must retain its recovery receipt without fabricated initialization metadata.")
-            return target, marker, transaction, None
         data = None
-        if operation('source_stat', transaction.exists):
-            w.require(operation('source_stat', transaction.stat).st_size <= 4096, "state_unavailable", "Initialization transaction is oversized.")
-            data = operation('source_parse', json.loads, operation('source_read', transaction.read_bytes, category='source_fingerprints'))
+        if transaction.exists():
+            w.require(transaction.stat().st_size <= 4096, "state_unavailable", "Initialization transaction is oversized.")
+            data = json.loads(transaction.read_text())
             expected = self.initialization_transaction()
             w.require(data == expected or data == {**expected, "status": "committed"},
                       "state_unavailable", "Initialization transaction identity is corrupt.")
-        if operation('source_stat', marker.exists):
-            w.require(operation('source_stat', marker.stat).st_size <= 4096 and operation('source_parse', json.loads, operation('source_read', marker.read_bytes, category='source_fingerprints')) == self.marker(),
+        if marker.exists():
+            w.require(marker.stat().st_size <= 4096 and json.loads(marker.read_text()) == self.marker(),
                       "state_unavailable", "Local initialization identity is corrupt.")
         if data and data["status"] == "pending":
             # Pending evidence is only valid for this exact never-used empty store.
-            if operation('source_stat', target.exists):
-                w.require(operation('source_stat', marker.exists) and operation('source_stat', target.stat).st_size <= 4096
-                          and operation('source_parse', json.loads, operation('source_read', target.read_bytes, category='source_fingerprints')) == self.empty_database(),
+            if target.exists():
+                w.require(marker.exists() and target.stat().st_size <= 4096
+                          and json.loads(target.read_text()) == self.empty_database(),
                           "state_unavailable", "Pending initialization does not match an empty never-used store.")
         else:
-            w.require(operation('source_stat', target.exists) == operation('source_stat', marker.exists) and (not data or operation('source_stat', target.exists)), "state_unavailable",
+            w.require(target.exists() == marker.exists() and (not data or target.exists()), "state_unavailable",
                       "Local workflow initialization/state is incomplete. Explicit recovery is required. "
                       "Run flow diagnose to identify the missing file; "
                       "flow recover can restore an explicitly selected, matching numbered database copy.")
@@ -666,7 +213,7 @@ class LocalWorkflow:
                       "First initialization is pending. Retry the exact validated flow start request; "
                       "read-only status does not repair state.")
             return False
-        return operation('source_stat', target.exists)
+        return target.exists()
 
     def initialize(self) -> None:
         if self.state_exists(allow_pending=True):
@@ -689,22 +236,6 @@ class LocalWorkflow:
         w.require(isinstance(scope, dict), "invalid_evidence", "Native workflow start requires an exact --scope JSON file.")
         assert isinstance(scope, dict)
         evidence.valid_scope(workspace, scope)
-        if "workflow_binding" in scope:
-            from . import blueprint, blueprint_compile
-            try:
-                checked = blueprint_compile.verify_package(workspace, scope["workflow_binding"],
-                                                            scope=scope, for_start=True)
-            except blueprint.BlueprintError as exc:
-                raise w.Refusal(exc.code, str(exc) + " " + exc.remedy) from None
-            route = checked["definition"]["route"]
-            w.require(request.get("entry", "product") == checked["compilation"]["entry_phase"]
-                      and request.get("standalone", False) == (route["kind"] == "standalone"),
-                      "binding_mismatch", "Start route differs from the compiled workflow.")
-            w.require(isinstance(request.get("tasks"), str), "binding_mismatch",
-                      "A compiled workflow requires its pinned entry tasks.")
-            tasks = evidence.object_file(workspace, request["tasks"])
-            w.require(tasks == checked["compilation"]["task_patterns"][checked["compilation"]["entry_phase"]],
-                      "binding_mismatch", "Start tasks differ from the compiled workflow.")
         reference = request.get("request_reference")
         w.require(isinstance(reference, str) and 0 < len(reference) <= 512, "invalid_evidence",
                   "Identify the actual user request with --request-reference.")
@@ -713,12 +244,11 @@ class LocalWorkflow:
                 "request_reference": reference}
 
     def state_created(self, state: dict[str, Any], request: dict[str, Any]) -> None:
-        from .context_handoff import BRIEF_CONTRACT
-        from .host_capabilities import runtime_identity
-        state.update(profile=PROFILE, runtime_identity=runtime_identity(),
+        from .context_handoff import SEMANTIC_CONTRACT
+        state.update(profile=PROFILE, source_baseline=inventory(self.workspace),
                      observed_handles=Harness(self.workspace, self.root).initial_handles(state),
                      request_provenance={"reference": request["request_reference"], "assurance": "observed"},
-                     context_contract=BRIEF_CONTRACT)
+                     context_contract=SEMANTIC_CONTRACT)
 
     def decorate(self, state: dict[str, Any]) -> dict[str, Any]:
         from . import worker_runtime
@@ -727,29 +257,17 @@ class LocalWorkflow:
                 "late_stdin": "checked only when observed",
                  "delegation": "scoped native attempts; observed identities, joins and root result acceptance"},
                 "worker_status": worker_runtime.summary(state, self.workspace),
-                "workflow_provenance": workflow_status(self.workspace, state),
                 "known_live_handles": [h for h,r in state.get("observed_handles", {}).items()
                                        if r["state"] == "running"]}
 
     def validate_state(self, state: dict[str, Any]) -> None:
         from . import worker_runtime
         worker_runtime.validate(state)
-        recovery = state.get('runtime_recovery')
-        if recovery is not None:
-            w.require(isinstance(recovery, dict) and recovery.get('schema') == 'taskplane.runtime-repair-result/v1'
-                      and recovery.get('status') == 'recovered' and isinstance(recovery.get('binding'), dict)
-                      and type(recovery.get('revision')) is int and recovery['revision'] <= state['revision']
-                      and type(recovery['binding'].get('revision')) is int
-                      and recovery['binding']['revision']+1 == recovery['revision']
-                      and all(recovery['binding'].get(key) == state[key] for key in ('workspace', 'root', 'run'))
-                      and recovery.get('to_runtime') == state.get('runtime_identity')
-                      and isinstance(recovery.get('request_sha256'), str)
-                      and re.fullmatch(r'[0-9a-f]{64}', recovery['request_sha256']) is not None,
-                      'state_unavailable', 'Invalid runtime recovery binding.')
-        from .context_handoff import BRIEF_CONTRACT
-        w.require(state.get("context_contract") in {"bounded/v1", "bounded/v2", "bounded/v3", BRIEF_CONTRACT},
+        from .context_handoff import CONTRACT, SEMANTIC_CONTRACT
+        w.require(state.get("context_contract", CONTRACT) in {CONTRACT, SEMANTIC_CONTRACT},
                   "state_unavailable", "Unsupported context contract.")
-        w.require(state.get("profile") == PROFILE and isinstance(state.get("observed_handles"), dict), "state_unavailable", "Invalid local workflow state.")
+        w.require(state.get("profile") == PROFILE and isinstance(state.get("source_baseline"), dict)
+                  and isinstance(state.get("observed_handles"), dict), "state_unavailable", "Invalid local workflow state.")
         for handle, record in state["observed_handles"].items():
             w.require(isinstance(handle, str) and isinstance(record, dict)
                       and record.get("state") in {"running", "completed", "failed", "cancelled"}
@@ -758,20 +276,28 @@ class LocalWorkflow:
         for decision in state["decisions"].values():
             w.require(decision.get("assurance") == "observed" and isinstance(decision.get("provenance"), dict),
                       "state_unavailable", "Local decisions require observed provenance, not host authentication.")
-        w.require("source_baseline" not in state or isinstance(state["source_baseline"], dict) and len(state["source_baseline"]) <= 20000
-                  and all(isinstance(k, str) and isinstance(v, str) for k,v in state["source_baseline"].items()), "state_unavailable", "Invalid source audit baseline.")
+        w.require(len(state["source_baseline"]) <= 20000 and all(isinstance(k, str) and isinstance(v, str)
+                  for k,v in state["source_baseline"].items()), "state_unavailable", "Invalid source audit baseline.")
 
     def before_action(self, state: dict[str, Any], action: str) -> None:
-        from .workflow_write_guard import require_runtime
-        require_runtime(state)
-        verify_workflow(self.workspace, state)
-        w.require(state.get("schema") == "taskplane.workflow/v2", "incompatible_runtime",
-                  "This active historical run needs its original runtime. Inspect or archive it; start a fresh compact run.")
+        before, after = state["source_baseline"], inventory(self.workspace)
+        allowed = set(state["scope"]["paths"][w.current(state)["phase"]])
+        changed = {p for p in set(before) | set(after) if before.get(p) != after.get(p)}
+        w.require(not changed - allowed, "scope_violation",
+                  "Source changed outside this phase scope: " + ", ".join(sorted(changed - allowed)[:10]))
+        if not state.get("finished") and (action == "auto-decide" or (action in {"advance", "finish"}
+                                       and w.current(state)["decision"] == "approved")):
+            w.require(Harness(self.workspace, self.root).presentation_valid(state), "approval_required",
+                      "Current checkpoint needs a native dashboard handoff before continuation. "
+                      "Regenerate/link the dashboard and record flow present with its actual outcome.")
 
     def can_seal(self, state: dict[str, Any]) -> bool:
         from . import worker_runtime
-        return (not any(record["state"] == "running" for record in state.get("observed_handles", {}).values())
-                and worker_runtime.joined(state))
+        return not self.decorate(state)["known_live_handles"] and worker_runtime.joined(state)
+
+    def after_action(self, state: dict[str, Any], action: str) -> None:
+        if action == "advance":
+            state["source_baseline"] = inventory(self.workspace)
 
     def verify_decision_context(self, reference: str, expected: dict[str, Any],
                                 prior: dict[str, Any]) -> dict[str, Any]:
@@ -780,38 +306,19 @@ class LocalWorkflow:
             value = json.loads(reference)
         except ValueError:
             raise w.Refusal("invalid_evidence", "Supply an observed decision JSON envelope, not an actor flag.") from None
-        from . import delegated_approval
-        from . import native_approval
-        native_proof = None
-        if isinstance(value, dict) and value.get('schema') == native_approval.SCHEMA:
-            db = evidence.object_file(self.workspace, '.taskplane/' + self.filename)
-            run = db.get('runs', {}).get(expected.get('run'), {})
-            harness = Harness(self.workspace, self.root)
-            value = native_approval.verify(value, run, getattr(self, 'name', 'unsupported'), harness.read().get('presentation') or {})
-            native_proof = value['native_proof']
-        if isinstance(value, dict) and value.get("schema") == delegated_approval.DECISION_SCHEMA:
-            value = _relay_json(reference)
-            db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
-            run = db.get("runs", {}).get(expected.get("run"), {})
-            return delegated_approval.verify_checkpoint(run, value, expected, prior)
-        w.require(isinstance(value, dict) and isinstance(value.get("schema"), str)
-                  and value.get("schema") in {"taskplane.observed-decision/v1", "taskplane.observed-decision/v2"},
+        w.require(isinstance(value, dict) and value.get("schema") == "taskplane.observed-decision/v1",
                   "invalid_evidence", "Observed decision schema is missing.")
-        relayed = value["schema"] == "taskplane.observed-decision/v2"
-        if relayed:
-            value = _relay_json(reference)
         source = value.get("source")
-        _require_decision(isinstance(source, dict) and source.get("kind") in ("conversation", "native_prompt")
-                  and (relayed or source.get("conversation") == self.root) and source.get("actor") == "user"
+        w.require(isinstance(source, dict) and source.get("kind") in {"conversation", "native_prompt"}
+                  and source.get("conversation") == self.root and source.get("actor") == "user"
                   and source.get("automatic") is False and isinstance(source.get("reference"), str)
-                  and 0 < len(source["reference"]) <= 512, "decision_provenance", "Human response provenance is incomplete.")
+                  and 0 < len(source["reference"]) <= 512, "invalid_evidence", "Human response provenance is incomplete.")
         event_id, excerpt, recorder = value.get("event_id"), value.get("excerpt"), value.get("recorder")
-        _require_decision(isinstance(event_id, str) and 0 < len(event_id) <= 512
-                  and isinstance(excerpt, str) and 0 < len(excerpt) <= 4096
-                  and recorder in ("root_orchestrator", "native_prompt_hook"),
-                  "decision_provenance", "Preserve the complete bounded human excerpt, event reference and recorder.")
-        _require_decision(value.get("choice") in {"approved", "changes_requested", "rejected", "cancelled"},
-                          "decision_provenance", "Supply the orchestrator's semantic decision candidate.")
+        w.require(isinstance(event_id, str) and 0 < len(event_id) <= 512
+                  and isinstance(excerpt, str) and 0 < len(excerpt) <= 512
+                  and recorder in {"root_orchestrator", "native_prompt_hook"}
+                  and value.get("choice") == choice(excerpt) and choice(excerpt) is not None,
+                  "invalid_evidence", "The response or its human provenance is unclear. Ask what the user wants to do with this checkpoint; no exact wording is required.")
         observed = timestamp(source.get("observed_at"))
         if event_id in prior:
             old_source = prior[event_id].get("provenance", {}).get("source", {})
@@ -820,92 +327,47 @@ class LocalWorkflow:
         recorded_at = (prior[event_id].get("provenance", {}).get("recorded_at")
                        if event_id in prior else None) or datetime.now(timezone.utc).isoformat()
         expected = prior[event_id]["binding"] if event_id in prior else expected
-        _require_decision(primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
-                  "decision_binding", "Observed decision has a stale or foreign checkpoint binding.")
-        from .workflow_approval import validate_checkpoint_consent
+        w.require(primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
+                  "stale_checkpoint", "Observed decision has a stale or foreign checkpoint binding.")
+        named_checkpoints = re.findall(r"\b[0-9a-f]{32}\b", excerpt.casefold())
+        w.require(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
+                  "invalid_evidence", "The response names a different checkpoint.")
+        from .workflow_approval import decision_phase
+        named_phase = decision_phase(excerpt)
         supplied = value.get("binding") or {}
         db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
         run = db.get("runs", {}).get(supplied.get("run"), {})
         stage: dict[str, Any] = next((v for v in run.get("visits", []) if v["id"] == supplied.get("visit")), {})
-        relay = None
-        presentation = value.get("presentation")
-        question = presentation.get("text") if isinstance(presentation, dict) else None
-        if relayed:
-            relay, question = _verified_decision_relay(value, expected, run)
         legacy_replay = event_id in prior and not prior[event_id].get("provenance", {}).get("recorded_at")
-        delayed_product = None
-        if isinstance(presentation, dict) and 'content_binding' in presentation:
-            # A delivered human approval may precede submission when a transport
-            # failure delayed an unchanged first Product result. Bind its actual
-            # content, scope and tasks rather than fabricate later timestamps or
-            # ask the human to repeat the same decision. This grants no Build.
-            packet = stage.get('packet') or {}
-            expected_content = {
-                'output': primitives.content_fingerprint(packet.get('output')),
-                'scope': primitives.content_fingerprint(run.get('scope')),
-                'tasks': primitives.content_fingerprint(evidence.task_definitions(
-                    packet.get('context', {}).get('tasks', []))),
-            }
-            _require_decision(not relayed and native_proof is None and stage.get('phase') == 'product'
-                              and run.get('index') == 0 and not run.get('history')
-                              and presentation['content_binding'] == expected_content,
-                              'decision_binding', 'Delayed Product approval must match its unchanged output, scope and tasks.')
-            delayed_product = expected_content
         if not legacy_replay:
-            checkpoint_time = timestamp(presentation.get('at')) if delayed_product else timestamp(stage.get('submitted_at'))
-            _require_decision(timestamp(run.get("started_at")) <= checkpoint_time <= observed
-                      <= timestamp(recorded_at), "decision_chronology",
+            w.require(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
+                      <= timestamp(recorded_at), "invalid_evidence",
                       "Decision must follow run and checkpoint submission and cannot be in the future.")
-        if value.get("choice") == "cancelled" and event_id not in prior:
-            for old in prior.values():
-                earlier = old.get("provenance", {}).get("source", {}).get("observed_at")
-                if (old.get("choice") == "approved" and old.get("binding", {}).get("visit") == stage.get("id")
-                        and earlier):
-                    _require_decision(observed > timestamp(earlier), "decision_chronology",
-                                      "Cancellation must follow the approval it revokes.")
-        if (value.get("choice") == "approved" and event_id not in prior
-                and stage.get("decision") in {"changes_requested", "rejected"}):
-            for old in prior.values():
-                earlier = old.get("provenance", {}).get("source", {}).get("observed_at")
-                if (old.get("choice") in {"changes_requested", "rejected"}
-                        and old.get("binding", {}).get("visit") == stage.get("id")
-                        and old.get("binding", {}).get("checkpoint") == expected["checkpoint"] and earlier):
-                    _require_decision(observed > timestamp(earlier), "decision_chronology",
-                                      "Approval must follow the decision it reverses.")
-        _require_decision(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
-                  and isinstance(presentation.get("reference"), str) and presentation["reference"]
-                  and isinstance(presentation.get("at"), str),
-                  "decision_binding", "Approval needs the complete original checkpoint presentation.")
-        assert isinstance(presentation, dict)
+        if named_phase:
+            # Resolve the named visit under the Controller's existing store lock.
+            # A correct binding cannot turn 'Build approved' into Product consent.
+            w.require(stage.get("phase") == named_phase, "invalid_evidence",
+                      "The response names a different phase. Clarify which checkpoint the user intends to accept.")
         if value.get("checkpoint_explicit") is not True:
-            _require_decision(timestamp(presentation.get("at")) < observed, "decision_chronology", "Response precedes presentation.")
-            if not legacy_replay and not delayed_product:
-                _require_decision(timestamp(stage.get("submitted_at")) <= timestamp(presentation.get("at")),
-                          "decision_chronology", "Presentation precedes checkpoint submission.")
+            presentation = value.get("presentation")
+            w.require(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
+                      and isinstance(presentation.get("reference"), str) and presentation["reference"],
+                      "invalid_evidence", "Brief approval needs the presented checkpoint and ordering evidence.")
+            w.require(timestamp(presentation.get("at")) < observed, "invalid_evidence", "Response precedes presentation.")
+            if not legacy_replay:
+                w.require(timestamp(stage.get("submitted_at")) <= timestamp(presentation.get("at")),
+                          "invalid_evidence", "Presentation precedes checkpoint submission.")
         else:
-            _require_decision(expected["checkpoint"] in excerpt, "decision_binding", "Explicit approval must name the checkpoint.")
-        _require_decision(isinstance(question, str), "decision_binding",
-                          "Preserve the complete original checkpoint question; missing text requires fresh consent.")
-        assert isinstance(question, str)
-        validated = validate_checkpoint_consent(question, excerpt, phase=stage["phase"], binding=expected, candidate=value["choice"])
-        _require_decision(validated == value["choice"], "decision_grammar",
-                          "The semantic decision candidate is invalid.")
+            w.require(expected["checkpoint"] in excerpt, "invalid_evidence", "Explicit approval must name the checkpoint.")
         result = {"event_id": event_id, "human": True, "automatic": False, "choice": value["choice"],
                 "binding": deepcopy(expected), "assurance": "observed", "provenance": {
                     "source": {k:source[k] for k in ("kind","reference","conversation","actor","automatic","observed_at")},
                     "recorder": recorder, "excerpt": excerpt,
-                    "presentation": {**{k:value["presentation"][k] for k in ("checkpoint","reference","at")},
-                                     "text": question},
+                    "presentation": {k:value["presentation"][k] for k in ("checkpoint","reference","at")}
+                        if value.get("checkpoint_explicit") is not True else None,
                     "checkpoint_explicit": value.get("checkpoint_explicit", False)}}
         if not legacy_replay:
             result["provenance"].update(recorded_at=recorded_at, chronology="verified/v1")
-        if delayed_product:
-            result['provenance']['presentation']['content_binding'] = delayed_product
-            result['provenance']['chronology'] = 'content-bound-product/v1'
-        if native_proof is not None:
-            result['provenance']['native_proof'] = deepcopy(native_proof)
-        if relayed:
-            result["provenance"].update(schema=value["schema"], relay=relay)
         if event_id in prior:
             w.require(result == prior[event_id], "stale_checkpoint", "Conflicting native event replay.")
         return result
@@ -936,10 +398,6 @@ class LocalWorkflow:
             return False
         if not runtime_command.installed(words, cwd):
             return False
-        if words[2] == 'graph':
-            return (len(words) >= 6 and words[3] == '--workspace' and words[5] == 'scan'
-                    and Path(words[4]).is_absolute() and selected_workspace(words[4])
-                    and set(words[6:]) == {'--decompose', '--strict'} and len(words[6:]) == 2)
         if words[2] == "dashboard":
             # A sealed checkpoint can refresh its native view, never an arbitrary output.
             options = words[3:]
@@ -952,12 +410,9 @@ class LocalWorkflow:
                     and ((cwd / values["--out"]).absolute() if "--out" in values else
                          self.workspace / ".taskplane/dashboard.html")
                         == self.workspace/".taskplane/dashboard.html")
-        if runtime_command.diagnostic(words) or words[2:] == ["workflow", "--help"]:
+        if runtime_command.diagnostic(words):
             return True
-        if words[2] == "workflow":
-            action, _ = workflow_command(self.workspace, event, state)
-            return action in {"catalog", "validate", "preview", "check"}
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "submit", "progress", "report", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "worker", "verify", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         try:
@@ -966,67 +421,13 @@ class LocalWorkflow:
             return False
 
     def guard_command(self, event: dict[str, Any], state: dict[str, Any], paths: list[str]) -> None:
-        words = runtime_words(event)
-        if len(words) >= 3 and words[2] == "workflow":
-            workflow_command(self.workspace, event, state, allowed=paths)
-            return
-        verify_workflow(self.workspace, state)
-        if readonly_command(event):
-            return
-        if w.current(state)['phase'] == 'build':
-            plan = w.accepted_plan(state)['packet']['output']
-            definitions = {row['id']: row for row in plan['task_dag']}
-            strategy = plan.get('verification_strategy')
-            checks = strategy.get('checks', []) if isinstance(strategy, dict) else []
-            for check in checks:
-                owner = definitions[check['task']]
-                required_paths = set(owner['paths'])
-                stage = w.current(state)
-                repair = state.get('repair_scope', {})
-                if (stage['id'] == repair.get('build_visit')
-                        and owner['id'] in repair.get('tasks', [])
-                        and check['id'] in repair.get('checks', [])):
-                    # Use the same repair projection as preparation and result
-                    # acceptance; one worker never acquires all phase metadata.
-                    from . import worker_runtime
-                    required_paths = set(worker_runtime.task(state, owner['id'])['paths'])
-                # These are the executable checks already reviewed in Plan,
-                # not an exemption for arbitrary interpreter/shell code.
-                if (words == check['command'] and required_paths <= set(paths)
-                        and runtime_command.execution_directory(event, self.workspace) == self.workspace):
-                    for relative in required_paths:
-                        evidence.write_path(self.workspace, relative)
-                    return
-        # Extend the existing literal-command admission rather than treating all
-        # shell execution as a read. Unknown code is not a declared write set.
-        targets = shell_write_paths(event)
-        w.require(targets is not None, 'scope_violation',
-                  'Shell effects are not declared by a supported literal command. '
-                  'Use a structured edit or a supported command on owned task files; '
-                  'do not disable hooks to proceed.')
-        assert targets is not None
-        cwd = runtime_command.execution_directory(event, self.workspace)
-        from .workspace_binding import relative_path
-        for value in targets:
-            target = Path(value)
-            absolute = target if target.is_absolute() else cwd / target
-            try:
-                relative = relative_path(self.workspace, str(absolute))
-            except ValueError:
-                raise w.Refusal('scope_violation', f'Shell write is outside this workspace: {value}') from None
-            resolved = evidence.write_path(self.workspace, relative)
-            w.require(not (words and words[0] in {'cp', 'mv'} and resolved.is_dir()),
-                      'scope_violation', 'Scoped copy/move needs literal owned files, not directory effects.')
-            w.require(relative in paths, 'scope_violation', f'Shell write is outside this task: {relative}')
+        pass  # Host permissions apply; inventory audits effects before transitions.
 
     def guard_input(self, event: dict[str, Any], state: dict[str, Any]) -> None:
         args = event.get("tool_input", {})
         handle = str(args.get("session_id", ""))
         record = state["observed_handles"].get(handle)
         safe_input = args.get("chars", "") in ("", "\x03")
-        w.require(safe_input, 'scope_violation',
-                  'Interactive code has no declared task write set. Start a supported scoped command instead; '
-                  'polling and interruption remain available.')
         w.require(record is not None and record["state"] == "running"
                   and record["visit"] == w.current(state)["id"]
                   and record["revision"] <= state["revision"]
@@ -1069,7 +470,7 @@ class LocalWorkflow:
                         "control": previous.get("control", False) if previous else self.control_action(event, state)}
 
 
-EXECUTION_ENTRIES = {'taskplane', 'tp-go', 'tp-tag', 'tp-build', 'tp-product', 'tp-workflow',
+EXECUTION_ENTRIES = {'taskplane', 'tp-go', 'tp-tag', 'tp-build', 'tp-product',
                      'tp-design', 'tp-engineering', 'tp-northstar'}
 READ_TOOLS = {'Read', 'read_file', 'list_files', 'search_files', 'Grep', 'Glob'}
 QUESTION_TOOLS = {'AskUserQuestion', 'request_user_input', 'request_user_input_async'}
@@ -1091,7 +492,7 @@ def command_words(event: dict[str, Any]) -> list[str]:
             continue
         if char == '\\':
             escaped = True
-        elif char in '$`\n\r' or not quote and char in '{}*?[':
+        elif char in '$`\n\r':
             return []  # No expansions/substitutions or unquoted command separators.
         elif char == '"':
             quote = '' if quote == '"' else '"'
@@ -1113,123 +514,33 @@ def runtime_words(event: dict[str, Any]) -> list[str]:
     # Declared Windows hooks use this exact launcher selector. The launcher and
     # a PATH-selected Python can resolve to different installed interpreters.
     if os.name == 'nt' and words[:2] == ['py', '-3']:
-        words = [sys.executable, *words[2:]]
-    # -B only suppresses bytecode writes. Keep the executable and script intact
-    # for the existing exact-runtime checks; no other Python flags are admitted.
-    if len(words) >= 4 and words[1] == '-B' and Path(words[2]).name == 'tp.py':
-        words = [words[0], *words[2:]]
+        return [sys.executable, *words[2:]]
     return words
 
 
-def workflow_command(workspace: Path, event: dict[str, Any], state: dict[str, Any], *,
-                     allowed: list[str] | None = None) -> tuple[str, dict[str, str]]:
-    """Admit only this installed data command and its finite, current write set."""
-    words = runtime_words(event)
-    cwd = runtime_command.validate_workdir(words, event, workspace)
-    w.require(runtime_command.installed(words, cwd) and words[2] == "workflow",
-              "scope_violation", "Use the exact loaded workflow runtime and interpreter.")
-    action, options = workflow_options(words[3:])
-    w.require(runtime_command.resolve_selection(options["--workspace"], event, workspace) == workspace,
-              "scope_violation", "Workflow command selects another workspace.")
-    if action in {"catalog", "validate", "preview", "check"}:
-        return action, options
-    if state.get("visits") and not state.get("finished"):
-        w.require(not state.get("invalidation_pending") and w.current(state)["decision"] in
-                  {"not_requested", "changes_requested", "rejected", "stale"},
-                  "approval_required", "Current output is sealed; resolve the checkpoint before publishing workflow data.")
-    from . import blueprint, blueprint_compile
-    try:
-        definition_path = workspace / options["--definition"]
-        data = blueprint.load_definition(definition_path)
-        if action == "save":
-            target = f"workflows/{data['id']}.{data['version']}.workflow.json"
-            requested = Path(options["--out"])
-            if requested.is_absolute():
-                requested = requested.relative_to(workspace)
-            w.require(requested.as_posix() == target and ".." not in requested.parts,
-                      "scope_violation", "Save must select the exact versioned definition path.")
-            evidence.path(workspace, target)
-            paths = allowed if allowed is not None else (state.get("scope", {}).get("paths", {}).get(
-                w.current(state)["phase"], []) if state.get("visits") else [])
-            w.require(target in paths, "scope_violation", "Save requires the exact current authoring path.")
-        else:
-            destination = blueprint_compile.package_path(workspace, options["--out"], {})
-            sealed = {p for stage in state.get("visits", []) if stage.get("packet")
-                      for key in ("manifest", "source_manifest") for p in stage["packet"][key]}
-            current = state.get("scope", {}).get("workflow_binding", {})
-            w.require(current.get("package_path") != destination
-                      and not any(p.startswith(destination + "/") for p in sealed),
-                      "scope_violation", "An active or sealed workflow package cannot be republished.")
-    except (blueprint.BlueprintError, OSError, ValueError) as exc:
-        if isinstance(exc, w.Refusal):
-            raise
-        raise w.Refusal("invalid_workflow_command", str(exc)) from None
-    return action, options
-
-
-def workflow_diagnostic_event(workspace: Path, event: dict[str, Any], state: dict[str, Any]) -> bool:
-    """Recovery reads and lifecycle controls remain usable with stale provenance."""
-    tool = event.get("tool_name") or event.get("tool")
-    from . import worker_runtime
-    if tool in worker_runtime.STATUS | worker_runtime.WAIT | worker_runtime.INTERRUPT:
-        return True  # The existing worker adapter still checks target and operation.
-    if tool in READ_TOOLS | QUESTION_TOOLS or readonly_command(event):
-        return True
-    if Harness(workspace, state["root"]).dashboard_opener(event, state):
-        return True
-    if tool == "write_stdin" and event.get("tool_input", {}).get("chars", "") in ("", "\x03"):
-        return True
-    words = runtime_words(event)
-    cwd = runtime_command.validate_workdir(words, event, workspace)
-    if not runtime_command.installed(words, cwd):
-        return False
-    if runtime_command.diagnostic(words) or words[2] == "dashboard" or words[2:] == ["workflow", "--help"]:
-        return True
-    if words[2] == "workflow":
-        return workflow_command(workspace, event, state)[0] in {"catalog", "validate", "preview", "check"}
-    if len(words) > 3 and words[2:4] == ["flow", "worker"]:
-        options = words[4:]
-        return any(word == '--operation=' + operation or word == '--operation'
-                   and index + 1 < len(options) and options[index + 1] == operation
-                   for index, word in enumerate(options) for operation in ("status", "recover-unbound"))
-    return len(words) > 3 and words[2] == "flow" and words[3] in {
-        "report", "diagnose", "inspect", "recover", "resume", "retire", "start", "wait", "present", "decide"}
-
-
 def readonly_command(event: dict[str, Any]) -> bool:
-    """Existing bounded diagnostic grammar; no execution helpers or shell effects."""
+    """Small, non-executing diagnostic grammar; no shell operators or rg helpers."""
     words = command_words(event)
-    if words in (['pwd'], ['date'], ['date', '-u'], ['date', '-Iseconds'], ['gh', 'auth', 'status']):
+    if words == ['pwd']:
         return True
-    if words and words[0] in {'cat', 'ls'}:
-        return all(not word.startswith('-') or words[0] == 'ls'
-                   and word in {'-l', '-a', '-la', '-al', '-d', '-ld', '-1'} for word in words[1:])
-    if words[:2] == ['git', 'status']:
-        return all(word in {'--short', '--porcelain', '--porcelain=v1', '-uno', '--branch'} for word in words[2:])
-    if words[:2] == ['git', 'diff']:
-        return all(word in {'--name-only', '--stat', '--check', '--cached', '--staged', '--no-ext-diff', '--no-textconv', '--'}
-                   or not word.startswith('-') for word in words[2:]) and '--no-ext-diff' in words and '--no-textconv' in words
-    if words and words[0] in {'wc', 'head', 'tail'}:
-        args = words[1:]
-        if words[0] == 'wc':
-            return bool(args) and all(not word.startswith('-') or word in {'-l', '-c', '-w'} for word in args)
-        if len(args) >= 3 and args[0] in {'-n', '-c'} and args[1].isdigit():
-            return all(not word.startswith('-') for word in args[2:])
-        return bool(args) and all(not word.startswith('-') or bool(re.fullmatch(r'-\d+', word)) for word in args)
-    if words[:2] == ['sed', '-n'] and len(words) >= 4:
-        return bool(re.fullmatch(r'\d+(?:,\d+)?p', words[2])) and all(not x.startswith('-') for x in words[3:])
+    if words and words[0] == 'ls':
+        return all(not word.startswith('-') or word in {'-l', '-a', '-la', '-al', '-d', '-ld', '-1'} for word in words[1:])
+    if words in (['date'], ['date', '-u'], ['date', '-Iseconds']):
+        return True
+    if words and words[0] == 'cat':
+        return len(words) > 1 and all(not value.startswith('-') for value in words[1:])
     if not words or words[0] != 'rg':
         return False
     flags = {'-n', '--line-number', '-l', '--files-with-matches', '--files', '--hidden',
              '-i', '--ignore-case', '-F', '--fixed-strings', '-S', '--smart-case',
              '--no-heading', '--no-messages', '--count', '-c', '--no-ignore', '--no-ignore-vcs'}
     values = {'-g', '--glob', '-t', '--type', '-m', '--max-count', '-e', '--regexp',
-              '-A', '--after-context', '-B', '--before-context', '-C', '--context', '--max-columns'}
+              '-A', '--after-context', '-B', '--before-context', '-C', '--context'}
     index = 1
     while index < len(words):
         word = words[index]
         if word == '--':
-            return True
+            return True  # Following arguments cannot select an executable helper.
         if word in values:
             index += 1
             if index >= len(words):
@@ -1238,38 +549,6 @@ def readonly_command(event: dict[str, Any]) -> bool:
             return False
         index += 1
     return len(words) > 1
-
-
-def shell_write_paths(event: dict[str, Any]) -> list[str] | None:
-    """Recognize finite literal file operations; never infer arbitrary code effects."""
-    words = command_words(event)
-    if words[:3] == ['git', 'add', '--']:
-        return words[3:] if words[3:] and all(not p.startswith('-') for p in words[3:]) else None
-    if (words[:4] == ['git', 'commit', '--only', '--message'] and len(words) > 6
-            and words[5] == '--' and words[4].strip()):
-        return words[6:] if all(not p.startswith('-') for p in words[6:]) else None
-    if words and words[0] in {'touch', 'rm', 'cp', 'mv'}:
-        args = words[1:]
-        if args[:1] == ['--']:
-            args = args[1:]
-        if not args or any(word.startswith('-') for word in args):
-            return None
-        if words[0] in {'touch', 'rm'}:
-            return args
-        if len(args) != 2:
-            return None
-        return args if words[0] == 'mv' else args[1:]
-    args = event.get('tool_input', {})
-    command = args.get('cmd', args.get('command', ''))
-    if not isinstance(command, str):
-        return None
-    match = re.fullmatch(r'(.*?)\s+(>>|>)\s*(.+)', command)
-    if match:
-        prefix = command_words({'tool_input': {'cmd': match[1]}})
-        target = command_words({'tool_input': {'cmd': match[3]}})
-        if prefix and prefix[0] in {'echo', 'printf'} and len(target) == 1:
-            return target
-    return None
 
 
 def bootstrap_write(workspace: Path, event: dict[str, Any], state: dict[str, Any]) -> bool:
@@ -1305,124 +584,7 @@ def bootstrap_write(workspace: Path, event: dict[str, Any], state: dict[str, Any
     return True
 
 
-def _runtime_root() -> Path:
-    return Path(__file__).resolve().parent.parent
-
-
-def _runtime_members(bundle: Path) -> str:
-    """Bounded code/hook identity; never execute the previous installation."""
-    w.require(bundle.is_absolute() and bundle == bundle.resolve() and bundle.is_dir(),
-              'scope_violation', 'Runtime identity requires a canonical installed directory.')
-    manifests = [bundle / folder / 'plugin.json' for folder in ('.codex-plugin', '.claude-plugin')
-                 if (bundle / folder / 'plugin.json').exists()]
-    w.require(manifests, 'invalid_evidence', 'Runtime installation manifest is missing.')
-    members = sorted((bundle / 'taskplane').glob('*.py')) + [bundle / 'hooks/hooks.json', *manifests]
-    w.require(2 <= len(members) <= 128, 'invalid_evidence', 'Invalid runtime member inventory.')
-    hashes: dict[str, str] = {}
-    total = 0
-    for member in members:
-        relative = member.relative_to(bundle).as_posix()
-        raw = evidence.read(bundle, relative)
-        total += len(raw)
-        w.require(total <= MAX_SOURCE_BYTES, 'invalid_evidence', 'Runtime code exceeds its bounded inventory.')
-        hashes[relative] = hashlib.sha256(raw).hexdigest()
-    return primitives.content_fingerprint(hashes)
-
-
-def recover_runtime(controller: Any, request_path: str, checksum: str, *, mode: str) -> dict[str, Any]:
-    """Rebind a quiescent Build to the compatible runtime already selected by its host.
-
-    Neither installation is edited or executed. Only the runtime binding and
-    state revision change; accepted phases, ownership and immutable evidence stay
-    intact. The new package identity invalidates old runtime-bound reuse.
-    """
-    from .host_capabilities import runtime_identity
-    w.require(mode in {'inspect', 'apply'} and controller.principal == controller.root
-              and controller.adapter.profile == PROFILE, 'unsupported_authority',
-              'Runtime recovery requires the owning native root.')
-    w.require(isinstance(checksum, str) and re.fullmatch(r'[0-9a-f]{64}', checksum) is not None,
-              'invalid_evidence', 'Runtime recovery needs the exact request SHA-256.')
-    workspace = controller.workspace
-    relative = Path(request_path)
-    w.require(not relative.is_absolute() and '..' not in relative.parts
-              and relative.as_posix().startswith('.taskplane/bootstrap/'),
-              'scope_violation', 'Select a workspace bootstrap recovery request.')
-    raw = evidence.read(workspace, request_path)
-    w.require(len(raw) <= 65536 and hashlib.sha256(raw).hexdigest() == checksum,
-              'stale_checkpoint', 'Runtime recovery request changed or exceeds its bound.')
-    try:
-        request = _relay_json(raw)
-    except DecisionRefusal:
-        raise w.Refusal('invalid_evidence', 'Runtime recovery request must be a unique, finite JSON object.') from None
-    w.require(set(request) == {'schema', 'binding', 'request_reference', 'from_runtime', 'to_runtime', 'member_sha256'}
-              and request['schema'] == 'taskplane.runtime-repair/v1'
-              and isinstance(request['request_reference'], str)
-              and 0 < len(request['request_reference'].strip()) <= 512
-              and isinstance(request['from_runtime'], dict) and isinstance(request['to_runtime'], dict)
-              and isinstance(request['member_sha256'], str)
-              and re.fullmatch(r'[0-9a-f]{64}', request['member_sha256']) is not None,
-              'invalid_evidence', 'Runtime recovery needs exact installation identities, members and actual user request.')
-    incoming = runtime_identity()
-    w.require(request['to_runtime'] == incoming and incoming['root'] == str(_runtime_root()),
-              'incompatible_runtime', 'Target must be the runtime already selected by the native host.')
-    origin = request['from_runtime']
-    w.require(origin != incoming and isinstance(origin.get('root'), str) and origin.get('root') != incoming['root']
-              and all(origin.get(key) == incoming.get(key) for key in ('name', 'workflow', 'context', 'execution'))
-              and all(isinstance(value.get('version'), str) and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', value['version'])
-                      for value in (origin, incoming))
-              and origin['version'].split('.')[:2] == incoming['version'].split('.')[:2],
-              'incompatible_runtime', 'Recovery requires separate installations with compatible patch-version contracts.')
-    installed = Path(incoming['root'])
-    w.require(installed != workspace and not workspace.is_relative_to(installed),
-              'unsupported_authority', 'A candidate checkout cannot adopt itself as its installed runtime.')
-    w.require(_runtime_members(installed) == request['member_sha256'],
-              'stale_checkpoint', 'Incoming installed runtime member bytes changed.')
-    target = controller._path()
-    with controller._locked(target):
-        db = controller._read(target)
-        state = db['runs'].get(db['active'])
-        prior = state.get('runtime_recovery', {}) if state else {}
-        if (state and prior.get('request_sha256') == checksum and state.get('runtime_identity') == incoming
-                and prior.get('binding', {}).get('visit') == w.current(state)['id']):
-            return {**prior, 'status': 'already_recovered'}
-        w.require(state is not None and request['binding'] == {
-            'workspace': str(workspace), 'root': controller.root, 'run': state['run'],
-            'revision': state['revision'], 'visit': w.current(state)['id']}
-            and state.get('runtime_identity') == origin,
-            'stale_checkpoint', 'Runtime recovery binding is not current.')
-        stage = w.current(state)
-        w.require(stage['phase'] == 'build' and stage['packet'] is None
-                  and not state.get('retired') and not state.get('finished')
-                  and not state.get('active_requirements_revision'),
-                  'approval_required', 'Runtime recovery requires an open, unfenced approved-Plan Build.')
-        w.accepted_plan(state)
-        verify_workflow(workspace, state)
-        w.require(controller.adapter.can_seal(state), 'state_unavailable',
-                  'Join or interrupt known work before runtime recovery.')
-        # Only the incoming installation is used. A host updater may have removed
-        # the old bundle; its persisted identity remains historical provenance.
-        w.require(_runtime_members(installed) == request['member_sha256'],
-                  'stale_checkpoint', 'Incoming runtime members drifted before recovery.')
-        result = {'schema': 'taskplane.runtime-repair-result/v1', 'status': 'inspected',
-                  'binding': request['binding'], 'request_sha256': checksum,
-                  'request_reference': request['request_reference'], 'from_runtime': origin,
-                  'to_runtime': incoming, 'member_sha256': request['member_sha256'],
-                  'approvals_changed': False, 'installations_changed': False}
-        if mode == 'inspect':
-            return result
-        updated = deepcopy(state)
-        updated['runtime_identity'] = incoming
-        updated['revision'] += 1
-        updated.pop('parent_hook_readiness', None)
-        result.update(status='recovered', revision=updated['revision'])
-        updated['runtime_recovery'] = deepcopy(result)
-        w.validate_state(updated)
-        controller.adapter.validate_state(updated)
-        db['runs'][state['run']] = updated
-        controller._write(target, db)
-        return result
-
-def execution_entry(event: dict[str, Any]) -> str | None:
+def execution_entry(event: dict[str, Any], *, allow_skill_read: bool = True) -> str | None:
     """Recognize explicit execution selection, never arbitrary mentions or approval."""
     args = event.get('tool_input', {})
     if not isinstance(args, dict):
@@ -1430,14 +592,21 @@ def execution_entry(event: dict[str, Any]) -> str | None:
     tool = event.get('tool_name') or event.get('tool')
     if tool == 'Skill':
         name = args.get('skill', '')
-        if name in {'taskplane:tp-workflow', 'tp-workflow'}:
-            intent = args.get('args', '')
-            return 'tp-workflow' if isinstance(intent, str) and re.match(
-                r'^(?:create|edit|author)\b', intent.strip(), re.I) else None
         if name == 'taskplane':
             return 'taskplane'  # Cowork can expose the router without a plugin namespace.
         if isinstance(name, str) and name.startswith('taskplane:') and name[10:] in EXECUTION_ENTRIES:
             return name[10:]
+    # Codex can load skills through a native read instead of a Skill event.
+    paths = [args.get('file_path') or args.get('path')] if tool in READ_TOOLS else []
+    words = command_words(event) if tool in {'Bash', 'exec_command'} else []
+    if words and words[0] == 'cat':
+        paths += words[1:]
+    for value in paths if allow_skill_read else []:
+        if isinstance(value, str):
+            path = Path(value)
+            for entry in EXECUTION_ENTRIES:
+                if path.is_absolute() and path.resolve() == Path(__file__).resolve().parents[1]/'skills'/entry/'SKILL.md':
+                    return entry
     if event.get('hook_event_name') != 'UserPromptSubmit':
         return None
     prompt = event.get('prompt', '')
@@ -1448,8 +617,6 @@ def execution_entry(event: dict[str, Any]) -> str | None:
     text = prompt.strip().casefold()
     match = re.match(r'^(?:\$|/)(?:taskplane:)?(tp-[a-z]+|taskplane)\b', text)
     if match:
-        if match[1] == 'tp-workflow':
-            return 'tp-workflow' if re.match(r'^\s+(?:create|edit|author)\b', text[match.end():]) else None
         return match[1] if match[1] in EXECUTION_ENTRIES else None
     # The menu and README also use bare directives. Route by their leading
     # action, so a Build request mentioning design/review keeps its full route.
@@ -1488,11 +655,10 @@ class Harness:
         self.path = storage.runtime_file(str(self.workspace), f'harness-{key}.json')
 
     def read(self) -> dict[str, Any]:
-        if not operation('source_stat', self.path.exists):
+        if not self.path.exists():
             return {}
-        w.require(operation('source_stat', self.path.stat).st_size <= 16384, 'state_unavailable', 'Harness record exceeds its size bound.')
-        data = operation('source_parse', json.loads,
-                         operation('source_read', self.path.read_bytes, category='source_fingerprints'))
+        w.require(self.path.stat().st_size <= 16384, 'state_unavailable', 'Harness record exceeds its size bound.')
+        data = json.loads(self.path.read_text())
         w.require(isinstance(data, dict) and data.get('schema') == 'taskplane.harness/v1'
                   and data.get('workspace') == str(self.workspace) and data.get('root') == self.root,
                   'state_unavailable', 'Harness identity is corrupt; restore this session record before continuing.')
@@ -1616,34 +782,39 @@ class Harness:
         self.update(waiting={'binding': self.binding(state), 'reason': reason.strip()})
 
     def readiness(self, state: dict[str, Any]) -> dict[str, Any]:
-        from .worker_runtime import parent_readiness
-        terminal = any(state.get(key) for key in ("finished", "retired", "cancellation"))
-        proof = parent_readiness(state) if state.get('visits') and not terminal else None
-        return {"status": "inactive" if terminal or not self.read().get("selected") else
-                "active" if state.get("visits") else "initialization_required",
-                "run_created": bool(state.get("visits")), "binding": self.binding(state),
-                "parent_hook": proof,
-                "assurance": "observed; not host authentication"}
+        data = self.read()
+        active = bool(state.get('visits') and not state.get('finished'))
+        return {'status': 'active' if active else 'initialization_required' if data.get('selected') and not state.get('finished') else 'inactive',
+                'hook_observed': bool(data.get('hook_observed')), 'entry': data.get('entry'),
+                'binding': self.binding(state), 'presentation': data.get('presentation'),
+                'assurance': 'observed; not host authentication'}
 
     def guidance(self, state: dict[str, Any]) -> str:
-        if not state.get("visits"):
-            return "Taskplane selected. Start the requested scoped workflow before implementation."
+        if not state.get('visits'):
+            entry = self.read().get('entry', 'taskplane')
+            phase = {'tp-engineering': 'engineering', 'tp-northstar': 'engineering',
+                     'tp-design': 'design', 'tp-product': 'product'}.get(entry)
+            route = f'--standalone --phase {phase}' if phase else 'the requested route (Product for full delivery)'
+            return ('Taskplane selected; initialization required before implementation or completing the review. '
+                    'Prepare exact scope/evidence under .taskplane/bootstrap/, then run the installed tp.py flow start with '
+                    f'{route}, --scope and --request-reference. Read/search, loading skills, asking the user and exact '
+                    'Taskplane setup commands remain available. Standalone review does not require seven delivery phases.')
         stage = w.current(state)
-        readiness = self.readiness(state)
-        callback_note = (' Automatic hook coverage has not been observed for this phase; '
-                         'controller phase checks remain active and native workers retain their readiness requirements.'
-                         if (readiness.get('parent_hook') or {}).get('status') != 'ready' else '')
-        return (f"Taskplane run {state['run']}, current phase {stage['phase']}. "
-                "Read the durable brief and relevant references, complete useful phase evidence, "
-                "then present that result for its separate human decision with the current dashboard. "
-                "Use required DoR/DoD evidence and task ownership; advisory telemetry cannot change enforcement."
-                + callback_note)
+        return (f'Taskplane harness active: run {state["run"]}, {stage["phase"]} visit {stage["id"]}, revision {state["revision"]}. '
+                'Use flow context to obtain and consume the current handoff; read every required input before phase submission. '
+                'Context receipts prove returned data, never approval or model attention. '
+                f'Use the native dashboard at {self.workspace / ".taskplane/dashboard.html"}. '
+                'After submitting phase evidence, provide the exact dashboard link/open result and record flow present. '
+                'A queued open is not verified display. If user input is needed, record flow wait --note with the actual reason.')
 
     def recovery_action(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
         tool = event.get('tool_name') or event.get('tool')
         args = event.get('tool_input', {})
         if not isinstance(args, dict):
             return False
+        if tool in {'mcp__codex_app__uninstall_plugin', 'mcp__codex_app.uninstall_plugin'}:
+            return (set(args) == {'plugin'} and isinstance(args['plugin'], str)
+                    and args['plugin'].casefold() in {'taskplane', 'taskplane@openai-curated-remote'})
         identity = event.get('tool_use_id') or event.get('call_id')
         if not isinstance(identity, str) or not 0 < len(identity) <= 512:
             return False
@@ -1791,10 +962,7 @@ class Harness:
             return False
         if not runtime_command.installed(words, cwd):
             return False
-        if runtime_command.diagnostic(words) or words[2:] == ["workflow", "--help"]:
-            return True
-        if words[2] == 'workflow':
-            workflow_command(self.workspace, event, {})
+        if runtime_command.diagnostic(words):
             return True
         try:
             value = runtime_command.workspace_selector(words[3:])
@@ -1802,7 +970,7 @@ class Harness:
                 return False
         except (w.Refusal, OSError, ValueError):
             return False
-        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'recover', 'repair', 'resume', 'wait'})
+        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'wait'})
                 or words[2] == 'graph' and 'scan' in words[3:]
                 or words[2:4] == ['review', 'start'])
 
@@ -1897,22 +1065,71 @@ class Harness:
                                   'assurance': 'observed', 'digest': hashlib.sha256(immutable.read_bytes()).hexdigest(),
                                   'model_digest': hashlib.sha256(immutable.with_suffix('.json').read_bytes()).hexdigest()}, waiting=None)
 
+    def presentation_valid(self, state: dict[str, Any]) -> bool:
+        try:
+            presentation = self.read().get('presentation') or {}
+            checkpoint = self.checkpoint(state)
+            if not checkpoint or presentation.get('checkpoint') != checkpoint or state.get('invalidation_pending'):
+                return False
+            if presentation.get('outcome') not in {'linked', 'verified', 'blocked'}:
+                return False
+            binding = presentation.get('binding', {})
+            expected = self.binding(state)
+            if binding != expected:
+                # Only the approval of this exact, previously shown packet may
+                # increment the revision without another presentation.
+                if (w.current(state)['decision'] != 'approved'
+                        or binding != {**expected, 'revision': state['revision'] - 1}
+                        or not any(d.get('choice') == 'approved' and
+                            all(d.get('binding', {}).get(k) == v for k, v in binding.items()) and
+                            d.get('binding', {}).get('checkpoint') == checkpoint['checkpoint']
+                            for d in state['decisions'].values())):
+                    return False
+            artifact = str(Path(presentation['artifact']).relative_to(self.workspace))
+            immutable, model = self.native_snapshot(state, artifact, current=False)
+            return (model['snapshot'].get('revision') == binding['revision']
+                    and hashlib.sha256(immutable.read_bytes()).hexdigest() == presentation.get('digest')
+                    and hashlib.sha256(immutable.with_suffix('.json').read_bytes()).hexdigest() == presentation.get('model_digest'))
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
 
     def dashboard_opener(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
-        """Opening a documented host panel is observation, never phase authority."""
         if (event.get('tool_name') or event.get('tool')) not in {
                 'mcp__codex_app__open_in_codex', 'mcp__codex_app.open_in_codex'}:
             return False
         args = event.get('tool_input', {})
-        if not isinstance(args, dict) or set(args) - {'target', 'placement', 'threadId'}:
+        if (not isinstance(args, dict) or set(args) - {'target', 'placement', 'threadId'}
+                or args.get('threadId', self.root) != self.root):
             return False
-        target = args.get('target')
-        return (isinstance(target, dict) and target.get('type') in {'file', 'page', 'browser', 'review', 'terminal'}
-                and args.get('placement', 'right') in {'right', 'bottom'}
-                and ('threadId' not in args or isinstance(args['threadId'], str)))
+        target = args.get('target', {})
+        if not isinstance(target, dict):
+            return False
+        if target.get('type') == 'file' and set(target) <= {'type', 'path'}:
+            value = target.get('path')
+        elif target.get('type') == 'browser' and set(target) == {'type', 'url'}:
+            url = target.get('url')
+            if not isinstance(url, str):
+                return False
+            try:
+                parsed = urlsplit(url)
+                value = url2pathname(parsed.path)
+                canonical = Path(value).as_uri()
+            except ValueError:
+                return False
+            if (parsed.scheme != 'file' or parsed.netloc or parsed.query or parsed.fragment
+                    or canonical != url):
+                return False
+        else:
+            return False
+        if not isinstance(value, str) or not Path(value).is_absolute():
+            return False
+        try:
+            self.native_snapshot(state, str(Path(value).relative_to(self.workspace)))
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        return True
 
     def stop(self, event: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-        """Describe unfinished work without creating a second transition gate."""
         data = self.read()
         if not data.get('selected') or state.get('finished') or state.get('status') == 'cancelled':
             return {}
@@ -1924,8 +1141,10 @@ class Harness:
         elif state.get('invalidation_pending'):
             reason = 'Taskplane evidence is stale; resolve the current phase before reporting completion.'
         elif w.current(state)['decision'] in {'not_requested', 'changes_requested', 'rejected', 'stale'}:
-            stage = w.current(state)
-            reason = f"Taskplane {stage['phase']} is {stage['decision']}; the workflow remains open."
+            reason = 'Taskplane phase evidence is not submitted. Submit the review/current phase and present its native dashboard before completing.'
+        elif not self.presentation_valid(state):
+            reason = 'Taskplane dashboard handoff is missing for this checkpoint. Link/open the current native dashboard and record flow present with the actual outcome.'
         else:
             return {}
-        return {'systemMessage': reason}
+        # One corrective continuation, never a forced loop while the user waits.
+        return {'systemMessage': reason} if event.get('stop_hook_active') else {'decision': 'block', 'reason': reason}

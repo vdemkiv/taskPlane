@@ -80,7 +80,7 @@ def atomic_json(path: str | os.PathLike[str], value: object, *,
             pass
 
 
-def lock_file(handle: BinaryIO, *, blocking: bool = True) -> None:
+def lock_file(handle: BinaryIO) -> None:
     try:
         import fcntl
     except ImportError:  # Windows
@@ -90,9 +90,9 @@ def lock_file(handle: BinaryIO, *, blocking: bool = True) -> None:
             handle.write(b"\0")
             handle.flush()
         handle.seek(0)
-        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK" if blocking else "LK_NBLCK"), 1)
+        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
     else:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
 
 
 def unlock_file(handle: BinaryIO) -> None:
@@ -105,6 +105,8 @@ def unlock_file(handle: BinaryIO) -> None:
     else:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
+
+_LOCK_STALE_S = 120.0
 
 class StateError(RuntimeError):
     """A governance state file is unreadable or unprotectable.
@@ -122,47 +124,69 @@ class StateError(RuntimeError):
 
 
 @_contextlib.contextmanager
-def file_lock(path: str, *, blocking: bool = True, timeout: float | None = None) -> Iterator[None]:
-    """Hold the native exclusive lock, or refuse before entering the body.
+def file_lock(path: str, *, timeout: float = 10.0) -> Iterator[None]:
+    """Advisory exclusive lock on <path>.lock — NEVER silently lock-free.
 
-    Native locks release when the owning handle/process exits. Directory ages
-    cannot establish owner death and must never be used to steal a live lock.
-    """
+    Primary: fcntl.flock. Where flock is unavailable or refused (Windows,
+    some FUSE/network mounts — exactly the hosts this plugin targets), fall
+    back to an atomic mkdir spin-lock with staleness recovery instead of
+    proceeding unlocked. If even that cannot be acquired within `timeout`,
+    raise StateError: failing closed beats corrupting shared state."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     lock_path = path + ".lock"
+    # ACQUISITION failures fall through to the mkdir lock; an exception
+    # raised by the CALLER'S BODY must propagate unchanged (v2.3.0 — the
+    # earlier shape caught the body's OSError too, then yielded a second
+    # time from the fallback path).
     lf = None
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_APPEND
                              | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
         lf = os.fdopen(descriptor, "a+b")
         if not stat.S_ISREG(os.fstat(lf.fileno()).st_mode):
             raise OSError("state lock must be a regular file")
-        if timeout is not None:
-            deadline = _time.monotonic() + timeout
-            while True:
-                try:
-                    lock_file(lf, blocking=False)
-                    break
-                except OSError:
-                    if _time.monotonic() >= deadline:
-                        raise
-                    _time.sleep(min(.005, max(0, deadline - _time.monotonic())))
-        elif blocking:
-            lock_file(lf)
-        else:
-            lock_file(lf, blocking=False)
-    except (ImportError, OSError) as exc:
+        lock_file(lf)
+    except (ImportError, OSError):
         if lf is not None:
             lf.close()
-        raise StateError(lock_path, f"native state lock unavailable ({exc})",
-                         "use a filesystem with supported native file locking") from exc
+        lf = None     # fall through to the mkdir lock — not to "no lock"
+    if lf is not None:
+        try:
+            yield
+        finally:
+            try:
+                unlock_file(lf)
+            finally:
+                lf.close()
+        return
+    lockdir = path + ".lockdir"
+    deadline = _time.monotonic() + max(0.1, timeout)
+    while True:
+        try:
+            os.mkdir(lockdir)
+            break
+        except FileExistsError:
+            try:  # steal a lock left behind by a dead process
+                if _time.time() - os.stat(lockdir).st_mtime > _LOCK_STALE_S:
+                    os.rmdir(lockdir)
+                    continue
+            except OSError:
+                pass
+            if _time.monotonic() >= deadline:
+                raise StateError(
+                    lockdir, "could not acquire state lock",
+                    "another process holds it; if it is dead, remove the "
+                    "lockdir") from None
+            _time.sleep(0.05)
+        except OSError as e:
+            raise StateError(lockdir, f"lock unavailable ({e})") from None
     try:
         yield
     finally:
         try:
-            unlock_file(lf)
-        finally:
-            lf.close()
+            os.rmdir(lockdir)
+        except OSError:
+            pass
 
 
 def git_environment(git_path: Path) -> dict[str, str]:
@@ -232,13 +256,12 @@ def atomic_write_json(path: str, data: Any, *, indent: int=1, sort_keys: bool=Fa
     _durable_makedirs(os.path.dirname(path) or '.')
     atomic_json(path, data, indent=indent, sort_keys=sort_keys, trailing_newline=False, strict_directory_sync=True)
 
-def atomic_write_bytes(path: str, data: bytes, *, private: bool = False) -> None:
+def atomic_write_bytes(path: str, data: bytes) -> None:
     """Durably replace one file with exact caller-owned bytes.
 
     This is the byte-preserving counterpart of :func:`atomic_write_json` for
     recovery paths that must restore the exact prior artifact representation,
-    rather than merely an equivalent decoded JSON value. Private publications
-    create their temporary file with mode 0600 before writing any contents.
+    rather than merely an equivalent decoded JSON value.
     """
     if not isinstance(data, bytes):
         raise TypeError('atomic_write_bytes requires bytes')
@@ -246,9 +269,7 @@ def atomic_write_bytes(path: str, data: bytes, *, private: bool = False) -> None
     _durable_makedirs(directory)
     temporary = os.path.join(directory, f'.{os.path.basename(path)}.tmp.{os.getpid()}.{secrets.token_hex(8)}')
     try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                             0o600 if private else 0o666)
-        with os.fdopen(descriptor, 'wb') as stream:
+        with open(temporary, 'xb') as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
@@ -261,7 +282,7 @@ def atomic_write_bytes(path: str, data: bytes, *, private: bool = False) -> None
         except OSError:
             pass
 
-def _durable_makedirs(path: str, *, mode: int = 0o777, sync_existing: bool = False) -> None:
+def _durable_makedirs(path: str) -> None:
     """Create a directory chain without acknowledging volatile ancestors.
 
     ``os.makedirs`` makes the complete chain but provides no point at which a
@@ -273,26 +294,6 @@ def _durable_makedirs(path: str, *, mode: int = 0o777, sync_existing: bool = Fal
     retry.
     """
     target = os.path.abspath(path)
-    if sync_existing:
-        # Recovery cannot distinguish a durable pre-existing directory from one
-        # left by interruption immediately after mkdir. Revalidate and flush the
-        # complete ancestry on exact retry, including each owning parent.
-        chain = list(reversed((Path(target), *Path(target).parents)))
-        for entry in chain:
-            # A filesystem anchor already exists independently of this chain.
-            # Creating a Windows drive root or UNC share reports access denied,
-            # not FileExistsError. Still validate and flush the anchor below.
-            if entry != entry.parent:
-                try:
-                    os.mkdir(entry, mode=mode)
-                except FileExistsError:
-                    pass
-            identity = _durable_directory_identity(str(entry))
-            _fsync_directory(str(entry))
-            _fsync_directory(str(entry.parent))
-            if _durable_directory_identity(str(entry)) != identity:
-                raise StateError(str(entry), 'durable directory identity changed during fsync')
-        return
     missing = []
     cursor = target
     while not os.path.lexists(cursor):
@@ -305,7 +306,7 @@ def _durable_makedirs(path: str, *, mode: int = 0o777, sync_existing: bool = Fal
     for directory in reversed(missing):
         parent = os.path.dirname(directory) or '.'
         try:
-            os.mkdir(directory, mode=mode)
+            os.mkdir(directory)
         except FileExistsError:
             pass
         identity = _durable_directory_identity(directory)
@@ -332,30 +333,17 @@ def _flush_windows_directory(path: str) -> None:
     kernel = getattr(ctypes, "WinDLL")('kernel32', use_last_error=True)
     kernel.CreateFileW.restype = ctypes.c_void_p
     kernel.CreateFileW.argtypes = (ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
-    kernel.FlushFileBuffers.restype = ctypes.c_int
     kernel.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
-    kernel.CloseHandle.restype = ctypes.c_int
     kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
-    # FlushFileBuffers requires GENERIC_WRITE, even for a directory opened
-    # with FILE_FLAG_BACKUP_SEMANTICS. A read-only handle always fails with
-    # ERROR_ACCESS_DENIED before the filesystem can perform the flush.
-    # https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers
-    generic_write = 0x40000000
-    share_read_write_delete = 0x00000007
-    open_existing = 3
-    backup_semantics = 0x02000000
-    handle = kernel.CreateFileW(str(path), generic_write, share_read_write_delete,
-                                None, open_existing, backup_semantics, None)
+    handle = kernel.CreateFileW(str(path), 2147483648, 7, None, 3, 33554432, None)
     invalid = ctypes.c_void_p(-1).value
     if handle == invalid:
         raise getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())
     try:
         if not kernel.FlushFileBuffers(handle):
             error = getattr(ctypes, "get_last_error")()
-            # Access denied is not successful persistence. Some Windows/filesystem
-            # combinations cannot flush directory handles; strict callers must
-            # report unsupported durability instead of acknowledging a commit.
-            raise getattr(ctypes, "WinError")(error)
+            if error != 5:
+                raise getattr(ctypes, "WinError")(error)
     finally:
         if not kernel.CloseHandle(handle):
             raise getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())

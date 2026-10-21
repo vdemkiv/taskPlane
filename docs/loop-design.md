@@ -1,7 +1,5 @@
 # Loop design — the shipped design
 
-> Historical design record. The current [shared flow](../skills/tp-go/references/shared-flow.md) supersedes its retired phase, lens-quota and receipt requirements. This record does not govern new runs.
-
 > **Status: SHIPPED.** This is the design taskplane's Evaluate-Loop was built
 > to; the open decisions listed at the bottom were resolved as recommended and
 > **locked on 2026-07-11** (see `taskplane/loop.py`). The document is kept as

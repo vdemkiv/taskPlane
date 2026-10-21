@@ -2,16 +2,13 @@
 """Taskplane: human-gated delivery, native observations, graph and dashboard."""
 from __future__ import annotations
 
-import time as _entry_clock
-TASKPLANE_ENTRY_NS = _entry_clock.monotonic_ns()
-
 import argparse
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any, TextIO, cast
+from typing import Any
 
 if sys.version_info < (3, 10):
     raise SystemExit("Taskplane requires Python 3.10 or newer")
@@ -19,86 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "taskplane"))
 
-from taskplane.context_delivery import begin_cli_measurement, observed, operation
-_CLI_MEASUREMENT = begin_cli_measurement() if __name__ == '__main__' else None
 from taskplane import depgraph, flow, graph_primitives, primitives, storage, workspace_binding
-
-
-def _workflow_inputs(path: Path) -> dict[str, Any]:
-    from taskplane import blueprint as b
-    import math
-    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in items:
-            if key in result:
-                raise b.BlueprintError("duplicate_key", "/inputs/" + key, "Duplicate input JSON key.")
-            result[key] = value
-        return result
-    def invalid(value: str) -> Any:
-        raise b.BlueprintError("invalid_json", "/inputs", "Non-finite number: " + value)
-    def number(value: str) -> float:
-        result = float(value)
-        return result if math.isfinite(result) else invalid(value)
-    raw = b._read_file(path)
-    if len(raw) > b.MAX_DEFINITION_BYTES:
-        raise b.BlueprintError("inputs_too_large", "/inputs", "Inputs exceed 256 KiB.")
-    try:
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs,
-                           parse_constant=invalid, parse_float=number)
-    except (ValueError, UnicodeError, RecursionError) as exc:
-        if isinstance(exc, b.BlueprintError):
-            raise
-        raise b.BlueprintError("invalid_json", "/inputs", str(exc)) from None
-    if not isinstance(value, dict):
-        raise b.BlueprintError("invalid_inputs", "/inputs", "Inputs must be a JSON object.")
-    return value
-
-
-def workflow_main(arguments: list[str]) -> int:
-    """Data operations precede generic persistence and never start a workflow."""
-    from taskplane import blueprint as b, blueprint_catalog as catalog, blueprint_compile as compiler
-    from taskplane import workflow as w, workflow_local as local
-    try:
-        if arguments in (["--help"], ["-h"]):
-            print("workflow catalog|validate|preview|save|compile|check --workspace ROOT\n"
-                  "validate/preview/save/compile: --definition FILE; preview: [--inputs FILE];\n"
-                  "save: --out FILE; compile: --inputs FILE --out DIR; check: --run RUN")
-            return 0
-        action, options = local.workflow_options(arguments)
-        workspace = workspace_binding.resolve_workspace(options["--workspace"])
-        if not workspace.is_dir():
-            raise b.BlueprintError("workspace_unavailable", "/workspace", "Workspace is not a directory.")
-        if action == "catalog":
-            result = catalog.catalog()
-        elif action == "check":
-            # Read the existing controller; no Session, graph scan or initialization.
-            controller = flow._controller(workspace, flow.session_id({}))
-            w.require(controller.adapter.state_exists(), "state_unavailable",
-                      "The requested run has no existing workflow store.")
-            state = controller.report(options["--run"], diagnostics=False)
-            result = local.workflow_status(workspace, state) or {
-                "status": "not_bound", "run": options["--run"], "diagnostics": []}
-        else:
-            definition = b.load_definition(workspace / options["--definition"])
-            if action == "validate":
-                result = {"status": "valid", "schema": definition["schema"],
-                          "definition_digest": b.definition_digest(definition), "definition": definition}
-            elif action == "save":
-                result = b.save_definition(workspace, definition, options["--out"])
-            else:
-                inputs = _workflow_inputs(workspace / options["--inputs"]) if "--inputs" in options else {}
-                result = (compiler.preview(workspace, definition, inputs) if action == "preview" else
-                          compiler.compile_package(workspace, definition, inputs, options["--out"]))
-        print(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2))
-        return 2 if result.get("status") in {"invalid", "blocked"} or result.get("compatible") is False else 0
-    except b.BlueprintError as exc:
-        print(json.dumps(exc.result(), ensure_ascii=False))
-        return 2
-    except (w.Refusal, OSError, ValueError, KeyError, primitives.StateError) as exc:
-        error = b.BlueprintError(getattr(exc, "reason", "invalid_workflow"), "/", str(exc),
-                                 "Correct the request or inspect the existing run; no run was started.")
-        print(json.dumps(error.result(), ensure_ascii=False))
-        return 2
 
 
 def _git(workspace: str, *args: str) -> str:
@@ -121,16 +39,12 @@ def _git_paths(workspace: str, *args: str) -> list[str]:
     return [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
 
 
-@observed('entrypoint', stage='startup')
 def _version(verify: bool) -> dict[str, Any]:
-    manifests = [p for p in (ROOT / ".codex-plugin/plugin.json", ROOT / ".claude-plugin/plugin.json")
-                 if operation('source_stat', p.is_file)]
-    versions = [operation('source_parse', json.loads, operation('source_read', p.read_bytes,
-                category='source_fingerprints'))["version"] for p in manifests]
+    manifests = [p for p in (ROOT / ".codex-plugin/plugin.json", ROOT / ".claude-plugin/plugin.json") if p.is_file()]
+    versions = [json.loads(p.read_text())["version"] for p in manifests]
     market = ROOT / ".claude-plugin/marketplace.json"
-    if operation('source_stat', market.is_file):
-        data = operation('source_parse', json.loads, operation('source_read', market.read_bytes,
-                         category='source_fingerprints'))
+    if market.is_file():
+        data = json.loads(market.read_text())
         versions.extend([data["version"], data["plugins"][0]["version"]])
     result: dict[str, Any] = {"version": versions[0]}
     if verify:
@@ -142,8 +56,6 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments[:1] == ["workspace"]:
         return workspace_binding.main(arguments[1:])
-    if arguments[:1] == ["workflow"]:
-        return workflow_main(arguments[1:])
     if arguments[:1] == ["flow"]:
         return flow.main(arguments[1:], compact=True)
     if arguments and arguments[0] in flow.HOOK_NAMES:
@@ -155,7 +67,6 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("flow", help="Human-gated delivery and observations; use flow --help")
     commands.add_parser("workspace", help="Inspect, bind or recover the selected workspace; use workspace --help")
-    commands.add_parser("workflow", help="Author, validate and compile reusable definitions; use workflow --help")
     version = commands.add_parser("version", help="Report the installed version")
     version.add_argument("--verify", action="store_true")
     help_command = commands.add_parser("help", help="Show the supported commands")
@@ -221,13 +132,6 @@ def main(argv: list[str] | None = None) -> int:
                 quality = depgraph.scan_quality(data)
                 if quality.get("degraded"):
                     result["graph_quality"] = quality
-                try:
-                    if flow.report(Path(workspace)) is not None:
-                        flow.publish_dashboard(Path(workspace), select=True)
-                except Exception as exc:
-                    # The scanner's result remains usable when a derived view
-                    # cannot publish; retry only the dashboard in that case.
-                    result['dashboard_status'] = 'unavailable: ' + str(exc)[:256]
                 print(json.dumps(result, indent=2))
                 return int(args.strict and bool(quality.get("degraded")))
             if args.action == "edge":
@@ -244,8 +148,7 @@ def main(argv: list[str] | None = None) -> int:
                     return 0
         elif args.command == "dashboard":
             output = flow.publish_dashboard(Path(workspace), args.run,
-                output=Path(args.out) if args.out else None, select=bool(args.run),
-                checkpoint_required=True)
+                output=Path(args.out) if args.out else None, select=bool(args.run))
             print(str(output))
             return 0
         elif args.command == "lens":
@@ -280,36 +183,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    if _CLI_MEASUREMENT is None:
-        raise SystemExit(main())
-    # A binary tee preserves the exact public output, including its newline.
-    # It does not replace stdout with a private response or suppress failures.
-    class _MeasuredOutput:
-        def __init__(self, original: TextIO) -> None:
-            self.original = original
-            self.bytes = bytearray()
-            self.encoding = original.encoding or 'utf-8'
-            self.errors = original.errors or 'strict'
-        def write(self, value: str) -> int:
-            result = self.original.write(value)
-            self.bytes.extend(value[:result].encode(self.encoding, self.errors))
-            return result
-        def flush(self) -> None:
-            self.original.flush()
-        def __getattr__(self, name: str) -> Any:
-            return getattr(self.original, name)
-    _output = _MeasuredOutput(sys.stdout)
-    sys.stdout = cast(TextIO, _output)
-    _code = 1
-    try:
-        _code = main()
-    except SystemExit as exc:
-        _code = exc.code if isinstance(exc.code, int) else 1
-        raise
-    finally:
-        _output.flush()
-        sys.stdout = _output.original
-        _CLI_MEASUREMENT.finish(Path(os.environ['TASKPLANE_CONTEXT_METRICS']),
-            argv=[sys.executable, *sys.argv], cwd=Path.cwd(),
-            stdout=bytes(_output.bytes), exit_code=_code)
-    raise SystemExit(_code)
+    raise SystemExit(main())

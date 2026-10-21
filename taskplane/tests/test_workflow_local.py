@@ -7,37 +7,6 @@ from taskplane import workflow as w, workflow_host as h, workflow_local as local
 from taskplane.tests.test_workflow_evidence import prepare
 
 
-def binding_runtime_available():
-    return (os.open in os.supports_dir_fd and hasattr(os, 'O_DIRECTORY')
-            and hasattr(os, 'O_NOFOLLOW'))
-
-
-@pytest.mark.parametrize('command', ['wc -l source.py', 'head -25 source.py', 'tail -n 45 source.py',
-    'git diff --no-ext-diff --no-textconv --name-only', 'rg -n --max-columns 15000 value source.py'])
-def test_literal_diagnostic_reads_remain_available(command):
-    assert local.readonly_command({'tool_input': {'cmd': command}})
-
-
-@pytest.mark.parametrize('command', ['touch report{,.backup}.txt', 'touch report*.txt',
-    'tail -n 4 source.py > stolen.txt', 'git diff --output=stolen.txt', 'head source.py; touch stolen.txt'])
-def test_expanding_or_mutating_shell_is_not_a_read_or_literal_write(command):
-    event = {'tool_input': {'cmd': command}}
-    assert not local.readonly_command(event)
-    assert local.shell_write_paths(event) is None
-
-
-def test_quoted_brace_filename_is_literal():
-    assert local.shell_write_paths({'tool_input': {'cmd': "touch 'report{,.backup}.txt'"}}) == ['report{,.backup}.txt']
-
-
-@pytest.mark.parametrize('command,expected', [
-    ('git add -- app.py tests/check.py', ['app.py', 'tests/check.py']),
-    ("git commit --only --message 'Fix the owned source' -- app.py", ['app.py']),
-    ('git add -A', None), ('git commit --amend --no-edit', None), ('git reset --hard', None)])
-def test_scoped_git_has_only_literal_reviewed_targets(command, expected):
-    assert local.shell_write_paths({'tool_input': {'cmd': command}}) == expected
-
-
 def setup(workspace, *, entry="product", standalone=False):
     workspace=workspace.resolve()
     state, _, _=prepare(workspace)
@@ -46,9 +15,7 @@ def setup(workspace, *, entry="product", standalone=False):
     c=h.Controller(workspace,"root",h.installed_adapter("codex"))
     s=c.start({"scope":state["scope"],"request_reference":"conversation/user-1",
                "entry":entry,"standalone":standalone})
-    from taskplane.tests.test_worker_runtime import parent_pair
-    parent_pair(c)
-    return c,c.report(s['run'], diagnostics=False)
+    return c,s
 
 
 def displaced_database(tmp_path, *, approved=False):
@@ -70,11 +37,6 @@ def test_numbered_database_recovery_preserves_exact_history_and_is_idempotent(tm
     before = marker.read_bytes()
     with pytest.raises(w.Refusal, match='incomplete'):
         c.report()
-    if not binding_runtime_available():
-        with pytest.raises(w.Refusal, match='no-follow directory operations'):
-            c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
-        assert not target.exists() and candidate.read_bytes() == raw and marker.read_bytes() == before
-        return
     result = c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
     assert result['status'] == 'restored' and result['approvals_changed'] is False
     assert target.read_bytes() == candidate.read_bytes() == raw and marker.read_bytes() == before
@@ -116,26 +78,12 @@ def test_numbered_database_recovery_refuses_without_changing_control_files(tmp_p
 
 def test_numbered_database_recovery_never_overwrites_a_racing_writer(tmp_path, monkeypatch):
     c, state, target, candidate, raw, checksum = displaced_database(tmp_path)
-    marker = target.with_name(target.stem + '.initialized.json')
-    before = marker.read_bytes()
-    publications = []
-    link = os.link
-    def collision(source, destination, **kwargs):
-        publications.append(destination)
-        if destination == target.name:
-            target.write_bytes(b'concurrent state')
-            raise FileExistsError('fixture concurrent writer')
-        return link(source, destination, **kwargs)
+    def collision(source, destination):
+        destination.write_bytes(b'concurrent state')
+        raise FileExistsError('fixture concurrent writer')
     monkeypatch.setattr(h.os, 'link', collision)
-    with pytest.raises(w.Refusal) as caught:
+    with pytest.raises(FileExistsError):
         c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
-    if not binding_runtime_available():
-        assert caught.value.reason == 'workspace_binding'
-        assert 'no-follow directory operations' in str(caught.value)
-        assert not publications and not target.exists()
-        assert candidate.read_bytes() == raw and marker.read_bytes() == before
-        return
-    assert isinstance(caught.value.__cause__, FileExistsError)
     assert target.read_bytes() == b'concurrent state' and candidate.read_bytes() == raw
 
 
@@ -179,13 +127,6 @@ def test_recovery_cli_restores_only_expected_native_root(tmp_path, capsys, monke
     args=['recover','--workspace',str(tmp_path),'--recover-from',candidate.name,
           '--expected-sha256',checksum,'--run',state['run'],'--expected-revision',str(state['revision']),
           '--request-reference','conversation/recovery']
-    if not binding_runtime_available():
-        assert flow.main(args,compact=True,governor=c) == 2
-        refusal = json.loads(capsys.readouterr().out)
-        assert refusal['reason'] == 'workspace_binding'
-        assert 'no-follow directory operations' in refusal['detail']
-        assert not target.exists() and candidate.read_bytes() == raw
-        return
     assert flow.main(args,compact=True,governor=c) == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'restored'
     assert target.read_bytes() == raw
@@ -222,8 +163,6 @@ candidate = target.with_name(target.stem+' 2.json')
 candidate.write_bytes(raw)
 target.unlink()  # Deliberate interruption in an isolated temporary test workspace.
 hooks = json.loads((root/'hooks/hooks.json').read_text())['hooks']
-binding_supported = (os.open in os.supports_dir_fd and hasattr(os, 'O_DIRECTORY')
-                     and hasattr(os, 'O_NOFOLLOW'))
 def guarded(args):
     # Match the declared hook's interpreter identity. Windows py -3 can select
     # a different interpreter from the Python process that runs pytest.
@@ -239,24 +178,11 @@ def guarded(args):
     assert observed.returncode == 0, (observed.stdout, observed.stderr)
     assert json.loads(observed.stdout).get('hookSpecificOutput',{}).get('permissionDecision') != 'deny', observed.stdout
     result = subprocess.run(argv, cwd=workspace, text=True, capture_output=True)
-    if args[0] == 'recover' and not binding_supported:
-        refusal = json.loads(result.stdout)
-        assert result.returncode != 0 and refusal['reason'] == 'workspace_binding', (result.stdout, result.stderr)
-        assert refusal['detail'] == 'This runtime lacks no-follow directory operations required for workspace binding.'
-        assert not target.exists() and candidate.read_bytes() == raw
-        return refusal
     assert result.returncode == 0, (result.stdout, result.stderr)
     return json.loads(result.stdout)
 diagnosis = guarded(['diagnose'])
 assert diagnosis['status'] == 'blocked' and diagnosis['initialization']['marker_exists']
 assert diagnosis['initialization']['database_exists'] is False
-if not binding_supported:
-    # The installed CLI must report its actual platform limitation. Recovery
-    # cannot claim success or write state through an unsupported binding API.
-    guarded(['recover','--recover-from',candidate.name,'--expected-sha256',hashlib.sha256(raw).hexdigest(),
-             '--run',state['run'],'--expected-revision',str(state['revision']),
-             '--request-reference','isolated-package-fixture/recovery'])
-    raise SystemExit(0)
 result = guarded(['recover','--recover-from',candidate.name,'--expected-sha256',hashlib.sha256(raw).hexdigest(),
                   '--run',state['run'],'--expected-revision',str(state['revision']),
                   '--request-reference','isolated-package-fixture/recovery'])
@@ -269,7 +195,7 @@ assert c.report()['decisions'] == state['decisions']
     env.update(PLUGIN_ROOT=str(extracted), CLAUDE_PLUGIN_ROOT=str(extracted),
                PATH=str(Path(sys.executable).parent)+os.pathsep+env['PATH'])
     env['CODEX_THREAD_ID' if adapter == 'codex' else 'TASKPLANE_CLAUDE_SESSION_ID'] = 'package-root'
-    checked = subprocess.run([sys.executable,'-I','-B','-c',probe,str(extracted),str(tmp_path/'workspace'),adapter],
+    checked = subprocess.run([sys.executable,'-I','-c',probe,str(extracted),str(tmp_path/'workspace'),adapter],
                              cwd=tmp_path,env=env,text=True,capture_output=True)
     assert checked.returncode == 0, (checked.stdout, checked.stderr)
 
@@ -301,39 +227,51 @@ def present(c, s):
 
 
 def submit(c,s, *, presentation=True):
-    from taskplane.tests.test_workflow_evidence import bound_output
-    from taskplane.tests.test_worker_runtime import parent_pair
-    from taskplane.worker_runtime import parent_readiness
-    if s['index'] == 0 and parent_readiness(c.report(s['run'], diagnostics=False))['status'] != 'ready':
-        parent_pair(c)
-    target = bound_output(c, s)
-    submitted=c.apply("submit",s["run"],expected_revision=s["revision"],output=target,tasks="tasks.json")
+    phase=w.current(s)["phase"]
+    _,out,_=prepare(c.workspace,phase)
+    out.update(run=s["run"],visit=w.current(s)["id"])
+    (c.workspace/(phase+".json")).write_text(json.dumps(out))
+    submitted=c.apply("submit",s["run"],expected_revision=s["revision"],output=phase+".json",tasks="tasks.json")
     if presentation: present(c,submitted)
     return submitted
 
 
 @pytest.mark.parametrize('standalone', [False, True])
-def test_approved_phase_can_advance_without_dashboard_handoff(tmp_path, standalone):
+def test_handoff_required_at_transition_and_survives_only_approval_revision(tmp_path, standalone):
     c,s=setup(tmp_path,standalone=standalone);s=submit(c,s,presentation=False)
+    harness=local.Harness(tmp_path,c.root)
     accepted=decide(c,s)
     action='finish' if standalone else 'advance'
+    with pytest.raises(w.Refusal,match='dashboard handoff'):
+        c.apply(action,s['run'],expected_revision=accepted['revision'],phase='design')
+    # Present the submitted revision, then consume the actual approval-only increment.
+    present(c,accepted)
+    assert harness.presentation_valid(accepted)
     assert c.apply(action,s['run'],expected_revision=accepted['revision'],phase='design')
 
 
+def test_shown_checkpoint_survives_approval_but_not_tampered_snapshot(tmp_path):
+    c,s=setup(tmp_path);s=submit(c,s);harness=local.Harness(tmp_path,c.root)
+    receipt=harness.read()['presentation'];accepted=decide(c,s)
+    assert harness.presentation_valid(accepted)
+    from pathlib import Path
+    Path(receipt['artifact']).write_text('changed')
+    with pytest.raises(w.Refusal,match='dashboard handoff'):
+        c.apply('advance',s['run'],expected_revision=accepted['revision'],phase='design')
 
 
-def test_sealed_ordinary_open_is_available_without_claiming_visual_verification(tmp_path):
+def test_native_opener_is_exact_and_never_visual_verification(tmp_path):
     c,s=setup(tmp_path);s=submit(c,s);harness=local.Harness(tmp_path,c.root)
     target=(tmp_path/'.taskplane/dashboard.html').as_uri()
     event={'tool_name':'mcp__codex_app__open_in_codex','tool_input':{'target':{'type':'browser','url':target}}}
     c.guard(event,s['run'])
     assert harness.read()['presentation']['outcome']=='linked'
-    for url in [target+'#other','https://example.org/']:
-        event['tool_input']['target']['url']=url
-        c.guard(event,s['run'])
-    event['tool_input']={'target':{'type':'file','path':str(tmp_path/'README.md')}}
-    c.guard(event,s['run'])
-    assert harness.read()['presentation']['outcome']=='linked'
+    for bad in [target+'?other',target+'#other','https://example.org/', 'file:', 'file:relative',
+                'file://[invalid',target.replace('dashboard.html','../README.md')]:
+        event['tool_input']['target']['url']=bad
+        with pytest.raises(w.Refusal):c.guard(event,s['run'])
+    event['tool_input']={'target':{'type':'file','path':str(tmp_path/'.taskplane/dashboard.html')},'threadId':'other'}
+    with pytest.raises(w.Refusal):c.guard(event,s['run'])
 
 
 def test_control_json_allows_literal_conditions_but_never_shell_expansion():
@@ -345,7 +283,7 @@ def test_control_json_allows_literal_conditions_but_never_shell_expansion():
         assert local.command_words({'tool_input':{'cmd':command}})==[]
 
 
-def decision(s, *, text="Approved", event="message-1", candidate="approved"):
+def decision(s, *, text="Approved", event="message-1"):
     from datetime import datetime, timezone
     import time
     presented = datetime.now(timezone.utc).isoformat()
@@ -359,380 +297,16 @@ def decision(s, *, text="Approved", event="message-1", candidate="approved"):
     else:
         raise AssertionError("Fixture clock did not advance after presentation")
     binding=w.binding(s,w.current(s)["packet"])
-    return {"schema":"taskplane.observed-decision/v1","event_id":event,"choice": candidate,
+    return {"schema":"taskplane.observed-decision/v1","event_id":event,"choice":local.choice(text),
             "binding":binding,"excerpt":text,"recorder":"root_orchestrator",
             "source":{"kind":"conversation","reference":event,"conversation":s["root"],"actor":"user",
                       "automatic":False,"observed_at":observed},
             "presentation":{"checkpoint":binding["checkpoint"],"reference":"assistant/presentation",
-                            "at":presented,"text":f"Approve this {w.current(s)['phase']} checkpoint?"}}
+                            "at":presented}}
 
 
 def decide(c,s,value=None):
-    result = c.apply("decide",s["run"],expected_revision=s["revision"],native_reference=json.dumps(value or decision(s)))
-    stage = w.current(result)
-    if stage['decision'] == 'approved' and (stage['phase'] == 'plan' or stage.get('packet', {}).get('route_change')):
-        from taskplane.tests.test_worker_runtime import parent_pair
-        from taskplane.worker_runtime import parent_readiness
-        if parent_readiness(result)['status'] != 'ready':
-            parent_pair(c)
-    return result
-
-
-def supported_build(tmp_path, host):
-    from taskplane.tests.test_worker_runtime import parent_pair
-    initial, _, _ = prepare(tmp_path)
-    c = h.Controller(tmp_path, 'root', h.installed_adapter(host))
-    state = c.start({'scope': initial['scope'], 'request_reference': 'fixture/supported-build'})
-    for phase in ('design', 'plan', 'build'):
-        state = submit(c, state)
-        state = decide(c, state, decision(state, event='fixture/accept/' + str(state['revision'])))
-        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=phase)
-    parent_pair(c)
-    return c, c.report(state['run'], diagnostics=False)
-
-
-def runtime_repair_fixture(tmp_path, monkeypatch, host='codex'):
-    """Real accepted phases and two immutable host-installation fixtures."""
-    import hashlib
-    from taskplane import host_capabilities
-    original_identity = host_capabilities.runtime_identity()
-    bundles, identities = {}, {}
-    manifest = '.codex-plugin/plugin.json' if host == 'codex' else '.claude-plugin/plugin.json'
-    for side, version in [('from', '2.34.5'), ('to', '2.34.6')]:
-        bundle = tmp_path/('installed-'+side)
-        for name, content in {'taskplane/runtime.py': 'value = '+repr(version)+'\n',
-                              'hooks/hooks.json': '{}', manifest: json.dumps({'name':'taskplane', 'version':version})}.items():
-            path = bundle/name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
-        identity = {**original_identity, 'root':str(bundle), 'version':version}
-        identity['package_id'] = local.primitives.content_fingerprint({
-            key: identity[key] for key in ('name', 'version', 'workflow', 'context', 'execution')})
-        bundles[side], identities[side] = bundle, identity
-    monkeypatch.setattr(host_capabilities, 'runtime_identity', lambda **kwargs: deepcopy(identities['from']))
-    c, state = supported_build(tmp_path, host)
-    monkeypatch.setattr(host_capabilities, 'runtime_identity', lambda **kwargs: deepcopy(identities['to']))
-    monkeypatch.setattr(local, '_runtime_root', lambda: bundles['to'])
-    request = {'schema':'taskplane.runtime-repair/v1', 'binding': {
-        'workspace':str(tmp_path), 'root':c.root, 'run':state['run'], 'revision':state['revision'],
-        'visit':w.current(state)['id']}, 'request_reference':'conversation/explicit-compatible-runtime-recovery',
-        'from_runtime':identities['from'], 'to_runtime':identities['to'],
-        'member_sha256':local._runtime_members(bundles['to'])}
-    relative = '.taskplane/bootstrap/runtime-recovery.json'
-    path = tmp_path/relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    def save():
-        path.write_text(json.dumps(request))
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    return c, state, bundles, request, relative, save
-
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_supported_runtime_recovery_inspects_without_changing_authority_or_installations(tmp_path, monkeypatch, host, capsys):
-    from taskplane import flow
-    import shlex, sys
-    from pathlib import Path
-    c, state, bundles, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch, host)
-    checksum = save()
-    before = c._path().read_bytes()
-    contents = {side:local._runtime_members(bundle) for side, bundle in bundles.items()}
-    words = [sys.executable, str(Path(flow.__file__).with_name('tp.py')), 'flow', 'recover',
-             '--workspace', str(tmp_path), '--runtime-repair', relative,
-             '--expected-sha256', checksum, '--recovery-mode', 'inspect']
-    event = {'hook_event_name':'PreToolUse', 'cwd':str(tmp_path), 'session_id':'root',
-             'tool_name':'exec_command' if host == 'codex' else 'Bash',
-             'tool_input':{'cmd' if host == 'codex' else 'command':shlex.join(words)}}
-    assert flow._state_admin(event, tmp_path)
-    assert flow.main(['diagnose', '--workspace', str(tmp_path)], governor=c) == 0
-    proposal = json.loads(capsys.readouterr().out)['runtime_recovery']['proposal']
-    assert proposal == {**request, 'request_reference': ''}
-    assert flow.main(words[3:], governor=c) == 0
-    assert c._path().read_bytes() == before
-    assert {side:local._runtime_members(bundle) for side, bundle in bundles.items()} == contents
-
-
-@pytest.mark.parametrize('bad', ['hash', 'revision', 'root', 'from-pin', 'foreign-target',
-                                'contract', 'minor', 'new-members', 'running', 'child', 'missing-hooks'])
-def test_runtime_recovery_refuses_stale_binding_and_incompatible_installations(tmp_path, monkeypatch, bad):
-    c, state, bundles, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch)
-    if bad in {'revision', 'root'}: request['binding'][bad] = 'foreign'
-    elif bad == 'from-pin': request['from_runtime'] = {**request['from_runtime'], 'package_id':'0'*64}
-    elif bad == 'foreign-target': request['to_runtime'] = {**request['to_runtime'], 'root':'/foreign'}
-    elif bad == 'contract': request['from_runtime'] = {**request['from_runtime'], 'execution':'ownership/v99'}
-    elif bad == 'minor': request['from_runtime'] = {**request['from_runtime'], 'version':'2.35.5'}
-    elif bad == 'new-members':
-        (bundles['to']/'taskplane/runtime.py').write_text('value = "drift"\n')
-    elif bad == 'running': monkeypatch.setattr(c.adapter, 'can_seal', lambda state: False)
-    elif bad == 'child': c.principal = 'child'
-    elif bad == 'missing-hooks': (bundles['to']/'hooks/hooks.json').unlink()
-    checksum = save()
-    if bad == 'hash': checksum = '0'*64
-    before = c._path().read_bytes()
-    with pytest.raises(w.Refusal):
-        local.recover_runtime(c, relative, checksum, mode='apply')
-    assert c._path().read_bytes() == before
-
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-@pytest.mark.parametrize('old_bundle_present', [True, False])
-def test_runtime_recovery_preserves_approvals_and_ownership_and_invalidates_runtime_reuse(tmp_path, monkeypatch, host, old_bundle_present):
-    import sys
-    from taskplane import host_capabilities, context_reuse
-    c, state, bundles, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch, host)
-    checksum = save()
-    if not old_bundle_present:
-        import shutil
-        shutil.rmtree(bundles.pop('from'))  # Model a host updater pruning an old cache.
-    snapshots = {side:local._runtime_members(bundle) for side, bundle in bundles.items()}
-    with monkeypatch.context() as prior_host:
-        prior_host.setattr(host_capabilities, 'runtime_identity', lambda **kwargs: request['from_runtime'])
-        old_key = context_reuse.key(tmp_path, paths=['app.py'], tests=[], criteria=['AC1'],
-                                    command=[sys.executable, 'app.py'], tool='python', contract='fixture/v1')
-    result = local.recover_runtime(c, relative, checksum, mode='apply')
-    updated = c.report(state['run'], diagnostics=False)
-    assert result['status'] == 'recovered' and updated['revision'] == state['revision']+1
-    assert updated['runtime_identity'] == request['to_runtime']
-    for key in ('run', 'root', 'scope', 'decisions', 'visits', 'index'):
-        assert updated[key] == state[key]
-    assert {side:local._runtime_members(bundle) for side, bundle in bundles.items()} == snapshots
-    assert 'parent_hook_readiness' not in updated
-    new_key = context_reuse.key(tmp_path, paths=['app.py'], tests=[], criteria=['AC1'],
-                                command=[sys.executable, 'app.py'], tool='python', contract='fixture/v1')
-    assert new_key['digest'] != old_key['digest']
-    c.guard({'tool_name':'Edit', 'tool_input':{'file_path':'app.py'}}, state['run'])
-    with pytest.raises(w.Refusal):
-        c.guard({'tool_name':'Edit', 'tool_input':{'file_path':'unowned.py'}}, state['run'])
-    before_retry = c._path().read_bytes()
-    assert local.recover_runtime(c, relative, checksum, mode='apply')['status'] == 'already_recovered'
-    assert c._path().read_bytes() == before_retry
-
-
-@pytest.mark.parametrize('when', ['before', 'after'])
-def test_runtime_recovery_commit_failure_is_recoverable_without_editing_either_bundle(tmp_path, monkeypatch, when):
-    c, state, bundles, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch)
-    checksum = save()
-    before = c._path().read_bytes()
-    snapshots = {side:local._runtime_members(bundle) for side, bundle in bundles.items()}
-    original = c._write
-    def failed(*args):
-        if when == 'after': original(*args)
-        raise OSError('fixture controller publication failure')
-    monkeypatch.setattr(c, '_write', failed)
-    with pytest.raises(OSError, match='fixture'):
-        local.recover_runtime(c, relative, checksum, mode='apply')
-    if when == 'before':
-        assert c._path().read_bytes() == before
-    else:
-        monkeypatch.setattr(c, '_write', original)
-        assert c.report(state['run'], diagnostics=False)['runtime_identity'] == request['to_runtime']
-        assert local.recover_runtime(c, relative, checksum, mode='apply')['status'] == 'already_recovered'
-    assert {side:local._runtime_members(bundle) for side, bundle in bundles.items()} == snapshots
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-@pytest.mark.parametrize('tool,key', [('Bash', 'command'), ('exec_command', 'cmd')])
-def test_supported_shell_allows_owned_effects_and_refuses_unowned_effects(tmp_path, host, tool, key):
-    import subprocess
-    c, state = supported_build(tmp_path, host)
-    owned = {'tool_name': tool, 'cwd': str(tmp_path), 'tool_input': {key: 'echo candidate > app.py'}}
-    c.guard(owned, state['run'])
-    completed = subprocess.run(owned['tool_input'][key], shell=True, cwd=tmp_path, check=False)
-    assert completed.returncode == 0 and (tmp_path/'app.py').read_text().strip() == 'candidate'
-    for command in ['touch sibling.py', 'printf denied > sibling.py', 'rm ../outside.py',
-                    'python -c "open(\"sibling.py\",\"w\").write(\"bad\")"',
-                    'touch app.py; touch sibling.py']:
-        with pytest.raises(w.Refusal):
-            c.guard({'tool_name': tool, 'cwd': str(tmp_path), 'tool_input': {key: command}}, state['run'])
-    assert not (tmp_path/'sibling.py').exists()
-
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_structured_scope_stays_enforced_when_callback_coverage_is_missing(tmp_path, host):
-    c, state = supported_build(tmp_path, host)
-    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
-    with pytest.raises(w.Refusal, match='outside'):
-        c.guard({'tool_name': 'Write', 'tool_input': {'path': 'sibling.py'}}, state['run'])
-    # Missing callback observations do not replace or veto exact root ownership.
-    broken = deepcopy(state)
-    broken.pop('parent_hook_readiness', None)
-    c._guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, broken)
-    with pytest.raises(w.Refusal, match='outside'):
-        c._guard({'tool_name': 'Write', 'tool_input': {'path': 'sibling.py'}}, broken)
-    broken = deepcopy(state)
-    broken['parent_hook_readiness']['root'] = 'another-session'
-    observation = local.Harness(tmp_path, 'root').readiness(broken)
-    assert observation['status'] == 'active'
-    assert observation['parent_hook']['status'] == 'missing'
-
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_candidate_hook_source_is_editable_but_live_uninstall_has_no_recovery_escape(tmp_path, host):
-    c, state = supported_build(tmp_path, host)
-    # app.py represents the candidate source owned by this accepted task.
-    c.guard({'tool_name': 'Edit', 'tool_input': {'file_path': 'app.py'}}, state['run'])
-    uninstall = {'tool_name': 'mcp__codex_app__uninstall_plugin', 'tool_input': {'plugin': 'taskplane'}}
-    assert not local.Harness(tmp_path, 'root').recovery_action(uninstall, state)
-    with pytest.raises(w.Refusal):
-        c.guard(uninstall, state['run'])
-    for target in ('../live/hooks.json', '../live/taskplane/tp.py'):
-        with pytest.raises(w.Refusal):
-            c.guard({'tool_name': 'Write', 'tool_input': {'path': target}}, state['run'])
-
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_missing_callbacks_preserve_approved_build_transition(tmp_path, host):
-    from taskplane.tests.test_worker_runtime import parent_pair
-    initial, _, _ = prepare(tmp_path)
-    c = h.Controller(tmp_path, 'root', h.installed_adapter(host))
-    state = c.start({'scope': initial['scope'], 'request_reference': 'fixture/missing-hooks'})
-    for phase in ('design', 'plan'):
-        state = submit(c, state)
-        state = decide(c, state, decision(state, event='fixture/phase/'+phase))
-        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=phase)
-    state = submit(c, state)
-    state = c.apply('decide', state['run'], expected_revision=state['revision'],
-        native_reference=json.dumps(decision(state, event='fixture/accept-plan')))
-    before = deepcopy(state['decisions'])
-    state = c.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
-    assert w.current(state)['phase'] == 'build'
-    assert state['decisions'] == before
-    assert local.Harness(tmp_path,'root').readiness(state)['parent_hook']['status'] == 'missing'
-    parent_pair(c)
-    assert local.Harness(tmp_path,'root').readiness(c.report())['parent_hook']['status'] == 'ready'
-
-
-def test_plain_repair_approval_reopens_build_and_preserves_history(tmp_path):
-    c, state = setup(tmp_path)
-    for next_phase in w.PHASES[1:6]:
-        state = submit(c, state)
-        state = decide(c, state, decision(state, event='accept-before-' + next_phase))
-        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=next_phase)
-    previous_build = next(v for v in state['visits'] if v['phase'] == 'build')
-    previous_decisions = deepcopy(state['decisions'])
-    _, output, _ = prepare(tmp_path, 'engineering')
-    output.update(run=state['run'], visit=w.current(state)['id'], route_change={'kind': 'repair'})
-    (tmp_path / 'engineering.json').write_text(json.dumps(output))
-    state = c.apply('submit', state['run'], expected_revision=state['revision'],
-                    output='engineering.json', tasks='tasks.json')
-    present(c, state)
-    response = decision(state, text='approve repair', event='approve-the-repair')
-    accepted = decide(c, state, response)
-    assert accepted['decisions']['approve-the-repair']['provenance']['excerpt'] == 'approve repair'
-    assert all(accepted['decisions'][key] == value for key, value in previous_decisions.items())
-    historical = next(v for v in accepted['visits'] if v['id'] == previous_build['id'])
-    assert historical['superseded'] and historical['decision'] == 'approved'
-    present(c, accepted)
-    repaired = c.apply('advance', accepted['run'], expected_revision=accepted['revision'], phase='build')
-    assert w.current(repaired)['phase'] == 'build'
-    assert w.current(repaired)['id'] != previous_build['id']
-    assert w.current(repaired)['decision'] == 'not_requested'
-
-
-@pytest.mark.parametrize('completed', [False, True])
-def test_scoped_repair_uses_controller_and_preserves_prior_approvals(tmp_path, completed):
-    from taskplane.tests.test_worker_runtime import parent_pair
-    from taskplane.tests.test_workflow_evidence import bound_output
-    c, state = setup(tmp_path)
-    for phase in w.PHASES:
-        if phase == 'build' and not completed:
-            state = submit(c, state)
-            break
-        state = submit(c, state)
-        state = decide(c, state, decision(state, event='fixture/initial/' + phase))
-        if phase != 'retro':
-            state = c.apply('advance', state['run'], expected_revision=state['revision'],
-                            phase=w.PHASES[w.PHASES.index(phase) + 1])
-        else:
-            state = c.apply('finish', state['run'], expected_revision=state['revision'])
-    original = deepcopy(state)
-    before = c._path().read_bytes()
-    with pytest.raises(w.Refusal) as malformed:
-        c.apply('repair', state['run'], expected_revision=state['revision'], native_reference='{')
-    assert malformed.value.reason == 'invalid_evidence' and c._path().read_bytes() == before
-    request = {'decision': decision(state, event='fixture/scoped-repair'), 'tasks': ['T1']}
-    state = c.apply('repair', state['run'], expected_revision=state['revision'],
-                    native_reference=json.dumps(request))
-    assert not state['finished'] and w.current(state)['phase'] == 'build'
-    assert state['repair_scope']['tasks'] == ['T1']
-    assert all(state['decisions'][key] == value for key, value in original['decisions'].items())
-    for phase in ('product', 'design', 'plan'):
-        before = next(v for v in original['visits'] if v['phase'] == phase)
-        assert next(v for v in state['visits'] if v['id'] == before['id']) == before
-    assert local.Harness(tmp_path,'root').readiness(state)['parent_hook']['status'] == 'missing'
-    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
-    parent_pair(c)
-    state = c.report()
-    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
-    import shlex
-    check = w.accepted_plan(state)['packet']['output']['verification_strategy']['checks'][0]
-    event = {'tool_name': 'exec_command', 'tool_input': {
-        'cmd': shlex.join(check['command']), 'workdir': str(tmp_path)}}
-    c.guard(event, state['run'])
-    with pytest.raises(w.Refusal):
-        c.guard({'tool_name': 'Write', 'tool_input': {'path': check['evidence_outputs'][0]}}, state['run'])
-    with pytest.raises(w.Refusal):
-        c.adapter.guard_command(event, state, [p for p in w.phase_write_paths(state) if p != 'app.py'])
-    (tmp_path/'app.py').write_text('value = 2\n')
-    for phase in w.PHASES[3:]:
-        target = bound_output(c, state)
-        state = c.apply('submit', state['run'], expected_revision=state['revision'],
-                        output=target, tasks='tasks.json')
-        state = decide(c, state, decision(state, event='fixture/repaired/' + phase))
-        if phase != 'retro':
-            state = c.apply('advance', state['run'], expected_revision=state['revision'],
-                            phase=w.PHASES[w.PHASES.index(phase) + 1])
-    state = c.apply('finish', state['run'], expected_revision=state['revision'])
-    assert state['finished'] and (tmp_path/'app.py').read_text() == 'value = 2\n'
-
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_repair_needs_fresh_authority_and_retries_do_not_reopen_work(tmp_path, host):
-    c, state = supported_build(tmp_path, host)
-    state = submit(c, state)
-    old_approval = decision(state, event='fixture/build-only')
-    state = decide(c, state, old_approval)
-    before = c.report(state['run'], diagnostics=False)
-    with pytest.raises(w.Refusal, match='earlier phase decision'):
-        c.apply('repair', state['run'], expected_revision=state['revision'],
-                native_reference=json.dumps({'decision': old_approval, 'tasks': ['T1']}))
-    assert c.report(state['run'], diagnostics=False) == before
-
-    request = {'decision': decision(state, event='fixture/repair-request'), 'tasks': ['T1']}
-    repaired = c.apply('repair', state['run'], expected_revision=state['revision'],
-                       native_reference=json.dumps(request))
-    assert w.current(repaired)['phase'] == 'build'
-    assert len(repaired['visits']) == len(state['visits']) + 4
-    assert repaired['decisions'] == state['decisions']
-    assert repaired['visits'][:3] == state['visits'][:3]
-    # A lost response may be retried with the original revision and provenance.
-    retry = c.apply('repair', state['run'], expected_revision=state['revision'],
-                    native_reference=json.dumps(request))
-    assert retry == repaired
-    before = c.report(state['run'], diagnostics=False)
-    request['tasks'] = []
-    with pytest.raises(w.Refusal, match='Conflicting repair retry'):
-        c.apply('repair', state['run'], expected_revision=state['revision'],
-                native_reference=json.dumps(request))
-    assert c.report(state['run'], diagnostics=False) == before
-
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_repair_cannot_reactivate_a_superseded_run(tmp_path, host):
-    c, state = supported_build(tmp_path, host)
-    state = submit(c, state)
-    replacement = c.start({'replace_run': state['run'], 'expected_revision': state['revision'],
-        'request_reference': 'fixture/replacement', 'scope': state['scope'],
-        'entry': 'product', 'standalone': True, 'tasks': 'tasks.json'})
-    c.apply('retire', replacement['run'], expected_revision=replacement['revision'],
-        native_reference=json.dumps({'request_reference': 'fixture/end-replacement',
-                                     'reason': 'The replacement was ended.'}))
-    previous = c.report(state['run'], diagnostics=False)
-    before = c._path().read_bytes()
-    with pytest.raises(w.Refusal, match='This run was replaced'):
-        c.apply('repair', state['run'], expected_revision=previous['revision'],
-            native_reference=json.dumps({'decision': decision(previous, event='fixture/invalid-repair'),
-                                         'tasks': ['T1']}))
-    assert c._path().read_bytes() == before
-    assert c.report().get('run') is None
+    return c.apply("decide",s["run"],expected_revision=s["revision"],native_reference=json.dumps(value or decision(s)))
 
 
 def test_local_profile_is_available_without_certifying_host(tmp_path):
@@ -767,7 +341,7 @@ def test_observed_decision_rejects_invalid_provenance_and_binding(tmp_path,bad):
     if bad=="actor":value["source"]["actor"]="assistant"
     elif bad=="automatic":value["source"]["automatic"]=True
     elif bad=="source":value["source"]["kind"]="tool_result"
-    elif bad=="choice":value["choice"]="ambiguous"
+    elif bad=="choice":value["excerpt"]="Please keep working"
     elif bad=="ordering":value["source"]["observed_at"]="2026-09-16T22:00:00+00:00"
     elif bad=="binding":value["binding"]["root"]="another"
     elif bad=="boolean_revision":value["binding"]["revision"]=True
@@ -778,7 +352,7 @@ def test_observed_decision_rejects_invalid_provenance_and_binding(tmp_path,bad):
 
 
 def test_decision_restart_replay_changes_requested_and_drift(tmp_path):
-    c,s=setup(tmp_path);s=submit(c,s);value=decision(s,text="Changes requested",candidate="changes_requested")
+    c,s=setup(tmp_path);s=submit(c,s);value=decision(s,text="Changes requested")
     s=decide(c,s,value);assert w.current(s)["decision"]=="changes_requested"
     s=submit(c,s);value=decision(s,event="message-2")
     accepted=decide(c,s,value)
@@ -793,8 +367,14 @@ def test_decision_restart_replay_changes_requested_and_drift(tmp_path):
     assert resumed.report()["status"]=="stale"
 
 
-
-
+@pytest.mark.parametrize("change",["modify","create","delete"])
+def test_out_of_scope_source_drift_prevents_sealing(tmp_path,change):
+    c,s=setup(tmp_path)
+    if change=="modify":(tmp_path/"app.py").write_text("value = 9")
+    elif change=="create":(tmp_path/"extra.py").write_text("value = 9")
+    else:(tmp_path/"app.py").unlink()
+    with pytest.raises(w.Refusal,match="outside this phase scope"):
+        c.adapter.before_action(c.report(),"submit")
 
 
 def test_known_processes_block_seal_and_stale_input(tmp_path):
@@ -819,10 +399,30 @@ def test_structured_scope_and_exact_control_command_at_gate(tmp_path):
     from pathlib import Path
     command=shlex.join([sys.executable,str(Path(h.__file__).with_name("tp.py")),"flow","report","--workspace",str(c.workspace)])
     c.guard({"tool_name":"exec_command","tool_input":{"cmd":command}},s["run"])
-    with pytest.raises(w.Refusal,match="sealed"):
-        c.guard({"tool_name":"Write","tool_input":{"path":"product.json"}},s["run"])
+    with pytest.raises(w.Refusal,match="sealed"):c.guard({"tool_name":"exec_command","tool_input":{"cmd":command+"; touch app.py"}},s["run"])
 
 
+@pytest.mark.parametrize('tool,key', [('Bash','command'),('exec_command','cmd')])
+def test_sealed_checkpoint_allows_quoted_handoff_and_only_its_native_dashboard(tmp_path,tool,key):
+    import shlex,sys
+    from pathlib import Path
+    c,s=setup(tmp_path);s=submit(c,s)
+    prefix=[sys.executable,str(Path(h.__file__).with_name('tp.py'))]
+    present=shlex.join([*prefix,'flow','present','--workspace',str(c.workspace),
+        '--evidence','.taskplane/dashboard.html','--presentation','linked',
+        '--note','Dashboard linked; display unavailable (not verified)'])
+    c.guard({'tool_name':tool,'tool_input':{key:present}},s['run'])
+    board=[*prefix,'dashboard','--workspace',str(c.workspace),'--run',s['run']]
+    for extra in ([],['--out','.taskplane/dashboard.html']):
+        c.guard({'tool_name':tool,'tool_input':{key:shlex.join(board+extra)}},s['run'])
+    for suffix in ('; touch app.py',' && touch app.py',' | cat',' > app.py','\ntouch app.py',' "$(touch app.py)"',' `touch app.py`'):
+        with pytest.raises(w.Refusal):
+            c.guard({'tool_name':tool,'tool_input':{key:present+suffix}},s['run'])
+    for args in (board+['--out','app.html'],board+['--workspace',str(c.workspace.parent)],
+                 [*prefix,'dashboard','--workspace',str(c.workspace),'--run','foreign']):
+        with pytest.raises(w.Refusal):
+            c.guard({'tool_name':tool,'tool_input':{key:shlex.join(args)}},s['run'])
+    assert not c.report()['decisions'] and c.report()['revision']==s['revision']
 
 
 def test_local_concurrent_replay_commits_one_decision(tmp_path):
@@ -867,37 +467,32 @@ def test_native_prompt_needs_envelope_and_journal_failure_keeps_decision(tmp_pat
     monkeypatch.setattr(flow,"_observe_hook",failed)
     value=decision(s);value["source"]["kind"]="native_prompt";value["recorder"]="native_prompt_hook"
     event["taskplane_decision"]=value
-    flow.hook(event)
+    assert "harness active" in flow.hook(event)["hookSpecificOutput"]["additionalContext"]
     resumed=h.Controller(c.workspace,"root",h.installed_adapter("codex"))
     assert resumed.report()["status"]=="approved"
     assert resumed.report()["phase"]=="product"
 
 
 def check_store_byte_boundary(c, monkeypatch, payload, margin):
-    """Bound the exact next-generation commit without writing a sizing probe."""
-    from taskplane import primitives, storage
+    """Use actual persisted bytes, including escaping/indentation/newline, as the boundary."""
     target = c.adapter.control_path(c.workspace, c.root)
     before = target.read_bytes()
     original = json.loads(before)
-    generation = storage.storage_generation(original)
     candidate = deepcopy(original)
     candidate['size_probe'] = payload
-    committed = deepcopy(candidate)
-    committed['storage_generation'] = generation + 1
-    measured = storage.encode_controller(committed)
+    c._write(target, candidate)
+    measured = target.read_bytes()
+    c._write(target, original)
     assert target.read_bytes() == before
     monkeypatch.setattr(local, 'MAX_BYTES', len(measured) + margin)
-    with primitives.file_lock(str(target)):
-        if margin < 0:
-            with pytest.raises(w.Refusal, match='size limit|byte limit'):
-                c._write(target, candidate)
-            assert target.read_bytes() == before
-            assert storage.storage_generation(candidate) == generation
-        else:
+    if margin < 0:
+        with pytest.raises(w.Refusal, match='size limit'):
             c._write(target, candidate)
-            assert target.read_bytes() == measured
-            assert storage.storage_generation(candidate) == generation + 1
-            assert len(measured) <= local.MAX_BYTES
+        assert target.read_bytes() == before
+    else:
+        c._write(target, candidate)
+        assert target.read_bytes() == measured
+        assert len(measured) <= local.MAX_BYTES
     resumed = h.Controller(c.workspace, c.root, c.adapter).report()
     active = original['runs'][original['active']]
     assert resumed['run'] == active['run'] and resumed['revision'] == active['revision']
@@ -943,16 +538,12 @@ def test_compact_write_reads_legacy_state_and_preserves_prior_acceptance(tmp_pat
 
 @pytest.mark.parametrize('failure_call', [1, 2])
 def test_control_write_does_not_acknowledge_failed_file_or_directory_sync(tmp_path, monkeypatch, failure_call):
-    from taskplane import primitives, storage
+    from taskplane import primitives
     c, s = setup(tmp_path)
     target = c.adapter.control_path(c.workspace, c.root)
     before = target.read_bytes()
     candidate = json.loads(before)
     candidate['sync_probe'] = 'updated'
-    proposed = deepcopy(candidate)
-    generation = storage.storage_generation(candidate)
-    published = {**deepcopy(candidate), 'storage_generation': generation + 1}
-    published_bytes = storage.encode_controller(published)
     original = primitives.os.fsync
     calls = []
     def fail_sync(fd):
@@ -968,21 +559,15 @@ def test_control_write_does_not_acknowledge_failed_file_or_directory_sync(tmp_pa
                 calls.append(path)
                 raise OSError('simulated directory flush failure')
             patch.setattr(primitives, '_flush_windows_directory', fail_directory)
-        with primitives.file_lock(str(target)), pytest.raises(w.Refusal, match='not acknowledged'):
+        with pytest.raises(w.Refusal, match='not acknowledged'):
             c._write(target, candidate)
     assert len(calls) == failure_call
-    assert candidate == proposed  # A failed acknowledgment never advances the caller.
     if failure_call == 1:
         assert target.read_bytes() == before
     else:
-        assert target.read_bytes() == published_bytes
-        with primitives.file_lock(str(target)), pytest.raises(w.Refusal, match='generation changed'):
-            c._write(target, candidate)
-        assert target.read_bytes() == published_bytes
+        assert json.loads(target.read_bytes()) == candidate
     assert not list(target.parent.glob('.'+target.name+'.*.tmp'))
-    resumed = h.Controller(c.workspace, c.root, c.adapter)
-    assert resumed._read(target) == (json.loads(before) if failure_call == 1 else published)
-    assert resumed.report()['revision'] == s['revision']
+    assert h.Controller(c.workspace, c.root, c.adapter).report()['revision'] == s['revision']
 
 
 @pytest.mark.parametrize('profile', ['local', 'protected'])
@@ -1067,14 +652,9 @@ def task_observation_checkpoint(workspace, *, legacy=False, host="codex"):
     state['scope']['paths']['build'].append(task_path)
     c=h.Controller(workspace.resolve(),'root',h.installed_adapter(host))
     s=c.start({'scope':state['scope'],'request_reference':'test/EV-F02'})
-    from taskplane.tests.test_worker_runtime import parent_pair
-    parent_pair(c)
     raw_manifest=evidence.manifest
     for phase in ('product','design','plan','build'):
         _,out,tasks=prepare(workspace,phase)
-        if phase == 'build':
-            from taskplane.tests.test_workflow_evidence import bound_output
-            out = json.loads((workspace/bound_output(c, s)).read_text())
         tasks['tasks'][0]['paths'].append(task_path)
         (workspace/task_path).write_text(json.dumps(tasks))
         out.update(run=s['run'],visit=w.current(s)['id'])
@@ -1133,17 +713,16 @@ def test_legacy_task_manifest_remains_strict_without_rewriting_acceptance(tmp_pa
 
 
 @pytest.mark.parametrize('entry',['taskplane','tp-go','tp-tag','tp-build','tp-product','tp-design','tp-engineering','tp-northstar'])
-def test_execution_selection_guards_writes_without_forcing_continuation(tmp_path,entry):
+def test_execution_selection_requires_harness_before_writes_and_completion(tmp_path,entry):
     from taskplane import flow
     event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse',
            'tool_name':'Skill','tool_input':{'skill':'taskplane:'+entry}}
     selected=flow.hook(event)
     assert 'Taskplane' in selected['hookSpecificOutput']['additionalContext']
-    with pytest.raises(w.Refusal) as refused:
+    with pytest.raises(w.Refusal,match='initializ'):
         flow.hook(event|{'tool_name':'Write','tool_input':{'file_path':str(tmp_path/'app.py'),'content':'x'}})
-    assert refused.value.reason == 'scope_violation'
     stopped=flow.hook(event|{'hook_event_name':'Stop'})
-    assert stopped.get('systemMessage') and 'decision' not in stopped
+    assert stopped['decision']=='block' and 'initializ' in stopped['reason']
     assert 'decision' not in flow.hook(event|{'hook_event_name':'Stop','stop_hook_active':True})
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
 
@@ -1172,10 +751,9 @@ def test_harness_does_not_activate_for_nonexecution_requests(tmp_path,prompt):
 def test_execution_prompt_arms_session_bound_gate(tmp_path,prompt):
     from taskplane import flow
     result=flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':prompt})
-    assert local.Harness(tmp_path,'root').read()['selected']
-    assert result['hookSpecificOutput']['additionalContext']
+    assert 'initializ' in result['hookSpecificOutput']['additionalContext']
     assert flow.hook({'cwd':str(tmp_path),'session_id':'unrelated','hook_event_name':'Stop'})=={}
-    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'}).get('systemMessage')
+    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'})['decision']=='block'
 
 
 def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
@@ -1185,10 +763,9 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
     run=s['run']
     for i,phase in enumerate(w.PHASES):
         result=flow.hook(event,governor=c)
-        assert phase in result['hookSpecificOutput']['additionalContext'].casefold()
-        assert c.context(run)['binding']['visit'] == w.current(c.report())['id']
+        assert phase+' visit' in result['hookSpecificOutput']['additionalContext']
         assert run in result['hookSpecificOutput']['additionalContext']
-        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c).get('systemMessage')
+        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
         s=submit(c,s)
         page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
         harness=local.Harness(c.workspace,c.root)
@@ -1199,12 +776,14 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
     assert len(s['decisions'])==7 and s['finished']
     assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)=={}
     selected=flow.hook(event|{'hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review the next change.'},governor=c)
-    assert selected['hookSpecificOutput']['additionalContext']
-    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c).get('systemMessage')
+    assert 'initialization required' in selected['hookSpecificOutput']['additionalContext']
+    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
 
 
-@pytest.mark.parametrize('bad',['source','metadata','escape','symlink'])
+@pytest.mark.parametrize('bad',['source','metadata','escape','shell','compound','foreign_workspace','symlink'])
 def test_harness_bootstrap_does_not_grant_source_or_state_access(tmp_path,bad):
+    import shlex,sys
+    from pathlib import Path
     from taskplane import flow
     base={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review code.'}
     flow.hook(base)
@@ -1216,6 +795,11 @@ def test_harness_bootstrap_does_not_grant_source_or_state_access(tmp_path,bad):
         (tmp_path/'.taskplane/bootstrap/link').symlink_to(tmp_path)
         path='.taskplane/bootstrap/link/app.py'
     tool={'tool_name':'Write','tool_input':{'file_path':str(tmp_path/path),'content':'source'}}
+    if bad in {'shell','compound','foreign_workspace'}:
+        cmd='python3 -c "print(1)"'
+        if bad=='compound':cmd='cat app.py; touch app.py'
+        if bad=='foreign_workspace':cmd=shlex.join([sys.executable,str(Path(flow.__file__).with_name('tp.py')),'flow','start','--workspace',str(tmp_path.parent)])
+        tool={'tool_name':'Bash','tool_input':{'command':cmd}}
     with pytest.raises(w.Refusal):flow.hook(base|{'hook_event_name':'PreToolUse',**tool})
 
 
@@ -1232,14 +816,13 @@ def test_harness_bootstrap_accepts_native_metadata_paths(tmp_path, absolute):
     assert result.get('hookSpecificOutput',{}).get('permissionDecision') != 'deny'
 
 
-def test_ordinary_installed_skill_read_does_not_activate_a_workflow(tmp_path):
+def test_harness_installed_skill_read_is_an_execution_entry(tmp_path):
     from pathlib import Path
     from taskplane import flow
     path=Path(flow.__file__).resolve().parents[1]/'skills/tp-engineering/SKILL.md'
     event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse','tool_name':'Read','tool_input':{'file_path':str(path)}}
-    assert flow.hook(event) == {}
-    assert not local.Harness(tmp_path,'root').read().get('selected')
-    assert flow.hook(event|{'hook_event_name':'Stop'}) == {}
+    assert 'initialization required' in flow.hook(event)['hookSpecificOutput']['additionalContext']
+    assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
 
 
 @pytest.mark.parametrize('tool', ['Read', 'exec_command'])
@@ -1264,9 +847,8 @@ def test_completed_run_passive_skill_reread_preserves_followup_access(tmp_path, 
     flow.hook(event|{'hook_event_name':'UserPromptSubmit','tool_input':{},
                     'prompt':'Use taskplane to review the next change.'},governor=c)
     flow.hook(event|{'hook_event_name':'PreToolUse'},governor=c)
-    flow.hook(followup,governor=c)
-    with pytest.raises(w.Refusal):
-        flow.hook(followup|{'tool_name':'Write','tool_input':{'file_path':str(tmp_path/'app.py'),'content':'x'}},governor=c)
+    with pytest.raises(w.Refusal,match='initializ'):
+        flow.hook(followup,governor=c)
 
 
 def test_completed_run_explicit_skill_invocation_still_requires_initialization(tmp_path):
@@ -1276,34 +858,8 @@ def test_completed_run_explicit_skill_invocation_still_requires_initialization(t
     s=decide(c,submit(c,s));c.apply('finish',s['run'],expected_revision=s['revision'])
     event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse',
            'tool_name':'Skill','tool_input':{'skill':'taskplane:tp-build'}}
-    assert flow.hook(event,governor=c)['hookSpecificOutput']['additionalContext']
+    assert 'initialization required' in flow.hook(event,governor=c)['hookSpecificOutput']['additionalContext']
     assert harness.read()['selected'] and harness.read()['run'] is None
-
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-@pytest.mark.parametrize('tool,args', [
-    ('Write', {'file_path': 'app.py', 'content': 'changed'}),
-    ('Edit', {'file_path': 'app.py', 'old_string': 'value = 1', 'new_string': 'value = 2'}),
-    ('apply_patch', {'patch': '*** Begin Patch\n*** Update File: app.py\n@@\n-value = 1\n+value = 2\n*** End Patch'}),
-    ('Bash', {'command': "printf 'changed' > app.py"}),
-    ('exec_command', {'cmd': "printf 'changed' > app.py"}),
-])
-def test_completed_run_followup_never_admits_mutation(tmp_path, host, tool, args):
-    from taskplane import flow
-    c, state = setup(tmp_path, standalone=True)
-    c.adapter.name = host
-    harness = local.Harness(tmp_path, c.root)
-    harness.bind(state)
-    state = decide(c, submit(c, state))
-    c.apply('finish', state['run'], expected_revision=state['revision'])
-    before = c._path().read_bytes()
-    event = {'cwd': str(tmp_path), 'session_id': 'root', 'hook_event_name': 'PreToolUse',
-             'tool_name': tool, 'tool_input': args, 'tool_use_id': 'actual-followup-call'}
-    with pytest.raises(w.Refusal, match='Enter flow repair'):
-        flow.hook(event, governor=c)
-    assert c._path().read_bytes() == before
-    assert c.report(state['run'], diagnostics=False)['finished']
-    assert not harness.read()['selected']
 
 
 def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
@@ -1313,64 +869,15 @@ def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
     harness.wait(c.report(),'Need a comparison revision')
     assert 'waiting' in harness.stop({},c.report())['systemMessage']
     s=submit(c,s,presentation=False)
-    assert harness.stop({},c.report())=={}
+    assert harness.stop({},c.report())['decision']=='block'
     page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
     harness.present(c.report(),str(page.relative_to(c.workspace)),'blocked','Fixture link available and host opening unavailable')
     assert harness.stop({},c.report())=={}
     changed=deepcopy(c.report());changed['run']='another-run'
     with pytest.raises(w.Refusal,match='current run'):harness.present(changed,str(page.relative_to(c.workspace)),'verified','An incorrect claim')
-    assert 'decision' not in harness.stop({},changed)
+    assert harness.stop({},changed)['decision']=='block'
     raw=harness.read();raw['workspace']='foreign';harness.path.write_text(json.dumps(raw))
     with pytest.raises(w.Refusal,match='identity'):harness.read()
-
-
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_stop_is_advisory_without_retry_state_or_phase_authority(tmp_path, host):
-    from taskplane import flow
-    c, state = setup(tmp_path)
-    c.adapter.name = host
-    harness = local.Harness(tmp_path, c.root)
-    harness.bind(state)
-    controller_before = c._path().read_bytes()
-    harness_before = harness.path.read_bytes()
-    # Missing evidence, failed review, and stale evidence all permit a handoff.
-    for status in ('not_requested', 'changes_requested', 'rejected', 'stale'):
-        pending = deepcopy(state)
-        w.current(pending)['decision'] = status
-        for event in ({}, {'stop_hook_active': True}):
-            result = harness.stop(event, pending)
-            assert result.get('systemMessage') and 'decision' not in result
-    stale = deepcopy(state)
-    stale['invalidation_pending'] = True
-    assert 'stale' in harness.stop({}, stale)['systemMessage']
-    assert harness.path.read_bytes() == harness_before
-    event = {'cwd': str(tmp_path), 'session_id': c.root, 'host': host}
-    for _ in range(3):
-        result = flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)
-        assert result.get('systemMessage') and 'decision' not in result
-    with pytest.raises(w.Refusal):
-        c.apply('advance', state['run'], expected_revision=state['revision'], phase='design')
-    with pytest.raises(w.Refusal):
-        c.guard({'tool_name': 'Write', 'tool_input': {'file_path': 'app.py'}}, state['run'])
-    assert c._path().read_bytes() == controller_before
-
-
-def test_wait_survives_read_tools_and_automatic_stop_continuation(tmp_path):
-    from taskplane import flow
-    c, state = setup(tmp_path)
-    harness = local.Harness(tmp_path, c.root)
-    harness.bind(state)
-    harness.wait(c.report(), 'Awaiting the reported repair decision')
-    expected = harness.read()['waiting']
-    event = {'cwd': str(tmp_path), 'session_id': c.root}
-    flow.hook(event | {'hook_event_name': 'PreToolUse', 'tool_name': 'Read',
-        'tool_input': {'file_path': str(tmp_path / 'app.py')}}, governor=c)
-    flow.hook(event | {'hook_event_name': 'UserPromptSubmit',
-        'prompt': '<hook_prompt hook_run_id="stop:12">Continue</hook_prompt>'}, governor=c)
-    assert harness.read()['waiting'] == expected
-    assert 'waiting for user input' in flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)['systemMessage']
-    flow.hook(event | {'hook_event_name': 'UserPromptSubmit', 'prompt': 'Proceed with changes'}, governor=c)
-    assert harness.read()['waiting'] is None
 
 
 @pytest.mark.parametrize('prompt,entry',[
@@ -1387,7 +894,7 @@ def test_bare_execution_directive_keeps_its_requested_route(tmp_path,prompt,entr
     flow.hook(event)
     harness=local.Harness(tmp_path,'root')
     assert harness.read()['entry']==entry
-    assert flow.hook(event|{'hook_event_name':'Stop'}).get('systemMessage')
+    assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
 
 
@@ -1419,12 +926,10 @@ def recovery_fixture(tmp_path):
     source = tmp_path/'source'; source.mkdir()
     def git(*args, cwd=source):
         subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True, text=True)
-    # A legacy folder run later became a shared repository. Recovery must
-    # remain available even though a new run in this checkout is now refused.
-    c, s = setup(source); s = submit(c, s)
     git('init', '-q')
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         'commit', '-q', '--allow-empty', '-m', 'Fixture')
+    c, s = setup(source); s = submit(c, s)
     destination = tmp_path/'clean'
     git('worktree', 'add', '--detach', str(destination), 'HEAD')
     harness = local.Harness(source, 'root')

@@ -7,13 +7,9 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any, Iterator, cast
-from contextvars import ContextVar
-from contextlib import contextmanager
-from collections import Counter
+from typing import Any
 
 from . import primitives, workflow as w, workflow_evidence as evidence
-from .context_delivery import cli_metrics
 
 OBJECT_LIMIT = 8 * 1024 * 1024
 PAGE_LIMIT = 16 * 1024
@@ -22,67 +18,12 @@ PAGE_ITEMS = 64
 REFERENCE_SCHEMA = "taskplane.context-reference/v1"
 
 
-# Fixed units: one read, stat, hash, parse, write, graph node/edge,
-# index lookup or receipt/checkpoint publication. Byte classes count reads;
-# transport is also reported separately as the exact emitted UTF-8 envelope.
-_ACTIVE_METRICS: ContextVar[Any] = ContextVar("context_metrics", default=None)
-
-class Metrics:
-    def __init__(self) -> None:
-        self.units: Counter[str] = Counter()
-        self.byte_classes = Counter({k: 0 for k in
-            ("payload", "transport", "index", "ledger", "source_fingerprints")})
-        self.index_rebuilds = 0
-
-    def count(self, name: str, count: int = 1) -> None:
-        self.units[name] += count
-
-    def read(self, category: str, size: int) -> None:
-        self.byte_classes[category] += size
-
-    def report(self) -> dict[str, Any]:
-        return {"operations": sum(self.units.values()), "operation_classes": dict(self.units),
-                "bytes_read": sum(self.byte_classes.values()),
-                "byte_classes": dict(self.byte_classes), "index_rebuilds": self.index_rebuilds}
-
-@contextmanager
-def measured(metrics: Metrics) -> Iterator[Metrics]:
-    token = _ACTIVE_METRICS.set(metrics)
-    try:
-        yield metrics
-    finally:
-        _ACTIVE_METRICS.reset(token)
-
-def count(name: str, amount: int = 1) -> None:
-    current = _ACTIVE_METRICS.get() or cli_metrics()
-    if current is not None:
-        current.count(name, amount)
-
-def bytes_read(category: str, amount: int) -> None:
-    current = _ACTIVE_METRICS.get() or cli_metrics()
-    if current is not None:
-        current.read(category, amount)
-
-
-def reclassify_bytes(source: str, target: str, amount: int) -> None:
-    current = _ACTIVE_METRICS.get() or cli_metrics()
-    if current is not None:
-        if hasattr(current, 'reclassify'):
-            current.reclassify(source, target, amount)
-        else:
-            if type(amount) is not int or not 0 <= amount <= current.byte_classes[source]:
-                raise ValueError('Invalid verified byte reclassification')
-            current.read(source, -amount)
-            current.read(target, amount)
-
-
 def encode(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 def digest(value: Any) -> str:
-    count("hash")
     return hashlib.sha256(encode(value)).hexdigest()
 
 
@@ -96,7 +37,6 @@ class Store:
     def __init__(self, workspace: Path):
         self.workspace = workspace.resolve()
         self.root = evidence.path(self.workspace, ".taskplane/context-v1")
-        self._constructed: dict[str, tuple[dict[str, Any], int]] = {}
 
     def path(self, key: str) -> Path:
         w.require(isinstance(key, str) and re.fullmatch(r"[a-f0-9]{64}", key),
@@ -107,7 +47,6 @@ class Store:
         """Compute the exact tree reference without writing preview objects."""
         class Preview(Store):
             def _object(self, kind: str, data: Any, source_key: str, form: str) -> dict[str, Any]:
-                count("hash")
                 raw = encode({"schema": "taskplane.context-object/v1", "kind": kind,
                               "source_key": source_key, "form": form, "data": data})
                 w.require(len(raw) <= OBJECT_LIMIT, "context_overflow", "Canonical context node is oversized.")
@@ -120,30 +59,24 @@ class Store:
                  "source_key": source_key, "form": form, "data": data}
         raw = encode(value)
         w.require(len(raw) <= OBJECT_LIMIT, "context_overflow", "Canonical context node is oversized.")
-        count("hash")
         key = hashlib.sha256(raw).hexdigest()
         target = self.path(key)
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with primitives.file_lock(str(target)):
-            count("stat")
             if target.exists():
                 w.require(self._bytes(key) == raw, "invalid_context", "Immutable context was altered.")
             else:
-                # A killed writer may leave a temporary object, never a partial
-                # canonical digest. The native lock serializes publishers.
-                import tempfile
-                fd, temporary = tempfile.mkstemp(prefix='.context-', dir=target.parent)
+                # Exclusive create avoids replacing a concurrent immutable object.
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
                 try:
                     with os.fdopen(fd, "wb") as stream:
-                        count("write")
                         stream.write(raw)
                         stream.flush()
                         os.fsync(stream.fileno())
-                    os.replace(temporary, target)
-                    primitives._fsync_directory(str(target.parent))
-                finally:
-                    Path(temporary).unlink(missing_ok=True)
-        self._constructed[key] = (value, len(raw))
+                except BaseException:
+                    target.unlink(missing_ok=True)
+                    raise
         return {"schema": REFERENCE_SCHEMA, "kind": kind, "sha256": key,
                 "bytes": len(raw), "source_key": source_key}
 
@@ -152,12 +85,10 @@ class Store:
                   and isinstance(source_key, str) and len(source_key) <= 256,
                   "invalid_context", "Invalid context object metadata.")
         raw = encode(value)
-        if not source_key:
-            count("hash")
-            source_key = hashlib.sha256(raw).hexdigest()
+        source_key = source_key or hashlib.sha256(raw).hexdigest()
         if len(raw) <= LEAF_LIMIT:
             return self._object(kind, value, source_key, "value")
-        if isinstance(value, (dict, list)) and len(value) > 1:
+        if isinstance(value, (dict, list)) and len(value) > PAGE_ITEMS:
             # Pack small entries into real pages. One object per tiny element
             # makes inherited evidence require thousands of separate reads.
             chunks: list[Any] = []
@@ -208,15 +139,9 @@ class Store:
             fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                          | getattr(os, "O_NONBLOCK", 0))
             with os.fdopen(fd, "rb") as stream:
-                count("stat")
                 w.require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode),
                           "invalid_context", "Context must be a regular file.")
-                count("read")
                 raw = stream.read(OBJECT_LIMIT + 1)
-            # Classification follows the verified canonical kind, never a caller claim.
-            self._last_read_size = len(raw)
-            bytes_read("payload", len(raw))
-            count("hash")
             w.require(len(raw) <= OBJECT_LIMIT and hashlib.sha256(raw).hexdigest() == key,
                       "invalid_context", "Context size or digest mismatch.")
             return raw
@@ -227,7 +152,6 @@ class Store:
         key = ref if isinstance(ref, str) else ref.get("sha256", "")
         raw = self._bytes(key)
         try:
-            count("parse")
             value = json.loads(raw)
         except ValueError as exc:
             raise w.Refusal("invalid_context", "Context is not valid JSON.") from exc
@@ -236,27 +160,11 @@ class Store:
                                             "dict-groups", "list-groups", "text-groups",
                                             "dict-chunks", "list-chunks", "dict-chunks-groups", "list-chunks-groups"},
                   "invalid_context", "Invalid canonical context schema.")
-        category = "index" if value["kind"].startswith("context-index") else "ledger" if value["kind"].startswith("delivery-") else "payload"
-        if category != "payload":
-            size = getattr(self, "_last_read_size", 0)
-            reclassify_bytes('payload', category, size)
         if isinstance(ref, dict):
             w.require(ref == {"schema": REFERENCE_SCHEMA, "kind": value["kind"],
                               "sha256": key, "bytes": len(raw), "source_key": value["source_key"]},
                       "invalid_context", "Context reference metadata differs from its object.")
         return dict(value)
-
-    def constructed_node(self, ref: dict[str, Any]) -> dict[str, Any]:
-        """Reuse bytes written/verified during this construction, never across CLI calls."""
-        count("index_lookup")
-        cached = self._constructed.get(ref["sha256"])
-        if cached is None:
-            return self.node(ref)
-        value, size = cached
-        w.require(ref == {"schema": REFERENCE_SCHEMA, "kind": value["kind"],
-                          "sha256": ref["sha256"], "bytes": size, "source_key": value["source_key"]},
-                  "invalid_context", "Constructed reference metadata differs.")
-        return value
 
     def children(self, node: dict[str, Any]) -> list[dict[str, Any]]:
         if node["form"] == "value":
@@ -273,7 +181,6 @@ class Store:
             w.require(depth <= 32 and budget[0] > 0 and budget[1] > 0,
                       "context_overflow", "Context expansion exceeds its finite read budget.")
             node = self.node(item)
-            count("reconstruction")
             budget[0] -= 1
             budget[1] -= len(encode(node))
             form, data = node["form"], node["data"]
@@ -310,35 +217,15 @@ class Store:
         return seen
 
     def page(self, key: str, page: int = 0, section: str | None = None) -> dict[str, Any]:
-        return self.node_page(key, self.node(key), page, section)
-
-    def node_page(self, key: str, node: dict[str, Any], page: int = 0, section: str | None = None) -> dict[str, Any]:
+        node = self.node(key)
         w.require(type(page) is int and page >= 0, "invalid_context", "Invalid page cursor.")
         data = node["data"]
         if section is not None:
-            # Dictionary chunking must not change the public section-read API.
-            # Return a verified child reference when the selected value is large;
-            # this partial read still cannot count as delivery of the whole root.
-            source = None
-            pending = [node]
-            visited = 0
-            while pending:
-                current = pending.pop()
-                visited += 1
-                w.require(visited <= 20000, 'context_overflow', 'Context section index is too large.')
-                form = current['form']
-                if form in {'dict', 'value'}:
-                    candidate = dict(current['data']) if form == 'dict' else current['data']
-                    if isinstance(candidate, dict) and section in candidate:
-                        w.require(source is None, 'invalid_context', 'Duplicate context section.')
-                        source = candidate
-                elif form == 'groups' or form.startswith('dict-chunks'):
-                    pending.extend(self.node(ref) for ref in self.children(current))
-                else:
-                    raise w.Refusal('invalid_context', 'Read an index child before selecting a section.')
+            w.require(node["form"] in {"dict", "value"}, "invalid_context",
+                      "Read an index child before selecting a section.")
+            source = dict(data) if node["form"] == "dict" else data
             w.require(isinstance(source, dict) and section in source,
                       "invalid_context", "Unknown context section.")
-            assert isinstance(source, dict)
             data = {section: source[section]}
         # Canonical node bodies normally fit one page; bounded indexed collections
         # still retain an explicit cursor and exact count.
@@ -373,7 +260,4 @@ class Store:
         value = evidence.object_file(self.workspace, relative)
         w.require(value.get("binding") == binding and isinstance(value.get("roots"), list),
                   "invalid_context", "Foreign context read index.")
-        w.require(len(value["roots"]) <= 4096 and all(isinstance(ref, dict) and
-                  ref.get("schema") == REFERENCE_SCHEMA for ref in value["roots"]),
-                  "invalid_context", "Invalid or oversized context read roots.")
         return list(value["roots"])

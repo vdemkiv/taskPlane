@@ -2427,7 +2427,6 @@ header{padding:22px 24px 14px}h1{font-size:20px;letter-spacing:-.4px;margin:0 0 
 .toolbar{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:14px}.toolbar input{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:7px;padding:8px 10px;max-width:100%}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 270px;border-block:1px solid var(--line)}#wrap{overflow:auto;min-height:350px;background:var(--panel)}svg{display:block;min-width:100%;height:auto}.edge{stroke:var(--line);stroke-width:1.5;fill:none}.edge.selected{stroke:var(--accent);stroke-width:2}.edge.rec{stroke-dasharray:5 4}
 .node rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.node:hover rect,.node:focus rect,.node.selected rect{stroke:var(--accent);stroke-width:2}.node{cursor:pointer;outline:none}.node.changed rect{stroke:var(--changed)}.node text{fill:var(--ink);font:12px system-ui;pointer-events:none}.node .meta{font-size:10px;fill:var(--muted)}.node.dim{opacity:.22}
-.node.dim:focus,.node.dim:focus-visible{opacity:1}.node:focus-visible rect{stroke:var(--accent);stroke-width:3}
 #inspector{padding:20px;overflow-wrap:anywhere;border-left:1px solid var(--line)}#inspector ul{padding-left:18px;font-size:12px}#inspector button{color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:6px;margin:3px 0;text-align:left;width:100%;cursor:pointer}.tables{padding:22px 24px}.table-wrap{overflow:auto}table{border-collapse:collapse;font-size:12px;width:100%;margin:8px 0 18px}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px 12px}th{background:var(--panel);font-weight:600}.chg{color:var(--changed)}.imp{color:var(--accent)}
 @media(max-width:1100px){.layout{grid-template-columns:1fr}#inspector{border-left:0;border-top:1px solid var(--line)}}
 @media(max-width:700px){header,.tables{padding:16px}}
@@ -2454,7 +2453,7 @@ function level(id,trail=new Set()){if(id in levels)return levels[id];if(trail.ha
 nodes.forEach(n=>level(n.id));
 const columns={};nodes.sort((a,b)=>a.id.localeCompare(b.id)).forEach(n=>{(columns[levels[n.id]]??=[]).push(n);});
 const maxLevel=Math.max(0,...Object.values(levels)),height=Math.max(350,...Object.values(columns).map(c=>c.length*100+70));
-const width=Math.max(760,(maxLevel+1)*270+50);svg.setAttribute('viewBox',`0 0 ${width} ${height}`);svg.style.width=width+'px';svg.style.minWidth=width+'px';
+const width=Math.max(760,(maxLevel+1)*270+50);svg.setAttribute('viewBox',`0 0 ${width} ${height}`);svg.style.width='100%';svg.style.minWidth='760px';
 for(const [lev,group] of Object.entries(columns)){group.forEach((n,i)=>{n.x=30+(maxLevel-Number(lev))*270;n.y=35+i*100;});}
 svg.appendChild(el('defs',{})).innerHTML='<marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor"/></marker>';
 const edgeElements=[];
@@ -2470,8 +2469,7 @@ function select(n){document.querySelectorAll('.node').forEach(x=>x.classList.tog
  for(const c of children){const cc=document.createElement('details');cc.innerHTML=`<summary>${esc(c.id)}</summary><p class="muted">${c.files||0} files · ${c.symbols||0} symbols</p>${list((c.deps||[]),'to')}`;cc.addEventListener('keydown',ev=>{if(ev.key==='Escape'){cc.open=false;cc.querySelector('summary').focus();}});inspector.appendChild(cc);}}
 for(const n of nodes){const group=el('g',{class:'node'+(CHANGED.has(n.id)?' changed':''),tabindex:'0',role:'button','aria-label':n.id+' — '+(n.kind||'module')+'; inspect dependencies','data-id':n.id});
  group.appendChild(el('rect',{x:n.x,y:n.y,width:220,height:64,rx:9}));const title=el('title',{});title.textContent=n.id;group.appendChild(title);
- const chars=typeof Intl.Segmenter==='function'?Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(n.id),s=>s.segment):Array.from(n.id);
- const label=el('text',{x:n.x+14,y:n.y+25});label.textContent=chars.length>28?chars.slice(0,26).join('')+'…':n.id;group.appendChild(label);
+ const label=el('text',{x:n.x+14,y:n.y+25});label.textContent=n.id.length>28?n.id.slice(0,26)+'…':n.id;group.appendChild(label);
  const meta=el('text',{x:n.x+14,y:n.y+45,class:'meta'});meta.textContent=(n.kind||'module')+' · '+(n.files||0)+' files'+(CHANGED.has(n.id)?' · changed':IMPACT[n.id]?' · impacted':'');group.appendChild(meta);
  group.addEventListener('click',()=>select(n));group.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select(n);}});svg.appendChild(group);}
 document.getElementById('search').addEventListener('input',e=>{const q=e.target.value.toLowerCase();document.querySelectorAll('.node').forEach(n=>n.classList.toggle('dim',!n.dataset.id.toLowerCase().includes(q)));});

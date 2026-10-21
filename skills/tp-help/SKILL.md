@@ -5,16 +5,22 @@ description: Explain Taskplane capabilities, commands, and existing workflow sta
 
 # Taskplane help
 
-Answer directly using the relevant documentation or actual command `--help`.
-Help does not activate, initialize, inventory or render a dashboard. Use
-[the shared flow](../tp-go/references/shared-flow.md) for delivery concepts and
-[Workflow Builder](../../docs/workflow-builder.md) for reusable definitions.
+Answer the user's question directly. Use only the relevant installed documentation
+or a command's `--help` output. Do not run onboarding, inventory tools, activate a
+contract, or render a setup dashboard just to explain the product.
 
-Explain the seven separate phase approvals, contextual human intent, durable
-briefs and scoped ownership. Root or serial work is valid; useful independent
-native work needs real identity/completion evidence. Optional views do not gate
-phases. Host permissions and installed-runtime verification are separate.
+Ordinary code review uses native tools and [engineering](../tp-engineering/SKILL.md).
+The orchestrator prepares delivery; humans accept checkpoints by default.
+Explicit user instructions can authorize run-bound automatic phase approvals. Hooks
+separate mandatory workflow refusals from advisory usage. The default native_workflow
+profile uses local state and observed human provenance. Host-wide protections are
+unavailable; protected_host requires a verified owner. Native permissions remain separate. Use `flow report`
+for human decisions, recorded milestones and available token usage.
+For actual setup or a concrete installation failure, consult
+[onboarding](../../docs/onboarding.md) and [CLI reference](../../docs/cli-reference.md).
+Explain only the requested concept; load no full manuals or hook manifests as a tour.
+For a question about phase policy, consult [the shared flow](../tp-go/references/shared-flow.md).
 
-Catalog, validate and preview are read-only. Saving a workflow never runs it;
-compilation produces inputs for existing flow controls. Never claim a parser
-fixture proves live installed-host support.
+Explain that plugin installation, hook trust, phase acceptance and host tool permissions
+are separate. Automatic mode requires explicit additional instructions; show a concise
+example and how to return to manual mode when requested.

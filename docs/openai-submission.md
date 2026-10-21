@@ -57,22 +57,20 @@ are submission artifacts, never repository content):
 - `dist/taskplane-<version>-openai.zip` — upload this in the **Skills only**
   flow (`<version>` comes from the manifest; the packager prints the exact
   path on success).
-- `dist/taskplane-<version>-openai.zip.json` — JSON provenance: archive and
-  member SHA-256 hashes, source commit, dirty status, source-byte comparison and
-  explicitly unobserved CI/installed-runtime readiness.
+- `dist/taskplane-<version>-openai.zip.sha256` — checksum for release
+  provenance (the build is deterministic; CI re-verifies reproducibility).
 
-The ZIP is deterministic, uses repository-relative members without a wrapping directory, and
+The ZIP is deterministic, has one top-level `taskplane/` directory, and
 contains the Codex manifest, all Codex-relevant skills and their
 references, the local Python runtime, lifecycle hooks, agent roles, lens
 catalog, operating disciplines, runtime specifications, brand assets, and legal
-files. All skills are included, including the Claude channel skill. It excludes
-the other host's manifest, tests, non-runtime design documents, repository
+files. It deliberately excludes Claude manifests, MCP/app configuration, the
+Claude Tag-only skill, tests, non-runtime design documents, repository
 metadata, and generated local state. The animated documentation GIF is
 included because README installation guidance references it. The
-builder validates aligned safe manifest versions, regular non-symlink members,
-source identity and deterministic archive construction. Marketplace field limits,
-skill front matter, asset dimensions, submission eligibility and current upload
-size/entry requirements need separate review; packaging does not certify them.
+builder validates the public directory field limits, skill front matter, asset
+dimensions, skills-only constraints, archive safety, and OpenAI's documented
+size and entry limits before reporting success.
 
 ## Starter prompts
 

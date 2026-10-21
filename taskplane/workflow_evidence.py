@@ -12,7 +12,6 @@ import uuid
 from . import workflow as w
 from .depgraph import GRAPH_SCAN_QUALITY_SCHEMA, scan_quality, source_inputs_current
 from .primitives import content_fingerprint
-from .context_delivery import observed, operation
 
 TASK_OBSERVATIONS = {"status", "started_at", "completed_at", "updated_at", "elapsed_seconds"}
 TASK_DEFINITIONS = "taskplane.task-definitions/v1"
@@ -23,7 +22,7 @@ CHECK_ENVIRONMENTS = {"fixture", "local", "deployed"}
 
 EMPTY_LIST_FIELDS = {"non_goals", "dependencies", "finding_references", "known_gaps",
                      "findings", "source_locations", "remaining_risk", "unknowns_and_failures",
-                     "deferred_items_and_owners", "lens_coverage"}
+                     "deferred_items_and_owners"}
 
 
 def substantive(value: Any) -> bool:
@@ -50,7 +49,7 @@ def path(root: Path, relative: str) -> Path:
     target = root.resolve()
     for part in parts:
         target = target / part
-        w.require(not operation('source_stat', target.is_symlink), "scope_violation", f"Symlink path is not permitted: {relative}")
+        w.require(not target.is_symlink(), "scope_violation", f"Symlink path is not permitted: {relative}")
     w.require(target.is_relative_to(root.resolve()), "scope_violation", "Path escapes workspace.")
     return target
 
@@ -60,15 +59,15 @@ def read(root: Path, relative: str) -> bytes:
     try:
         fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
         with os.fdopen(fd, "rb") as stream:
-            w.require(stat.S_ISREG(operation('source_stat', os.fstat, stream.fileno()).st_mode), "invalid_evidence", "Evidence must be a regular file.")
-            return operation('source_read', stream.read, category='source_fingerprints')
+            w.require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "invalid_evidence", "Evidence must be a regular file.")
+            return stream.read()
     except OSError as exc:
         raise w.Refusal("invalid_evidence", f"Evidence unavailable: {relative}: {exc}") from None
 
 
 def object_file(root: Path, relative: str) -> dict[str, Any]:
     try:
-        data = operation('source_parse', json.loads, read(root, relative))
+        data = json.loads(read(root, relative))
     except (ValueError, UnicodeError) as exc:
         if isinstance(exc, w.Refusal):
             raise
@@ -82,44 +81,24 @@ def manifest(root: Path, paths: list[str], *, allow_missing: bool = False,
     result: dict[str, Any] = {}
     for relative in sorted(set(paths)):
         target = path(root, relative)
-        if allow_missing and not operation('source_stat', target.exists):
+        if allow_missing and not target.exists():
             result[relative] = None
         elif relative == task_path:
             data = object_file(root, relative)
             rows = task_dag(data, [])
             normalized = {**data, "tasks": [{k:v for k,v in row.items() if k not in TASK_OBSERVATIONS} for row in rows]}
-            result[relative] = {"schema": TASK_DEFINITIONS, "digest": operation('source_hash', content_fingerprint, normalized)}
+            result[relative] = {"schema": TASK_DEFINITIONS, "digest": content_fingerprint(normalized)}
         else:
-            result[relative] = operation('source_hash', content_fingerprint, read(root, relative))
+            result[relative] = content_fingerprint(read(root, relative))
     return result
 
 
 def valid_scope(root: Path, scope: dict[str, Any]) -> None:
     w.validate_scope(scope)
-    for paths in scope["paths"].values():
+    for paths in [*scope["paths"].values(), scope.get("verification_inputs", [])]:
         for value in paths:
             w.require(isinstance(value, str), "invalid_evidence", "Scope paths must be strings.")
-            write_path(root, value)
-    for value in scope.get("verification_inputs", []):
-        path(root, value)
-
-
-def write_path(root: Path, relative: str) -> Path:
-    """Task outputs cannot replace the controller's own authority or indexes."""
-    target = path(root, relative)
-    parts = Path(relative).parts
-    if parts[0] == '.taskplane':
-        name = parts[1] if len(parts) > 1 else ''
-        reserved = (name in {'context-v1', 'workspace-claims', 'workspace-binding.json', 'binding.json',
-                             'dashboard.html', 'dashboard.selection.json', 'snapshots.json'}
-                    or name.startswith(('workflow-', 'harness-', 'initialization-', 'snapshot-', 'live-telemetry-', 'native-parent-'))
-                    or name.endswith('.lock'))
-        w.require(not reserved,
-                  'scope_violation', 'Controller metadata is not a task output.')
-    if target.exists():
-        w.require(target.stat().st_nlink == 1, 'scope_violation',
-                  'A multiply-linked file cannot be an in-place task write target.')
-    return target
+            path(root, value)
 
 
 def task_criteria(task: dict[str, Any]) -> list[str]:
@@ -138,11 +117,18 @@ def execution_fields(rows: list[dict[str, Any]], *, required: bool = False,
     lenses: set[str] = set()
     for row in rows:
         mode = row.get("execution")
-        w.require(mode in ("native_required", "root", "serial") or not required and "execution" not in row,
+        w.require(mode in ("native_required", "root") or not required and "execution" not in row,
                   "invalid_evidence", f"Task {row.get('id')} needs valid execution metadata.")
-        if mode == "root" and root is not None:
-            w.require(row.get("owner") in {"root", root}, "invalid_evidence",
-                      "Root execution conflicts with native ownership.")
+        if mode == "root":
+            w.require(all(isinstance(row.get(key), str) and row[key].strip()
+                          for key in ("execution_reason", "execution_reference")),
+                      "invalid_evidence", "Root execution needs its reason and exception reference.")
+            if root is not None:
+                w.require(row.get("owner") in {"root", root}, "invalid_evidence",
+                          "Root execution conflicts with native ownership.")
+        else:
+            w.require(not any(key in row for key in ("execution_reason", "execution_reference")),
+                      "invalid_evidence", "Root execution exception conflicts with native or untyped execution.")
         if "review_lens" in row:
             lens = row["review_lens"]
             w.require(isinstance(lens, str) and lens.strip() and lens not in lenses
@@ -150,11 +136,6 @@ def execution_fields(rows: list[dict[str, Any]], *, required: bool = False,
                       and (row.get("phase", phase) in (None, "engineering")), "invalid_evidence",
                       "Each review_lens needs one typed Engineering task and unique lens ID.")
             lenses.add(lens)
-
-
-def execution_preflight(state: dict[str, Any], rows: list[dict[str, Any]]) -> None:
-    """Root, serial and native ownership are valid; explicit native duties remain."""
-    execution_fields(rows, phase=w.current(state)["phase"], root=state["root"])
 
 
 def task_dag(data: dict[str, Any], criteria: list[str]) -> list[dict[str, Any]]:
@@ -173,11 +154,14 @@ def task_dag(data: dict[str, Any], criteria: list[str]) -> list[dict[str, Any]]:
                   "invalid_evidence", f"Task {key} needs prerequisite IDs.")
         w.require(isinstance(t.get("paths"), list) and all(isinstance(p, str) for p in t["paths"]),
                   "invalid_evidence", f"Task {key} needs declared paths.")
-        if "read_inputs" in t:
-            value = t["read_inputs"]
-            w.require(isinstance(value, list) and all(isinstance(p, str) and p for p in value)
-                      and len(value) == len(set(value)), "invalid_evidence", f"Task {key} has invalid read_inputs.")
-        w.require(t.get("phase", "product") in w.PHASES, "invalid_evidence", "Task phase is unknown.")
+        for field in ("read_inputs", "readiness_after"):
+            if field in t:
+                value = t[field]
+                w.require(isinstance(value, list) and all(isinstance(p, str) and p for p in value)
+                          and len(value) == len(set(value)), "invalid_evidence", f"Task {key} has invalid {field}.")
+        if "context_budget_bytes" in t:
+            w.require(type(t["context_budget_bytes"]) is int and 16384 <= t["context_budget_bytes"] <= 1048576,
+                      "invalid_evidence", "Task context budget must be between 16 KiB and 1 MiB.")
         if "purpose" in t:
             w.require(isinstance(t["purpose"], str) and 0 < len(t["purpose"].strip()) <= 512,
                       "invalid_evidence", "Task purpose must be a short nonempty description.")
@@ -191,12 +175,11 @@ def task_dag(data: dict[str, Any], criteria: list[str]) -> list[dict[str, Any]]:
         if key in visited:
             return
         visiting.add(key)
-        for dep in index[key]["dependencies"]:
-            w.require(dep in index, "invalid_evidence", "Task prerequisite is missing.")
-            consumer_phase = index[key].get("phase", "product")
-            producer_phase = index[dep].get("phase", consumer_phase)
-            w.require(w.PHASES.index(producer_phase) <= w.PHASES.index(consumer_phase),
-                      "invalid_evidence", "Task prerequisite cannot be in a later phase than its consumer.")
+        for dep in [*index[key]["dependencies"], *index[key].get("readiness_after", [])]:
+            if dep in index[key].get("readiness_after", []):
+                w.require(dep in index and index[dep].get("phase") == index[key].get("phase")
+                          and index[dep].get("execution") != "root", "invalid_evidence",
+                          "Readiness must name a native task in the same phase.")
             walk(dep)
         visiting.remove(key)
         visited.add(key)
@@ -225,75 +208,6 @@ def context_tasks(state: dict[str, Any]) -> list[dict[str, Any]]:
     return list(rows)
 
 
-def context_task_phase(state: dict[str, Any]) -> str:
-    """Phase of the published context, including the gap before a new publication."""
-    phase: str = state["visits"][0]["phase"]
-    for stage in state["visits"][:state["index"]]:
-        if (stage["decision"] == "approved" and not stage.get("superseded")
-                and stage.get("packet", {}).get("context", {}).get("tasks") is not None):
-            phase = stage["phase"]
-    if state.get("task_context", {}).get("visit") == w.current(state)["id"]:
-        phase = w.current(state)["phase"]
-    return phase
-
-
-def native_refinement(compilation: dict[str, Any], rows: list[dict[str, Any]], phase: str,
-                      *, build_paths: list[str] | None = None, root_id: str = "root") -> None:
-    """Preserve native obligations from an already authenticated compilation.
-
-    This pure check neither authenticates a package nor changes state. Build may
-    narrow optional paths and split work among compatible native tasks, retaining
-    the original nonempty producer. Earlier cumulative obligations remain intact.
-    """
-    rows = task_dag({"tasks": rows}, [])
-    w.require(phase in w.PHASES and all(row.get("phase", phase) in w.PHASES for row in rows),
-              "binding_mismatch", "Compiled native obligation refinement has an unknown phase.")
-    patterns = compilation["task_patterns"]
-    last = max(patterns, key=w.PHASES.index)
-    originals = patterns[last]["tasks"]
-    phases = set(w.PHASES[:w.PHASES.index(phase) + 1])
-    phases.update(row.get("phase", phase) for row in rows)
-    if phase == "plan":
-        phases.add("build")
-    index = {row["id"]: row for row in rows}
-    outer = compilation["semantic_scope"]
-    planned = set(_strings(build_paths, "Plan write scope", nonempty=False) if build_paths is not None else
-                  [p for row in rows if row.get("phase", phase) == "build" for p in row["paths"]])
-    w.require(planned <= set(outer["paths"]["build"]), "binding_mismatch",
-              "Compiled native obligation refinement exceeds the outer Build scope.")
-
-    def compatible(original: dict[str, Any], candidate: dict[str, Any]) -> bool:
-        return (candidate.get("phase") == original["phase"]
-                and candidate.get("capability") == original["capability"]
-                and candidate.get("review_lens") == original.get("review_lens")
-                and candidate.get("execution") == "native_required"
-                and candidate.get("owner") not in ("root", root_id)
-                and not any(key in candidate for key in
-                            ("execution_reason", "execution_reference", "execution_exception"))
-                and set(task_criteria(original)) <= set(task_criteria(candidate))
-                and set(original["read_inputs"]) <= set(candidate.get(
-                    "read_inputs", outer.get("verification_inputs", []))))
-
-    for original in originals:
-        if original.get("execution") != "native_required" or original["phase"] not in phases:
-            continue
-        key = original["id"]
-        anchor = index.get(key)
-        w.require(anchor is not None and compatible(original, anchor), "binding_mismatch",
-                  f"Compiled native obligation {key} must retain its ID, phase, capability, lens, execution, criteria and inputs.")
-        assert anchor is not None
-        retained = set(original["paths"])
-        if original["phase"] == "build":
-            retained &= planned
-        w.require(retained and retained & set(anchor["paths"]), "binding_mismatch",
-                  f"Compiled native obligation {key} needs a nonempty retained producer; placeholders cannot replace it.")
-        for relative in sorted(retained):
-            owners = [row for row in rows if relative in row["paths"]]
-            w.require(len(owners) == 1 and compatible(original, owners[0])
-                      and (original["phase"] == "build" or owners[0]["id"] == key),
-                      "binding_mismatch", f"Compiled native obligation {key} path {relative} needs exactly one compatible native owner.")
-
-
 def read_inputs(state: dict[str, Any], definition: dict[str, Any]) -> list[str]:
     """One source-selection contract for delivery, freshness and scheduling.
 
@@ -304,13 +218,12 @@ def read_inputs(state: dict[str, Any], definition: dict[str, Any]) -> list[str]:
 
 
 def validate_read_inputs(root: Path, scope: dict[str, Any], row: dict[str, Any]) -> None:
-    """Validate relevant task input paths without granting filesystem access.
-
-    Plan may discover existing source/tests. Reads use host access controls;
-    declaring a dependency never authorizes a write to it.
-    """
+    """Apply the same declared read boundary before any task is frozen."""
     if "read_inputs" not in row:
         return
+    allowed = set(scope.get("verification_inputs", [])) | set(scope["paths"].get("build", []))
+    w.require(set(row["read_inputs"]) <= allowed, "scope_violation",
+              "Task read inputs must be declared run verification or Build paths.")
     for relative in row["read_inputs"]:
         path(root, relative)
 
@@ -319,22 +232,16 @@ def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> lis
     """Validate an explicit run-bound publication without consulting global files."""
     from copy import deepcopy
     rows = task_dag(data, state["scope"]["criteria"])
-    from .workflow_local import verify_workflow
-    verify_workflow(root, state, tasks=rows)
-    execution_fields(rows,
+    execution_fields(rows, required=state["scope"].get("execution_contract") == "native-default/v1",
                      phase=w.current(state)["phase"], root=state["root"])
-    execution_preflight(state, rows)
     for row in rows:
         phase = row.get("phase", w.current(state)["phase"])
         w.require(phase in state["scope"]["paths"], "invalid_evidence", "Unknown task phase.")
-        allowed = (w.phase_write_paths(state) if phase == w.current(state)['phase']
-                   else state["scope"]["paths"][phase])
-        w.require((w.current(state)["phase"] == "plan" and phase == "build"
-                   or set(row["paths"]) <= set(allowed))
+        w.require(set(row["paths"]) <= set(state["scope"]["paths"][phase])
                   and set(task_criteria(row)) <= set(state["scope"]["criteria"]),
                   "scope_violation", "Task publication exceeds accepted paths or criteria.")
         for relative in row["paths"]:
-            write_path(root, relative)
+            path(root, relative)
         validate_read_inputs(root, state["scope"], row)
     if w.current(state)["phase"] == "build":
         approved = w.accepted_plan(state)["packet"]["output"]["task_dag"]
@@ -397,38 +304,28 @@ def _plan(state: dict[str, Any]) -> dict[str, Any]:
 def plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
                    tasks: list[dict[str, Any]]) -> dict[str, Any]:
     """Check declared production/read dependencies, never expand their authority."""
-    from .workflow_local import verify_workflow
-    verify_workflow(root, state, tasks=tasks, build_paths=output.get("write_scope"))
-    return _plan_preflight(root, state, output, tasks)
-
-
-def _plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
-                    tasks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Plan checks after the public caller authenticated its workflow binding."""
-    strict = (state["scope"].get("execution_contract") in {"native-default/v1", "ownership/v1"}
-              or state["scope"].get("planning_contract") == w.PLANNING_CONTRACT or typed_plan(output))
+    strict = state["scope"].get("execution_contract") == "native-default/v1" or typed_plan(output)
     if not strict:
         return {"status": "legacy_untyped"}
     planned = set(_strings(output.get("write_scope"), "Plan write scope"))
     outer = set(state["scope"]["paths"]["build"])
-    if state.get("schema") == "taskplane.workflow/v2" and not outer:
-        outer = planned
     w.require(planned <= outer, "scope_violation", "Plan writes exceed the authorized Build scope.")
-    execution_preflight(state, tasks)
     index = {row["id"]: row for row in tasks}
     build = {key: row for key, row in index.items() if row.get("phase") == "build"}
     owners: dict[str, str] = {}
     for key, row in build.items():
         validate_read_inputs(root, state["scope"], row)
         for relative in _strings(row.get("paths"), f"Task {key} paths"):
-            write_path(root, relative)
+            path(root, relative)
             w.require(relative in planned and relative not in owners, "invalid_evidence",
                       "Every Build path needs exactly one declared task owner.")
             owners[relative] = key
     w.require(set(owners) == planned, "invalid_evidence", "Plan write scope needs exact Build ownership.")
-    outputs = output.get("build_outputs", [])
-    w.require(isinstance(outputs, list), "invalid_evidence", "Declared Build outputs must be a list.")
+    outputs = output.get("build_outputs")
+    w.require(isinstance(outputs, list) and outputs, "invalid_evidence",
+              "Plan needs declared Build packet, report and verification history outputs.")
     assert isinstance(outputs, list)
+    kinds: list[str] = []
     paths: set[str] = set()
     for row in outputs:
         w.require(isinstance(row, dict) and row.get("kind") in {"packet", "report", "verification_history"}
@@ -436,13 +333,15 @@ def _plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
                   and row.get("task") in build and owners.get(row["path"]) == row["task"],
                   "invalid_evidence", "Build output needs a unique declared path and matching Build task owner.")
         paths.add(row["path"])
-    w.require(sum(row["kind"] == "packet" for row in outputs) <= 1,
-              "invalid_evidence", "Declare at most one current Build result.")
+        kinds.append(row["kind"])
+    w.require(kinds.count("packet") == 1 and "report" in kinds and "verification_history" in kinds,
+              "invalid_evidence", "Plan requires one Build packet and at least one report and verification history.")
     strategy = output.get("verification_strategy")
     w.require(isinstance(strategy, dict) and strategy.get("schema") == VERIFICATION_STRATEGY
               and isinstance(strategy.get("checks"), list) and strategy["checks"],
               "invalid_evidence", "Plan needs a typed verification strategy.")
     assert isinstance(strategy, dict)
+    allowed_reads = set(state["scope"].get("verification_inputs", [])) | outer
     ids: set[str] = set()
     order = output.get("integration_order", [])
     w.require(isinstance(order, list) and set(order) == set(index), "invalid_evidence",
@@ -474,12 +373,12 @@ def _plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
         w.require(isinstance(command, list) and command and all(isinstance(arg, str) and arg for arg in command),
                   "invalid_evidence", "Check command must be an explicit argument vector.")
         inputs = _strings(check.get("source_inputs"), "Check source inputs")
-        inputs += _strings(check.get("test_inputs", []), "Check test inputs", nonempty=False)
+        inputs += _strings(check.get("test_inputs"), "Check test inputs")
         task_reads = set(read_inputs(state, task)) | set(task["paths"])
         deps = ancestors(task["id"])
         for relative in inputs:
             target = path(root, relative)
-            w.require(relative in task_reads, "scope_violation",
+            w.require(relative in allowed_reads and relative in task_reads, "scope_violation",
                       f"Verification input is undeclared for task {task['id']}: {relative}")
             producer = owners.get(relative)
             if producer and producer != task["id"]:
@@ -494,9 +393,6 @@ def _plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
             path(root, relative)
             w.require(owners.get(relative) == task["id"], "invalid_evidence",
                       "Every verification log/output must be owned by its checking task.")
-    covered = {criterion for check in strategy['checks'] if check['required'] for criterion in check['criteria']}
-    w.require(set(state['scope']['criteria']) <= covered, 'invalid_evidence',
-              'Required verification is missing for criteria: ' + ', '.join(sorted(set(state['scope']['criteria']) - covered)))
     return {"status": "validated", "checks": sorted(ids), "outputs": deepcopy(outputs)}
 
 
@@ -504,13 +400,8 @@ def validate_build_outputs(root: Path, state: dict[str, Any], output: dict[str, 
     plan = _plan(state)
     if not typed_plan(plan):
         return
-    if w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit'):
-        w.require(output_path in w.current(state).get('artifact_paths', []), 'scope_violation',
-                  'Repair output must use its fresh result namespace; accepted evidence is immutable.')
-        return
-    rows = plan.get("build_outputs", [])
-    packets = [row["path"] for row in rows if row["kind"] == "packet"]
-    w.require(not packets or packets == [output_path],
+    rows = plan["build_outputs"]
+    w.require(next(row["path"] for row in rows if row["kind"] == "packet") == output_path,
               "invalid_evidence", "Build must submit the exact planned packet path.")
     for row in rows:
         read(root, row["path"])
@@ -518,38 +409,6 @@ def validate_build_outputs(root: Path, state: dict[str, Any], output: dict[str, 
             w.require(any(ref.get("path") == row["path"] and ref.get("kind") == "report"
                           and row["task"] in ref.get("tasks", []) for ref in output.get("artifacts", [])),
                       "invalid_evidence", "Build needs its planned report with matching task ownership.")
-
-
-def check_execution(root: Path, state: dict[str, Any], check: dict[str, Any], *,
-                    nonce: str | None = None) -> dict[str, Any]:
-    """Project known generated outputs, never change a check's logical command.
-
-    Only the repository package builders' declared archive/sidecar pair has a
-    directory projection. Other commands retain their approved arguments; an
-    explicit reference to an unowned declared output refuses before execution.
-    """
-    command = list(check['command'])
-    owned = set(w.phase_write_paths(state))
-    declared = check['evidence_outputs']
-    outputs = w.package_check_outputs(check)
-    result: dict[str, Any] = {'command': command, 'outputs': [], 'mapping': {}, 'nonce': None}
-    if outputs is None:
-        for relative in declared:
-            if relative in command or any(arg.endswith('='+relative) for arg in command):
-                w.require(relative in owned, 'scope_violation', 'Check command targets an output outside its current phase.')
-        return result
-    directory = command[4]
-    path(root, directory)
-    stage = w.current(state)
-    if (stage['phase'] == 'build' and stage['id'] != state.get('repair_scope', {}).get('build_visit')
-            and set(outputs) <= owned):
-        result['outputs'] = outputs
-        return result
-    mapping = w.generated_check_outputs(state, stage, check, nonce)
-    destination = str(Path(next(iter(mapping.values()))).parent)
-    path(root, destination)
-    command[4] = destination
-    return {'command': command, 'outputs': list(mapping.values()), 'mapping': mapping, 'nonce': nonce}
 
 
 def finding_paths(output: dict[str, Any]) -> list[str]:
@@ -826,19 +685,16 @@ def outcome_summary(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _verification_packet(state: dict[str, Any], output: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Select the newest snapshot in the current Plan lineage for every caller.
-
-    Passing an older output cannot hide a newer Evaluate failure. Invalidated
-    snapshots stay selected as unknown rather than revealing an older pass.
-    """
-    visits = state.get("visits", [])[:state.get("index", 0) + 1]
-    plans = [i for i, stage in enumerate(visits) if stage.get("phase") == "plan"
-             and stage.get("decision") == "approved" and not stage.get("superseded")]
-    lineage = visits[plans[-1] + 1:] if plans else visits
-    matches = [stage for stage in lineage if stage.get("phase") in {"build", "evaluate"}
-               and stage.get("packet") and not stage.get("superseded")
-               and (stage["packet"].get("verification", {}).get("effective_checks") is not None
-                    or stage.get("phase") == "build")]
+    packets: list[dict[str, Any]] = [stage for stage in state.get("visits", [])[:state.get("index", 0) + 1]
+                                    if stage.get("packet") and not stage.get("superseded")]
+    if output is not None:
+        # Only Build/Evaluate packets validate check snapshots. Later phase
+        # outputs must not hide the current Build evidence during policy lookup.
+        matches = [stage for stage in packets if stage.get("phase") in {"build", "evaluate"}
+                   and stage["packet"].get("output") == output]
+        if matches:
+            return matches[-1]
+    matches = [stage for stage in packets if stage.get("phase") == "build"]
     return matches[-1] if matches else {}
 
 
@@ -850,7 +706,7 @@ def effective_checks(state: dict[str, Any], output: dict[str, Any] | None = None
     """
     stage = _verification_packet(state, output)
     packet = stage.get("packet", {})
-    source = packet.get("output", {})
+    source = output if output is not None else packet.get("output", {})
     plan = _plan(state)
     if not typed_plan(plan):
         rows: dict[str, dict[str, Any]] = {}
@@ -869,15 +725,11 @@ def effective_checks(state: dict[str, Any], output: dict[str, Any] | None = None
         row.update(check_id=requirement["id"], name=requirement["name"],
                    kind=requirement["kind"], environment=requirement["environment"],
                    required=requirement["required"], criteria=deepcopy(requirement["criteria"]))
-        row.update(producing_visit=row.get("visit", stage.get("id")), snapshot_visit=stage.get("id"),
-                   acceptance="accepted" if stage.get("decision") == "approved" else "pending"
-                   if stage.get("decision") == "awaiting_human_approval" else "historical")
         result.append(row)
     return result
 
 
-def validate_verification(root: Path, state: dict[str, Any], output: dict[str, Any], *,
-                          output_path: str | None = None) -> dict[str, Any]:
+def validate_verification(root: Path, state: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
     """Bind declared requirements, immutable attempts, current provenance and logs."""
     plan = _plan(state)
     phase = w.current(state)["phase"]
@@ -889,71 +741,29 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     store = Store(root)
     requirements = {check["id"]: check for check in plan["verification_strategy"]["checks"]}
     history_path = output.get("verification_history")
-    predecessor = _verification_packet(state)
-    inherited = phase == "evaluate" and history_path is None
     if phase == "evaluate" and history_path is None:
+        predecessor = _verification_packet(state)
         packet = predecessor.get("packet", {})
-        prior = packet.get("verification", {})
-        w.require(prior.get("history") and (predecessor.get("decision") == "approved"
-                  or predecessor.get("id") == w.current(state)["id"]),
-                  "invalid_evidence", "Evaluate needs an applicable typed verification snapshot.")
-        inherited_checks = effective_checks(state)
-        for row in inherited_checks:
-            if not row.get("record_ref"):
-                row.update(status="unknown", reason="No immutable verification record is available.")
-                continue
-            saved_record = store.resolve(row["record_ref"])
-            saved = saved_record["key"]
-            now = context_reuse.revalidate(root, saved_record, state=state, output_path=output_path)
-            if (not context_reuse.same_inputs(now, saved)
-                    or row.get('status') == 'pass' and not context_reuse.reusable(saved_record, now)):
-                row.update(status="unknown", reason="Inherited verification inputs changed.")
-        for criterion, result in output.get("criterion_results", {}).items():
-            if result.get("status") == "pass":
-                checks = [row for row in inherited_checks if row["required"] and criterion in row["criteria"]]
-                w.require(checks and all(row["status"] == "pass" for row in checks), "invalid_evidence",
-                          "Criterion pass requires every mandatory check kind/environment to be current and passing.")
-        return {**deepcopy(prior), "status": "validated", "effective_checks": inherited_checks,
-                "inherited_from_visit": predecessor.get("id")}
-    declared_histories = {row["path"] for row in plan.get("build_outputs", []) if row["kind"] == "verification_history"}
-    if not declared_histories:
-        declared_histories = set(plan["write_scope"])
-    if w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit'):
-        declared_histories = set(w.current(state).get('artifact_paths', []))
-    if phase == "evaluate" and not inherited:
-        declared_histories = set(w.phase_write_paths(state))
+        w.require(predecessor.get("decision") == "approved" and packet.get("verification", {}).get("history"),
+                  "invalid_evidence", "Evaluate needs a current accepted typed Build verification history.")
+        history_path = packet["verification"]["history_path"]
+    declared_histories = {row["path"] for row in plan["build_outputs"] if row["kind"] == "verification_history"}
     w.require(isinstance(history_path, str) and history_path in declared_histories,
-              "invalid_evidence", "Verification history must name a planned output or the current Evaluate's owned output.")
+              "invalid_evidence", "Verification history must name a planned output.")
     assert isinstance(history_path, str)
     history = object_file(root, history_path)
     w.require(history.get("schema") == VERIFICATION_HISTORY and history.get("run") == state["run"]
               and history.get("coverage") == "declared_producer" and isinstance(history.get("attempts"), list),
               "invalid_evidence", "Verification history has foreign binding, schema or coverage.")
-    visits = {visit["id"] for visit in state["visits"][:state["index"] + 1]
-              if visit["phase"] in {"build", "evaluate"} and (not visit.get("superseded")
-                  or visit['id'] in state.get('repair_scope', {}).get('prior_visits', []))}
-    current_visit = predecessor.get("id") if inherited else w.current(state)["id"]
-    w.require(history.get("visit") == current_visit, "invalid_evidence", "Verification history belongs to a different producing visit.")
+    visits = {visit["id"] for visit in state["visits"] if visit["phase"] == "build"}
+    current_visit = w.current(state)["id"] if phase == "build" else _verification_packet(state).get("id")
+    w.require(history.get("visit") == current_visit, "invalid_evidence", "Verification history belongs to a different Build visit.")
     attempts = history["attempts"]
-    # All planned histories for this producer are projections of one ordered
-    # history. Selecting another filename cannot hide a newer observation.
-    for candidate in declared_histories:
-        if candidate == history_path or not path(root, candidate).exists():
-            continue
-        try:
-            other = object_file(root, candidate)
-        except w.Refusal:
-            continue  # A declared ordinary source/output is not a history.
-        if (other.get('schema') == VERIFICATION_HISTORY and other.get('run') == state['run']
-                and other.get('visit') == current_visit):
-            prior_attempts = other.get('attempts', [])
-            w.require(isinstance(prior_attempts, list) and attempts[:len(prior_attempts)] == prior_attempts,
-                      'invalid_evidence', 'Verification attempts cannot be removed, reordered or rewritten; select the complete newest verification history.')
-    # Continuity belongs to the producing visit, not its selected filename.
-    # Renaming a history must not discard a previously captured fail/unknown.
+    # Every previously captured attempt remains an exact ordered prefix through
+    # resubmission and repair. Replacement keeps predecessor histories separately.
     for stage in _packets(state):
         previous = stage["packet"].get("verification", {}).get("history", {})
-        if previous.get("run") == state["run"] and previous.get("visit") == current_visit:
+        if previous.get("run") == state["run"]:
             old = previous.get("attempts", [])
             w.require(attempts[:len(old)] == old, "invalid_evidence",
                       "Verification attempts cannot be removed, reordered or rewritten.")
@@ -961,7 +771,6 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     latest: dict[str, dict[str, Any]] = {}
     files = [history_path]
     refs: list[dict[str, Any]] = []
-    last_log_use = {row.get('evidence'): row.get('id') for row in attempts if isinstance(row, dict)}
     for sequence, attempt in enumerate(attempts, 1):
         w.require(isinstance(attempt, dict) and isinstance(attempt.get("id"), str) and attempt["id"]
                   and attempt["id"] not in seen and attempt.get("sequence") == sequence
@@ -986,14 +795,7 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
                   and set(key.get("criteria", [])) == set(requirement["criteria"]),
                   "invalid_evidence", "Attempt command or input contract differs from its Plan requirement.")
         log_path = attempt.get("evidence")
-        producer = next(visit for visit in state["visits"] if visit["id"] == attempt["visit"])
-        declared_logs = (state["scope"]["paths"].get("evaluate", [])
-                         if producer["phase"] == "evaluate" else requirement["evidence_outputs"])
-        declared_logs = [*declared_logs, *(relative for relative in producer.get('artifact_paths', [])
-                                          if '/check-' in relative and relative.endswith('.log')
-                                          or producer['phase'] == 'evaluate'
-                                          and relative == w.visit_result_paths(state, producer)[2])]
-        w.require(log_path in declared_logs and attempt.get("log_ref") == record.get("log_ref")
+        w.require(log_path in requirement["evidence_outputs"] and attempt.get("log_ref") == record.get("log_ref")
                   and record.get("log_path") == log_path, "invalid_evidence", "Attempt log is not its declared immutable evidence.")
         log = store.resolve(attempt["log_ref"])
         w.require(isinstance(log, dict) and log.get("path") == log_path and isinstance(log.get("text"), str)
@@ -1001,15 +803,14 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
                   "invalid_evidence", "Immutable attempt log is invalid.")
         # Missing historical files can be recovered from the pinned immutable
         # body. An existing edited path must not masquerade as the old log.
-        if last_log_use.get(log_path) == attempt['id'] and path(root, log_path).exists():
+        if path(root, log_path).exists():
             w.require(read(root, log_path) == log["text"].encode(), "invalid_evidence", "A captured verification log was edited.")
             files.append(log_path)
         refs.extend([attempt["record_ref"], attempt["log_ref"]])
         if attempt["visit"] == current_visit:
             latest[attempt["check_id"]] = {**deepcopy(attempt), "_record": record}
     selected: list[dict[str, Any]] = []
-    final_rows = (predecessor.get("packet", {}).get("output", {}).get("build_checks", [])
-                  if inherited else output.get("build_checks", []))
+    final_rows = output.get("build_checks", []) if phase == "build" else _verification_packet(state).get("packet", {}).get("output", {}).get("build_checks", [])
     w.require(isinstance(final_rows, list) and all(isinstance(row, dict) for row in final_rows),
               "invalid_evidence", "Final Build checks must be a list.")
     final = {row.get("check_id"): row for row in final_rows}
@@ -1018,61 +819,18 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     for check_id, requirement in requirements.items():
         attempt = latest.get(check_id)
         if attempt is None:
-            # A fresh Evaluate may rerun a subset. Carry a predecessor only
-            # after revalidating its record against current relevant inputs.
-            prior_rows = predecessor.get('packet', {}).get('verification', {}).get('effective_checks', [])
-            repair = state.get('repair_scope', {})
-            if (phase == 'build' and w.current(state)['id'] == repair.get('build_visit')
-                    and check_id not in repair.get('checks', [])):
-                basis = state.get('request_provenance', {}).get('repair', {}).get('verification_basis')
-                prior_rows = store.resolve(basis).get('effective_checks', []) if basis else []
-            prior = next((row for row in prior_rows if row.get('check_id') == check_id), None)
-            if prior is not None:
-                prior = deepcopy(prior)
-                claim = final.get(check_id)
-                w.require(claim is None or claim.get('attempt_id') == prior.get('id')
-                          and claim.get('status') == prior.get('status') and claim.get('evidence') == prior.get('evidence'),
-                          'invalid_evidence', 'Retained check must select the controller-pinned newest attempt.')
-                saved_record = store.resolve(prior["record_ref"]) if prior.get("record_ref") else {}
-                saved = saved_record.get("key", {})
-                if saved:
-                    now = context_reuse.revalidate(root, saved_record, state=state, output_path=output_path)
-                    if (not context_reuse.same_inputs(now, saved)
-                            or prior.get('status') == 'pass' and not context_reuse.reusable(saved_record, now)):
-                        prior.update(status="unknown", reason="Inherited verification is no longer current or accepted.")
-                else:
-                    prior.update(status="unknown", reason="Inherited verification lacks an immutable record.")
-                selected.append(prior)
-                continue
-            w.require(check_id not in final, 'invalid_evidence', 'Final check has no current attempt.')
-            selected.append({"check_id": check_id, "status": "unknown", "required": requirement['required'],
-                             "criteria": deepcopy(requirement['criteria']),
-                             "reason": "Check has no current attempt."})
+            w.require(check_id not in final, "invalid_evidence", "Final check has no current attempt.")
+            selected.append({"check_id": check_id, "status": "unknown", "reason": "Required check has no current attempt."})
             continue
         claim = final.get(check_id)
-        w.require((claim is None and phase == "evaluate" and not inherited) or claim is not None and claim.get("attempt_id") == attempt["id"]
+        w.require(claim is not None and claim.get("attempt_id") == attempt["id"]
                   and claim.get("status") == attempt["status"] and claim.get("evidence") == attempt["evidence"],
                   "invalid_evidence", "Final check must select its latest attempt with the same observed status and log.")
         record = attempt.pop("_record")
-        execution = record.get('result', {}).get('execution')
-        if execution is not None:
-            producing_state = deepcopy(state)
-            producing_state['index'] = next(index for index, stage in enumerate(state['visits'])
-                                             if stage['id'] == attempt['visit'])
-            expected = check_execution(root, producing_state, requirement, nonce=execution.get('nonce'))
-            output_files = record['result'].get('output_files', {})
-            w.require(execution == expected and isinstance(output_files, dict)
-                      and set(output_files) <= set(expected['outputs']), 'invalid_evidence',
-                      'Generated output projection differs from its approved check.')
-            w.require(attempt['status'] != 'pass' or set(output_files) == set(expected['outputs']),
-                      'invalid_evidence', 'Passing package check lacks its complete output pair.')
-            for relative, fingerprint in output_files.items():
-                w.require(hashlib.sha256(read(root, relative)).hexdigest() == fingerprint,
-                          'invalid_evidence', 'A produced verification artifact changed.')
-                files.append(relative)
         saved = record["key"]
-        current_key = context_reuse.revalidate(root, record, state=state, output_path=output_path)
-        if not context_reuse.same_inputs(current_key, saved):
+        current_key = context_reuse.key(root, paths=saved["paths"], tests=saved["tests"],
+            criteria=saved["criteria"], command=saved["command"], tool=saved["tool"], contract=saved["contract"])
+        if current_key != saved:
             attempt.update(status="unknown", reason="Verification source/runtime/environment fingerprint changed.")
         if attempt["status"] == "pass":
             w.require(record.get("result", {}).get("returncode") == 0, "invalid_evidence", "Pass lacks successful command evidence.")
@@ -1105,8 +863,7 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
                           and criterion in requirements[row["check_id"]]["criteria"]]
                 w.require(checks and all(row["status"] == "pass" for row in checks), "invalid_evidence",
                           "Criterion pass requires every mandatory check kind/environment to be current and passing.")
-    return {"status": "validated", "plan_digest": content_fingerprint(plan),
-            "files": sorted(set(files)), "history_path": history_path,
+    return {"status": "validated", "files": sorted(set(files)), "history_path": history_path,
             "history": deepcopy(history), "refs": refs, "effective_checks": selected}
 
 
@@ -1115,12 +872,11 @@ def execution_evidence(root: Path, state: dict[str, Any], tasks: list[dict[str, 
     """Frozen execution requirements must be discharged by actual current results."""
     from . import worker_runtime as workers
     frozen = context_tasks(state)
-    contracted = False
+    contracted = state["scope"].get("execution_contract") == "native-default/v1"
     typed = any("execution" in row or "review_lens" in row for row in [*tasks, *frozen])
     if not contracted and not typed:
         return []  # Historical untyped evidence has no invented native requirement.
     execution_fields(tasks, required=contracted, phase=w.current(state)["phase"], root=state["root"])
-    execution_preflight(state, tasks)
     w.require(task_definitions(tasks) == task_definitions(frozen), "invalid_evidence",
               "Execution task definitions must match the published frozen context.")
     phase = w.current(state)["phase"]
@@ -1143,7 +899,7 @@ def execution_evidence(root: Path, state: dict[str, Any], tasks: list[dict[str, 
               "invalid_evidence", "Engineering needs typed lens coverage.")
     assert isinstance(coverage, list)
     w.require(len(coverage) == len(lenses) and {row.get("lens") for row in coverage} == set(lenses)
-              and True, "invalid_evidence",
+              and (bool(lenses) or not contracted), "invalid_evidence",
               "Lens coverage must identify every frozen Engineering lens exactly once.")
     conflicts = native_lens_conflicts(selected, state.get("task_results", {}))
     for claim in coverage:
@@ -1158,7 +914,7 @@ def execution_evidence(root: Path, state: dict[str, Any], tasks: list[dict[str, 
                       "Native lens coverage requires the accepted grant and distinct actual worker identities.")
         else:
             w.require(claim.get("status") == "serial_scope" and claim.get("reviewer") == state["root"]
-                      and not claim.get("grant"),
+                      and claim.get("execution_reference") == row["execution_reference"] and not claim.get("grant"),
                       "invalid_evidence", "Serial lens coverage must identify the root and frozen exception reference.")
     return files
 
@@ -1168,7 +924,7 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
     valid_scope(root, state["scope"])
     stage = w.current(state)
     phase = stage["phase"]
-    w.require(output_path in w.phase_write_paths(state), "scope_violation", "Output is outside the declared phase scope.")
+    w.require(output_path in state["scope"]["paths"][phase], "scope_violation", "Output is outside the declared phase scope.")
     output = object_file(root, output_path)
     w.require(output.get("schema") == "taskplane.phase-output/v1" and
               all(output.get(key) == expected for key, expected in
@@ -1180,30 +936,14 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
                   "invalid_evidence", f"{phase} output needs substantive {field}.")
     criteria = state["scope"]["criteria"]
     w.require(output.get("criteria") == criteria, "invalid_evidence", "Output must identify the accepted criteria.")
-    revision_id = stage.get('requirements_revision')
-    if revision_id:
-        revision = state.get('requirements_revisions', {}).get(revision_id)
-        w.require(revision and revision['status'] in {'review', 'completed'}
-                  and output.get('requirements_revision') == revision_id,
-                  'invalid_evidence', 'Output must bind the current requirements revision.')
-        if phase == 'product':
-            w.require(output.get('acceptance_criteria') == revision['preview']['requirements'],
-                      'scope_violation', 'Revised Product must preserve unchanged criteria and contain the exact proposed replacements.')
-    if tasks_path:
-        tasks = task_dag(object_file(root, tasks_path), criteria)
-    elif phase == "plan":
-        tasks = task_dag({"tasks": output.get("task_dag")}, criteria)
-    else:
-        tasks = context_tasks(state)
-        w.require(tasks, "invalid_evidence", f"{phase} needs current task decomposition; supply tasks or reuse accepted task context.")
-        tasks = task_dag({"tasks": tasks}, criteria)
-    from .workflow_local import verify_workflow
-    verify_workflow(root, state, tasks=tasks,
-                    build_paths=output.get("write_scope") if phase == "plan" else None)
+    if state.get("context_contract"):
+        from .context_handoff import Session
+        Session(root, state, persist=False).validate(output.get("context_receipt"))
+    tasks = task_dag(object_file(root, tasks_path), criteria)
     files = [output_path, *execution_evidence(root, state, tasks, output)]
     for t in tasks:
         for p in t["paths"]:
-            write_path(root, p)
+            path(root, p)
     if phase == "product":
         entries = output["acceptance_criteria"]
         w.require(isinstance(entries, list) and all(isinstance(c, dict) and c.get("statement") for c in entries)
@@ -1214,7 +954,7 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
     if phase == "plan":
         planned = output["write_scope"]
         w.require(isinstance(planned, list) and all(isinstance(p, str) for p in planned)
-                  and (not state["scope"]["paths"]["build"] or set(planned) <= set(state["scope"]["paths"]["build"])),
+                  and set(planned) <= set(state["scope"]["paths"]["build"]),
                   "scope_violation", "Plan cannot widen the human-authorized Build scope.")
         criterion_map(output["acceptance_coverage"], criteria, "Plan acceptance coverage")
         ids = {t["id"] for t in tasks}
@@ -1233,7 +973,7 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
         build_tasks = [t for t in tasks if t.get("phase") == "build"]
         w.require(build_tasks and set(planned) == {p for t in build_tasks for p in t["paths"]},
                   "invalid_evidence", "Plan write scope must exactly match its Build task paths.")
-        _plan_preflight(root, state, output, tasks)
+        plan_preflight(root, state, output, tasks)
     if phase == "build":
         build_task_map(state, tasks, output["task_acceptance_map"], criteria)
         inventory = output["change_inventory"]
@@ -1274,12 +1014,33 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
                       ("id", "severity", "source", "evidence")) and isinstance(finding["evidence"], str),
                       "invalid_evidence", "Findings need ID, severity, source location and evidence.")
             files.append(finding["evidence"])
-    verification = validate_verification(root, state, output, output_path=output_path)
+    verification = validate_verification(root, state, output)
     files.extend(verification.get("files", []))
     files.extend(validate_finding_updates(root, state, output, verification=verification))
-    # Graphs, decomposition and dashboards are optional views, never authority.
-    graph: dict[str, Any] = {}
-    dashboard = b""
+    graph = object_file(root, ".taskplane/knowledge/graph.json")
+    w.require(isinstance(graph.get("modules"), (dict, list)) and isinstance(graph.get("components"), list)
+              and (not graph["modules"] or graph["components"])
+              and all(isinstance(c, dict) and not c.get("degraded") for c in graph["components"]),
+              "invalid_evidence", "Shared source graph and component decomposition are required.")
+    meta = graph.get("meta")
+    quality = meta.get("graph_scan_quality") if isinstance(meta, dict) else None
+    # scan_quality supports legacy module-only graphs with defaults. Checkpoints
+    # require an actual completed scan and decomposition, not those defaults.
+    w.require(isinstance(quality, dict) and quality.get("schema") == GRAPH_SCAN_QUALITY_SCHEMA,
+              "invalid_evidence", "Stored source graph quality is missing or corrupt.")
+    assert isinstance(quality, dict)
+    producers = quality.get("producers")
+    w.require(quality.get("degraded") is False and quality.get("mode") == "components"
+              and quality.get("failures") == [] and quality.get("affected_modules") == []
+              and isinstance(quality.get("scanned_revision"), str) and isinstance(producers, dict)
+              and all(isinstance(producers.get(p), dict) and producers[p].get("status") == "complete"
+                      and producers[p].get("failures") == [] for p in ("base-scanner", "decomposition"))
+              and quality.get("fingerprint") == scan_quality(graph)["fingerprint"],
+              "invalid_evidence", "Source graph quality is degraded, incomplete or corrupt.")
+    w.require(source_inputs_current(str(root), graph), "invalid_evidence",
+              "Source graph is stale or lacks source input evidence; rerun tp graph scan --decompose --strict.")
+    dashboard = read(root, ".taskplane/dashboard.html")
+    w.require(bool(dashboard.strip()), "invalid_evidence", "Shared dashboard is missing.")
     artifacts = output.get("artifacts", [])
     w.require(isinstance(artifacts, list), "invalid_evidence", "Artifact references must be a list.")
     for ref in artifacts:
@@ -1294,18 +1055,22 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
                   "invalid_evidence", "Artifact required_for must name downstream phases.")
         files.append(ref["path"])
     change = output.get("route_change")
-    w.route_eligibility(state, change)
-    if change and change["kind"] == "delivery":
-        valid_scope(root, change["scope"])
-    receipt = None
-    return {"phase": phase, "visit": stage["id"], "scope_preflight": w.scope_preflight(state["scope"]),
-            "output": output, "output_path": output_path, "manifest": manifest(root, files, task_path=tasks_path),
+    if change:
+        w.require(isinstance(change, dict) and change.get("kind") in ("delivery", "repair"),
+                  "invalid_evidence", "Invalid route amendment.")
+        if change["kind"] == "delivery":
+            valid_scope(root, change.get("scope", {}))
+    receipt_path = root / ".taskplane/graph-receipt.json"
+    receipt = object_file(root, ".taskplane/graph-receipt.json") if receipt_path.exists() else None
+    if receipt and (receipt.get("workspace") != str(root.resolve())
+                    or receipt.get("graph_digest") != content_fingerprint(graph)):
+        receipt = None
+    return {"phase": phase, "visit": stage["id"],
+            "output": output, "manifest": manifest(root, files, task_path=tasks_path),
             "execution_evidence": "native-results/v1" if any("execution" in row for row in tasks) else None,
             "source_manifest": manifest(root, state["scope"]["paths"]["build"] +
                                         state["scope"].get("verification_inputs", []), allow_missing=True, task_path=tasks_path)
-                               if phase in ("build", "evaluate", "engineering") else
-                               manifest(root, [relative for relative in state["scope"].get("verification_inputs", [])
-                                               if path(root, relative).exists()], task_path=tasks_path),
+                               if phase in ("build", "evaluate", "engineering") else {},
             # Context is sealed in the protected packet; shared views can refresh without
             # invalidating approved normative artifacts merely because telemetry changed.
             "context": {"graph": graph, "graph_receipt": receipt, "tasks": tasks, "tasks_path": tasks_path, "dashboard_digest": content_fingerprint(dashboard)},
@@ -1326,33 +1091,18 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
     return packet
 
 
-@observed('source-audit')
-def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False,
-            require_current: bool = False) -> tuple[str, str] | None:
+def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False) -> tuple[str, str] | None:
     for stage in state["visits"]:
         # A native negative decision reopens this visit for correction. Its old
-        # packet remains history; accepting that packet again must still compare
-        # its frozen inputs. Protected-host revocation semantics stay intact.
+        # packet remains history; protected-host revocation semantics stay intact.
         editable = stage["id"] == w.current(state)["id"] and (
-            skip_current or not require_current and state.get("profile") == "native_workflow"
+            skip_current or state.get("profile") == "native_workflow"
             and stage["decision"] in ("changes_requested", "rejected"))
         if stage["superseded"] or stage["decision"] == "stale" or not stage["packet"] or editable:
             continue
         packet = stage["packet"]
         for field in ("manifest", "source_manifest"):
             before = packet[field]
-            repair = state.get('repair_scope', {})
-            if field == 'source_manifest' and stage['id'] in repair.get('prior_visits', []):
-                before = {relative: value for relative, value in before.items() if relative not in repair['paths']}
-            if field == "source_manifest" and stage["phase"] in {"product", "design", "plan"}:
-                # An accepted Plan explicitly authorizes downstream source edits.
-                # Preserve the requirements/design output and original snapshot,
-                # but do not revoke its approval for those authorized Build writes.
-                plans = [v for v in state["visits"][:state["index"] + 1]
-                         if v["phase"] == "plan" and v["decision"] == "approved" and not v["superseded"]]
-                if plans:
-                    allowed = set(plans[-1]["packet"]["output"]["write_scope"])
-                    before = {relative: value for relative, value in before.items() if relative not in allowed}
             try:
                 after = {}
                 for relative, expected in before.items():

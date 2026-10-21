@@ -14,14 +14,6 @@ from taskplane import claude_flow_usage as claude, flow
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
-
-
-
-
-
-
-
 def bound_workspace(tmp_path, monkeypatch, policy='any'):
     from taskplane.tests.binding_support import require_binding_runtime
     require_binding_runtime()
@@ -66,7 +58,7 @@ def test_cowork_cli_and_hooks_share_selected_root_without_scratch_store(tmp_path
     event['hook_event_name']='PostToolUse'
     event['taskplane_workspace_contract']={'digest':'caller-forged'}
     flow.hook(event)
-    assert flow._controller(ws, 'root').report()['workspace_contract'] == state['workspace_contract']
+    assert flow.read_events(ws)[-1]['workspace_contract']==state['workspace_contract']
     assert not (scratch/'.taskplane').exists()
 
 
@@ -90,11 +82,38 @@ def test_bound_checkpoint_controls_use_selected_workspace(tmp_path,monkeypatch,t
     assert not (scratch/'.taskplane').exists()
 
 
+def test_bound_checkpoint_controls_keep_exact_command_boundaries(tmp_path,monkeypatch):
+    from taskplane.tests.test_workflow_local import setup, submit
+    from taskplane import workflow as w
+    ws,contract=bound_workspace(tmp_path,monkeypatch)
+    controller,state=setup(ws); submit(controller,state)
+    scratch=tmp_path/'scratch'; scratch.mkdir(); monkeypatch.chdir(scratch)
+    prefix=[sys.executable,str(ROOT/'taskplane/tp.py')]
+    def guard(args):
+        return flow.hook({'hook_event_name':'PreToolUse','cwd':str(scratch),'session_id':'root',
+                          'tool_name':'Bash','tool_input':{'command':shlex.join(args)}},governor=controller)
+    guard([*prefix,'flow','report','--workspace='+contract['host_root']])
+    invalid=[
+        [*prefix,'flow','report','--workspace',str(scratch)],
+        [*prefix,'flow','report','--workspace='+str(scratch)],
+        [*prefix,'flow','report','--workspace',str(ws),'--workspace',contract['host_root']],
+        [*prefix,'flow','report','--workspace',str(ws),'--workspace='+str(ws)],
+        [*prefix,'flow','report','--workspace'],
+        [*prefix,'flow','report','--workspace='],
+        [*prefix,'dashboard','--out','foreign.html'],
+        [*prefix,'dashboard','--run','foreign'],
+        [sys.executable,str(scratch/'tp.py'),'flow','report'],
+        [sys.executable,str(ROOT/'taskplane/tp.py'),'flow','unsupported'],
+    ]
+    for args in invalid:
+        with pytest.raises(w.Refusal): guard(args)
+    monkeypatch.setenv('TASKPLANE_WORKSPACE',str(scratch))
+    with pytest.raises(w.Refusal): guard([*prefix,'flow','report'])
+    assert not (scratch/'.taskplane').exists()
 
 
 def test_cowork_missing_selection_refuses_before_any_state_and_abstains_unrelated(tmp_path,monkeypatch,capsys):
-    from taskplane import workflow as w
-    from taskplane.tests.binding_support import HAS_BINDING_RUNTIME
+    from taskplane import workflow
     for key in list(os.environ):
         if key.startswith(('CODEX_', 'CLAUDE_', 'TASKPLANE_')):monkeypatch.delenv(key)
     monkeypatch.setenv('TASKPLANE_SURFACE','cowork');monkeypatch.chdir(tmp_path)
@@ -103,11 +122,7 @@ def test_cowork_missing_selection_refuses_before_any_state_and_abstains_unrelate
     assert flow.hook(unrelated)=={}
     selected={**unrelated,'tool_input':{'command':shlex.join(
         [sys.executable,str(ROOT/'taskplane/tp.py'),'flow','activate','--phase','tp-go'])}}
-    if HAS_BINDING_RUNTIME:
-        flow.hook(selected)
-    else:
-        with pytest.raises(w.Refusal, match='lacks no-follow directory operations'):
-            flow.hook(selected)
+    with pytest.raises(workflow.Refusal):flow.hook(selected)
     assert flow.main(['activate','--phase','tp-go','--request-reference','fixture/selection'],compact=True)==2
     capsys.readouterr()
     assert not (tmp_path/'.taskplane').exists()
@@ -267,22 +282,15 @@ def test_streamed_worker_boundary_increments_conserve_lifetime(tmp_path):
     boundary = claude.timestamp('2026-09-15T00:00:10Z')
     run = {'run': 'first', 'session': 'root', 'host': 'claude', 'transcript_path': str(path),
            'at': '2026-09-15T00:00:00Z', 'usage': claude.read_snapshot(path, 'root')['usage']}
-    child_event = {'child': 'reused', 'agent_transcript_path': str(child)}
-    earlier, _ = claude.sessions(run, [{**child_event, 'run': 'first'}], boundary)
-    later, _ = claude.sessions({**run, 'run': 'next', 'at': '2026-09-15T00:00:10Z'},
-                              [{**child_event, 'run': 'next'}], None)
+    earlier, _ = claude.sessions(run, [], boundary)
+    later, _ = claude.sessions({**run, 'run': 'next', 'at': '2026-09-15T00:00:10Z'}, [], None)
     a = next(s for s in earlier if s['session'] == 'reused')
     b = next(s for s in later if s['session'] == 'reused')
     lifetime = claude.read_snapshot(child, 'root', agent='reused')['usage']
     assert a['usage']['total_tokens'] == 133
     assert b['usage']['total_tokens'] == b['usage']['output_tokens'] == 9
     assert b['usage']['input_tokens'] == b['usage']['cached_input_tokens'] == 0
-    if sys.platform in ('darwin', 'linux'):
-        assert a['status'] == b['status'] == 'measured'
-    else:
-        assert a['status'] == b['status'] == 'partial'
-        assert a['attribution_unknown'] and b['attribution_unknown']
-        assert 'native_directory_accounting_unavailable' in claude.last_refresh()['discovery_errors']
+    assert a['status'] == b['status'] == 'measured'
     assert {key: a['usage'][key] + b['usage'][key] for key in lifetime} == lifetime
 
 
@@ -313,15 +321,9 @@ def test_inactive_claude_worker_is_zero_only_when_observed(tmp_path):
            'transcript_path': str(path), 'usage': claude.read_snapshot(path, 'root')['usage']}
     sessions, _ = claude.sessions(run, [], None)
     assert [s['session'] for s in sessions] == ['root']
-    events = [{'run': 'run', 'child': 'old', 'agent_transcript_path': str(child)}]
-    sessions, _ = claude.sessions({**run, 'worker_sessions': ['old']}, events, None)
+    sessions, _ = claude.sessions({**run, 'worker_sessions': ['old']}, [], None)
     old = next(s for s in sessions if s['session'] == 'old')
-    assert old['usage']['total_tokens'] == 0
-    if sys.platform in ('darwin', 'linux'):
-        assert old['status'] == 'measured'
-    else:
-        assert old['status'] == 'partial' and old['attribution_unknown']
-        assert 'native_directory_accounting_unavailable' in claude.last_refresh()['discovery_errors']
+    assert old['status'] == 'measured' and old['usage']['total_tokens'] == 0
 
 
 def test_discovers_lens_counters_and_excludes_other_runs(tmp_path, monkeypatch):
@@ -334,19 +336,7 @@ def test_discovers_lens_counters_and_excludes_other_runs(tmp_path, monkeypatch):
     row = message(agent='other', at='2026-09-15T00:00:04Z')
     row['sessionId'] = 'unrelated'
     write(child.with_name('agent-other.jsonl'), [row])
-    report = flow.report(ws, history=True)
-    if sys.platform not in ('darwin', 'linux'):
-        # The explicit root transcript remains readable; undiscovered workers
-        # cannot be treated as absent or included in a complete total.
-        assert report['tokens']['total_tokens'] == 142
-        assert report['native_tokens']['total_tokens'] == 284
-        assert {row['session'] for row in report['sessions']} == {'root'}
-        assert report['sessions'][0]['status'] == 'partial'
-        assert report['sessions'][0]['attribution_unknown']
-        refresh = report['usage_refresh']
-        assert not refresh['complete'] and not refresh['fully_discovered']
-        assert 'native_directory_accounting_unavailable' in refresh['discovery_errors']
-        return
+    report = flow.report(ws)
     assert report['tokens']['total_tokens'] == 284
     assert report['native_tokens']['total_tokens'] == 426
     assert report['token_coverage']['measured_sessions'] == 2
@@ -359,13 +349,13 @@ def test_finished_flow_includes_late_results_until_next_run(tmp_path, monkeypatc
     ws, path = setup(tmp_path, monkeypatch)
     flow.append(ws, {'kind': 'finish', 'run': 'shared', 'session': 'root', 'note': 'Done'})
     write(path, [message(), message('late', at='2026-09-15T00:00:05Z')])
-    assert flow.report(ws, history=True)['tokens']['total_tokens'] == 142
+    assert flow.report(ws)['tokens']['total_tokens'] == 142
     flow.append(ws, {'kind': 'start', 'run': 'next', 'session': 'root', 'at': '2026-09-15T00:00:06Z'})
     write(path, [message(), message('late', at='2026-09-15T00:00:05Z'),
                  message('next', at='2026-09-15T00:00:07Z')])
     write(path.with_suffix('') / 'subagents/agent-next.jsonl',
           [message(agent='next', at='2026-09-15T00:00:07Z')])
-    report = flow.report(ws, 'shared', history=True)
+    report = flow.report(ws, 'shared')
     assert report['tokens']['total_tokens'] == 142
     assert len(report['sessions']) == 1
 
@@ -393,39 +383,22 @@ def test_claude_binding_overrides_inherited_codex_session(tmp_path, monkeypatch)
     assert flow.session_id({}) == 'claude-session'
 
 
-def test_subagent_stop_retains_usage_without_private_content(tmp_path, monkeypatch):
-    from datetime import datetime, timedelta
-    from taskplane import live_telemetry as live, workflow_host
-    from taskplane.tests.test_workflow_evidence import prepare
-    ws = tmp_path / 'workspace'
-    ws.mkdir()
-    prepared, _, _ = prepare(ws)
-    controller = workflow_host.Controller(ws, 'root', workflow_host.installed_adapter('claude'))
-    state = controller.start({'scope': prepared['scope'], 'request_reference': 'fixture/native-child'})
-    started = datetime.fromisoformat(state['started_at'])
-    path = tmp_path / 'claude/projects/project/root.jsonl'
-    write(path, [message(at=(started - timedelta(seconds=1)).isoformat())])
-    monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID', 'root')
-    monkeypatch.setenv('TASKPLANE_CLAUDE_TRANSCRIPT', str(path))
-    live.initialize(ws, state, flow.counter({'host': 'claude', 'transcript_path': str(path)}, 'root'))
+def test_subagent_stop_retains_usage_without_private_content(tmp_path, monkeypatch, capsys):
+    ws, path = setup(tmp_path, monkeypatch)
     child = tmp_path / 'custom/child.jsonl'
-    write(child, [message(agent='lens', at=(started + timedelta(seconds=1)).isoformat())])
+    write(child, [message(agent='lens', at='2026-09-15T00:00:03Z')])
     assert flow.hook({'hook_event_name': 'SubagentStop', 'session_id': 'root',
                       'cwd': str(ws), 'transcript_path': str(path), 'agent_id': 'lens',
-                      'agent_transcript_path': str(child), 'last_assistant_message': 'private content'},
-                     governor=controller) == {}
+                      'agent_transcript_path': str(child), 'last_assistant_message': 'private content'}) == {}
     (ws / 'reviews.json').write_text(json.dumps([{'agent': 'lens', 'lens': 'design'}]))
-    artifacts = {'reviews': 'reviews.json'}
-    live.progress(ws, state, 'attach', '', artifacts, flow.capture_attachments(ws, artifacts))
-    report = flow.report(ws, state['run'], governor=controller)
+    flow.main(['attach', '--workspace', str(ws), '--reviews', 'reviews.json'])
+    report = json.loads(capsys.readouterr().out)
     assert report['token_coverage']['unmeasured_sessions'] == 0
     assert report['tokens']['total_tokens'] == 142
-    assert not (ws / flow.JOURNAL).exists()
-    assert 'private content' not in live.path(ws, state['run']).read_text()
-    flow.publish_dashboard(ws, state['run'], governor=controller, supplied=report)
+    assert 'private content' not in (ws / flow.JOURNAL).read_text()
     assert 'Task decomposition' in (ws / flow.DASHBOARD).read_text()
     child.unlink()
-    assert flow.report(ws, state['run'], governor=controller)['tokens']['total_tokens'] == 142
+    assert flow.report(ws)['tokens']['total_tokens'] == 142
 
 
 def test_claude_hooks_prefer_current_plugin_over_stale_codex_launcher(tmp_path):
@@ -455,20 +428,3 @@ def test_claude_cli_start_does_not_install_codex_launcher(tmp_path):
     assert json.loads(result.stdout)['status'] == 'blocked'
     assert json.loads(result.stdout)['reason'] == 'invalid_evidence'  # An exact scope is required.
     assert not (tmp_path / '.taskplane/codex-hook.py').exists()
-
-
-@pytest.mark.parametrize('event_name', ['PreToolUse', 'PostToolUse'])
-def test_unactivated_claude_child_does_not_require_taskplane_store(tmp_path, monkeypatch, event_name):
-    from taskplane import workflow_local
-    monkeypatch.setenv('CLAUDE_SESSION_ID', 'parent')
-    monkeypatch.delenv('CODEX_THREAD_ID', raising=False)
-    monkeypatch.delenv('TASKPLANE_WORKSPACE', raising=False)
-    event = dict(hook_event_name=event_name, session_id='parent', agent_id='child',
-                 cwd=str(tmp_path), tool_name='Bash', tool_use_id='ordinary',
-                 tool_input={'command':'pwd'})
-    assert flow.hook(event) == {}
-    assert not list((tmp_path / '.taskplane').glob('workflow-*'))
-    workflow_local.Harness(tmp_path, 'parent').update(selected=True, entry='tp-go')
-    from taskplane.workflow import Refusal
-    with pytest.raises(Refusal, match='not initialized'):
-        flow.hook(event)

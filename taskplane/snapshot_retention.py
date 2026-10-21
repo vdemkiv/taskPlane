@@ -31,15 +31,6 @@ MAX_SCAN_DEPTH = 32
 MAX_SCAN_SECONDS = 1.0
 MAX_REFERENCE_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 64 * 1024 * 1024
-
-
-class SnapshotCapacityError(ValueError):
-    """Optional publication refused before immutable bytes were written."""
-
-    def __init__(self, admission: dict[str, Any]):
-        self.admission = admission
-        super().__init__("Optional snapshot capacity unavailable: " + admission["reason"])
-
 LEASE_SECONDS = 60.0
 PAIR = re.compile(r"snapshot-[a-f0-9]{16}-[a-f0-9]{64}")
 
@@ -97,8 +88,7 @@ def _directory(path: Path, *, strict: bool = False) -> Iterator[int | Path]:
         os.close(fd)
 
 
-def _read(fd: int | Path, name: str, limit: int = MAX_FILE_BYTES, *,
-          read_observer: Callable[[int], None] | None = None) -> bytes:
+def _read(fd: int | Path, name: str, limit: int = MAX_FILE_BYTES) -> bytes:
     expected = None
     if isinstance(fd, Path):
         _path_identity(fd)
@@ -112,12 +102,10 @@ def _read(fd: int | Path, name: str, limit: int = MAX_FILE_BYTES, *,
             raise ValueError("Snapshot input changed while opening")
         if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
             raise ValueError("Snapshot input is not a bounded ordinary file")
-        raw = stream.read(limit)
-        if read_observer is not None:
-            read_observer(len(raw))
+        raw = stream.read(limit + 1)
         after = os.fstat(stream.fileno())
-        if len(raw) != before.st_size or (before.st_size, before.st_mtime_ns, before.st_ctime_ns, before.st_ino) != (
-                after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_ino):
+        if len(raw) > limit or (before.st_size, before.st_mtime_ns, before.st_ino) != (
+                after.st_size, after.st_mtime_ns, after.st_ino):
             raise ValueError("Snapshot input changed while reading")
         return raw
 
@@ -289,42 +277,25 @@ def _scan(root: Path, *, references: bool = False, max_entries: int = MAX_SCAN_E
     started = time.monotonic()
     result: dict[str, Any] = {"bytes": 0, "files": 0, "entries": 0, "categories": {},
                              "complete": True, "errors": [], "references": set(),
-                             "permanent_references": set(), "signatures": [],
-                             "max_depth_seen": 0, "reference_bytes_read": 0,
-                             "configured_caps": {"entries": max_entries, "depth": max_depth,
-                                 "seconds": max_seconds, "reference_bytes": MAX_REFERENCE_BYTES}}
+                             "permanent_references": set(), "signatures": []}
     consumed = 0
-    exhausted = False
 
     def error(detail: str) -> None:
         result["complete"] = False
         if len(result["errors"]) < 16:
             result["errors"].append(detail)
 
-    def counted_read(amount: int) -> None:
-        nonlocal consumed
-        consumed += amount
-        result["reference_bytes_read"] = consumed
-
     def visit(fd: int | Path, prefix: str, depth: int) -> None:
-        nonlocal consumed, exhausted
+        nonlocal consumed
         if depth > max_depth:
             error("depth_limit")
             return
-        result["max_depth_seen"] = max(result["max_depth_seen"], depth)
         before = _ordinary(fd, directory=True) if isinstance(fd, Path) else os.fstat(fd)
         try:
             with os.scandir(fd) as entries:
                 for entry in entries:
-                    if exhausted:
-                        break
-                    if result["entries"] >= max_entries:
-                        error("entry_limit")
-                        exhausted = True
-                        break
-                    if time.monotonic() - started >= max_seconds:
-                        error("time_limit")
-                        exhausted = True
+                    if result["entries"] >= max_entries or time.monotonic() - started >= max_seconds:
+                        error("entry_or_time_limit")
                         break
                     relative = prefix + entry.name
                     result["entries"] += 1
@@ -354,16 +325,13 @@ def _scan(root: Path, *, references: bool = False, max_entries: int = MAX_SCAN_E
                         # reference roots. Selection/controller/context/journal
                         # files are. Immutable snapshot models are scanned too.
                         textual = entry.name.endswith((".json", ".jsonl", ".md", ".txt", ".log", ".html"))
-                        owned_html = not prefix and entry.name.endswith(".html") and bool(PAIR.fullmatch(Path(entry.name).stem))
-                        if references and relative != CATALOG and textual and not owned_html:
+                        owned_html = entry.name.endswith(".html") and bool(PAIR.fullmatch(Path(entry.name).stem))
+                        if references and entry.name != CATALOG and textual and not owned_html:
                             if consumed + info.st_size > MAX_REFERENCE_BYTES:
                                 error("reference_byte_limit")
                                 continue
-                            raw = _read(fd, entry.name, MAX_REFERENCE_BYTES - consumed,
-                                        read_observer=counted_read)
-                            if time.monotonic() - started >= max_seconds:
-                                error("time_limit")
-                                exhausted = True
+                            raw = _read(fd, entry.name, MAX_REFERENCE_BYTES - consumed)
+                            consumed += len(raw)
                             result["signatures"].append((relative, hashlib.sha256(raw).hexdigest()))
                             try:
                                 if entry.name.endswith(".jsonl"):
@@ -381,17 +349,12 @@ def _scan(root: Path, *, references: bool = False, max_entries: int = MAX_SCAN_E
                                     result["permanent_references"].update(found)
                                 if "snapshot-" in text and not PAIR.search(text):
                                     error("unknown_snapshot_reference")
-                            except (RecursionError, MemoryError):
-                                error("reference_resource_limit:" + relative)
                             except (ValueError, UnicodeError):
                                 error("unreadable_reference:" + relative)
                     else:
                         error("link_or_special_file:" + relative)
         except (OSError, ValueError) as exc:
             error(type(exc).__name__ + ":" + prefix)
-        if time.monotonic() - started >= max_seconds:
-            error("time_limit")
-            exhausted = True
         after = _ordinary(fd, directory=True) if isinstance(fd, Path) else os.fstat(fd)
         if before.st_mtime_ns != after.st_mtime_ns:
             error("directory_changed:" + prefix)
@@ -406,11 +369,6 @@ def _scan(root: Path, *, references: bool = False, max_entries: int = MAX_SCAN_E
     result["scanned_at"] = _now()
     result["elapsed_seconds"] = round(time.monotonic() - started, 6)
     result["fingerprint"] = primitives.content_fingerprint(sorted(result.pop("signatures")))
-    result["reference_digest"] = result["fingerprint"]
-    # Fingerprinting is part of the cooperative scan budget too.
-    result["elapsed_seconds"] = time.monotonic() - started
-    if result["elapsed_seconds"] >= max_seconds:
-        error("time_limit")
     return result
 
 
@@ -440,9 +398,7 @@ def inventory(workspace: str | Path, *, max_entries: int = MAX_SCAN_ENTRIES,
             total = value["categories"].get("snapshots", {}).get("bytes", 0)
             totals["legacy_bytes"] = max(0, total - totals["pinned_bytes"] - totals["transient_bytes"])
             value["snapshots"] = {"status": "catalogued", **totals,
-                                  "last_collection": catalog.get("last_collection"),
-                                  "last_admission": catalog.get("last_admission"),
-                                  "capacity_scope": "conditional transient target; required evidence may grow"}
+                                  "last_collection": catalog.get("last_collection")}
     except FileNotFoundError:
         value["snapshots"] = {"status": "legacy", "legacy_bytes": value["categories"].get("snapshots", {}).get("bytes", 0)}
     except (OSError, ValueError, TypeError):
@@ -450,20 +406,12 @@ def inventory(workspace: str | Path, *, max_entries: int = MAX_SCAN_ENTRIES,
     return value
 
 
-def _scan_evidence(scan: dict[str, Any]) -> dict[str, Any]:
-    """JSON-safe observed scan costs, retained for admission/collection audits."""
-    return {key: scan[key] for key in ("complete", "reference_digest", "entries",
-            "max_depth_seen", "reference_bytes_read", "elapsed_seconds", "configured_caps", "errors")}
-
-
 def _collect(fd: int | Path, root: Path, catalog: dict[str, Any], before: dict[str, Any],
              *, max_pairs: int, max_bytes: int, now: float) -> dict[str, Any]:
     result: dict[str, Any] = {"at": _now(), "status": "skipped", "removed_pairs": 0, "removed_bytes": 0}
-    current = _scan(root, references=True)
-    result["reference_scans"] = [_scan_evidence(before), _scan_evidence(current)]
-    result["changed_references"] = before["fingerprint"] != current["fingerprint"]
     if isinstance(fd, Path):
         return {**result, "reason": "Snapshot collection requires no-follow directory operations"}
+    current = _scan(root, references=True)
     if not before["complete"] or not current["complete"] or before["fingerprint"] != current["fingerprint"]:
         result["reason"] = "reference inventory incomplete or changed"
         return result
@@ -479,7 +427,6 @@ def _collect(fd: int | Path, root: Path, catalog: dict[str, Any], before: dict[s
         except (OSError, ValueError):
             result["reason"] = "unknown snapshot reference"
             return result
-    result["capacity_proved"] = True
     protected = referenced | set(catalog["selected"].values())
     for name in current["permanent_references"] & set(pairs):
         if "durable-reference" not in pairs[name]["pins"]:
@@ -489,11 +436,8 @@ def _collect(fd: int | Path, root: Path, catalog: dict[str, Any], before: dict[s
                      or item.get("lease_until", 0) > now)
     eligible = [(name, item) for name, item in pairs.items() if name not in protected]
     eligible.sort(key=lambda row: row[1]["order"])
-    # Protected optional pairs still consume transient capacity. Durable pins
-    # are outside that budget, matching publication admission.
-    transient = [item for item in pairs.values() if not item['pins']]
-    size = sum(f['bytes'] for item in transient for f in item['files'].values())
-    count = len(transient)
+    size = sum(sum(f["bytes"] for f in item["files"].values()) for _, item in eligible)
+    count = len(eligible)
     for name, item in eligible:
         if count <= max_pairs and size <= max_bytes and not item.get("deleting"):
             continue
@@ -519,10 +463,7 @@ def _collect(fd: int | Path, root: Path, catalog: dict[str, Any], before: dict[s
         _save(fd, catalog)
     if result["status"] == "skipped":
         result["status"] = "complete"
-    remaining = [item for name, item in pairs.items() if name not in protected]
-    result.update(eligible_pairs=len(remaining),
-                  eligible_bytes=sum(f['bytes'] for item in remaining for f in item['files'].values()),
-                  transient_pairs=count, transient_bytes=size, protected_pairs=len(protected & set(pairs)))
+    result.update(eligible_pairs=count, eligible_bytes=size, protected_pairs=len(protected & set(pairs)))
     return result
 
 
@@ -530,11 +471,6 @@ def collect(workspace: str | Path, *, max_pairs: int = MAX_PAIRS, max_bytes: int
             now: float | None = None) -> dict[str, Any]:
     root = _root(workspace)
     before = _scan(root, references=True)
-    if not supports_collection():
-        current = _scan(root, references=True)
-        return {"status": "skipped", "reason": "Snapshot collection requires no-follow directory operations",
-                "removed_pairs": 0, "reference_scans": [_scan_evidence(before), _scan_evidence(current)],
-                "changed_references": before["fingerprint"] != current["fingerprint"]}
     try:
         with _locked(root, strict=True) as fd:
             catalog = _catalog(fd, root)
@@ -623,59 +559,11 @@ def final_snapshot_links(workspace: Any, root_id: Any, run: Any,
     return links
 
 
-def _admit(fd: int | Path, root: Path, catalog: dict[str, Any], incoming_bytes: int,
-           *, required: bool) -> dict[str, Any]:
-    """Decide optional capacity under the publication lock before writing bytes.
-
-    Pins/durable references are outside the transient target. Selected, leased
-    and live optional pairs still consume it, even though they cannot be pruned.
-    A small publication needs no absence claim; pressure requires complete scans
-    and enough safely reclaimed space. Required evidence may continue to grow.
-    """
-    def projected() -> tuple[int, int]:
-        transient = [item for item in catalog["pairs"].values() if not item["pins"]]
-        return (len(transient) + (0 if required else 1),
-                sum(f["bytes"] for item in transient for f in item["files"].values())
-                + (0 if required else incoming_bytes))
-
-    count, size = projected()
-    result: dict[str, Any] = {"required": required, "capacity_proved": False,
-        "optional_admitted": False, "projected_pairs": count, "projected_bytes": size,
-        "target_pairs": MAX_PAIRS, "target_bytes": MAX_BYTES,
-        "required_growth_bytes": incoming_bytes if required else 0}
-    if required:
-        result.update(status="required", reason="required evidence preserved; no global durable cap")
-        return result
-    if count > MAX_PAIRS or size > MAX_BYTES:
-        before = _scan(root, references=True)
-        collection = _collect(fd, root, catalog, before,
-            max_pairs=max(0, MAX_PAIRS - 1), max_bytes=max(0, MAX_BYTES - incoming_bytes), now=time.time())
-        catalog["last_collection"] = collection
-        result["collection"] = collection
-        count, size = projected()
-        result.update(projected_pairs=count, projected_bytes=size)
-        if count > MAX_PAIRS or size > MAX_BYTES:
-            result.update(status="refused", reason="transient target exceeded; safe capacity not proved")
-            catalog["last_admission"] = result
-            _save(fd, catalog)
-            raise SnapshotCapacityError(result)
-    result.update(status="admitted", capacity_proved=True, optional_admitted=True,
-                  reason="catalogued transient capacity within target")
-    return result
-
-
 def publish_pair(workspace: str | Path, model: dict[str, Any], document: str, *,
                  target: Path | None = None, select: bool = False, detached: bool = False,
                  older: Callable[[dict[str, Any], dict[str, Any]], bool] | None = None,
                  pin_reason: str | None = None) -> Path:
-    """Admit capacity, then commit immutable bytes before selection; reuse bytes.
-
-    ``pin_reason`` identifies required durable publication and bypasses only the
-    optional transient target, never identity or durability checks.
-    """
-    if pin_reason is not None and (not isinstance(pin_reason, str) or not pin_reason.strip()
-                                   or len(pin_reason) > 1024):
-        raise ValueError("Snapshot pin requires a bounded reason")
+    """Commit immutable bytes before selection and collection; reuse exact bytes."""
     root = _root(workspace)
     root.mkdir(exist_ok=True, mode=0o700)
     target = (target or root / "dashboard.html").absolute()
@@ -706,8 +594,6 @@ def publish_pair(workspace: str | Path, model: dict[str, Any], document: str, *,
             saved_snapshot = snapshot
             raw_model = primitives.canonical_bytes(model, ensure_ascii=True, trailing_newline=True)
             files = {prefix + ".html": document_raw, prefix + ".json": raw_model}
-            catalog["last_admission"] = _admit(fd, root, catalog,
-                sum(map(len, files.values())), required=bool(pin_reason))
             owned = True
             for name, raw in files.items():
                 try:
@@ -757,14 +643,6 @@ def publish_pair(workspace: str | Path, model: dict[str, Any], document: str, *,
                                  "presentation": "generated; opening and visible verification are host observations"}
                     _write(target_fd, selection_name, primitives.canonical_bytes(selection, trailing_newline=True))
                     selected = True
-        if selected and item and pin_reason and pin_reason.startswith('phase/'):
-            # Only the selected current phase view owns this moving pin.
-            # Checkpoint, presentation and external-reference pins are retained.
-            for previous_item in catalog['pairs'].values():
-                if (previous_item is not item
-                        and (previous_item.get('root'), previous_item.get('run')) ==
-                            (item.get('root'), item.get('run'))):
-                    previous_item['pins'] = [pin for pin in previous_item['pins'] if pin != pin_reason]
         if item and not selected and not pin_reason:
             item["active_latest"] = bool(active)
         _save(fd, catalog)

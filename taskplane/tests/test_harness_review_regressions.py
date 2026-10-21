@@ -11,7 +11,6 @@ import pytest
 from taskplane import flow, flow_usage, workflow as w, workflow_local as local
 from taskplane.tests.test_workflow_local import setup, submit, decide, decision, present
 from taskplane.tests.test_workflow_autonomy import authorization, set_policy
-from taskplane.tests.test_native_session_meter import _use_codex_fixture_files
 
 
 def refused(action, reason=None):
@@ -32,7 +31,7 @@ def exercise_correction(root):
         sealed = deepcopy(w.current(s)['packet'])
         write = {'tool_name': 'Write', 'tool_input': {'path': 'product.json'}}
         refused(lambda: c.guard(write, s['run']), 'approval_required')
-        s = decide(c, s, decision(s, text=choice, candidate='changes_requested' if choice=='Changes requested' else 'rejected'))
+        s = decide(c, s, decision(s, text=choice))
         for index in range(2):
             c.guard(write, s['run'])
             data = json.loads((workspace/'product.json').read_text())
@@ -40,7 +39,8 @@ def exercise_correction(root):
             (workspace/'product.json').write_text(json.dumps(data))
             assert not c.report().get('invalidation_pending')
         refused(lambda: c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, s['run']), 'scope_violation')
-        from taskplane.context_handoff import Brief
+        from taskplane.context_handoff import Session, consume_required
+        data['context_receipt'], _ = consume_required(Session(workspace, c.report()))
         (workspace/'product.json').write_text(json.dumps(data))
         command = shlex.join([sys.executable, str(Path(flow.__file__).with_name('tp.py')), 'flow', 'submit',
                               '--workspace', str(workspace), '--output', 'product.json', '--tasks', 'tasks.json',
@@ -131,9 +131,14 @@ def exercise_child_lineage(root):
         assert local.Harness(workspace, 'review-child').read() == {}
         unrelated = {k: v for k, v in child.items() if k not in ('transcript_path', 'parent_session_id')}
         unrelated['thread_id'] = 'unrelated'
-        refused(lambda: flow.hook(unrelated), 'scope_violation')
-        unrelated['tool_input'] = {'path': 'unclaimed.txt'}
         assert flow.hook(unrelated).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
+    # A child-start event without an ID must not attach a finished root to an
+    # unrelated open run through a missing root/child value in older journal rows.
+    rows = [{'kind': 'start', 'run': 'foreign-run', 'session': 'foreign'},
+            {'kind': 'hook', 'event': 'SubagentStart', 'root': 'foreign', 'session': 'foreign'},
+            {'kind': 'start', 'run': 'closed-run', 'session': 'root'},
+            {'kind': 'finish', 'run': 'closed-run', 'session': 'root'}]
+    assert flow.active_run(rows, 'root') is None
     # A native task may itself have been forked, then start its own workflow.
     # Deleting its advisory journal must not redirect that active binding.
     workspace = root/'own-active-run'
@@ -191,7 +196,6 @@ def test_reused_guardian_150_170_becomes_50_20(tmp_path,monkeypatch):
     monkeypatch.setenv('CODEX_HOME',str(home))
     native(sessions/'root.jsonl','root',[(5,100),(15,200),(25,300)])
     native(sessions/'guardian.jsonl','guardian',[(5,100),(15,150),(25,170)],'root',True)
-    _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl', sessions/'guardian.jsonl')
     starts=[dict(kind='start',run='r'+str(i),session='root',at=f'2026-09-01T00:00:{second:02d}Z',
                  usage={'input_tokens':total,'output_tokens':0,'total_tokens':total},usage_status='observed')
             for i,(second,total) in enumerate([(10,100),(20,200)])]
@@ -207,7 +211,6 @@ def test_new_child_boundary_response_is_owned_once(tmp_path,monkeypatch):
     rows=native(sessions/'child.jsonl','child',[(15,50),(20,70)],'root',owned=True)
     rows[0]['payload']['timestamp']='2026-09-01T00:00:12Z'
     (sessions/'child.jsonl').write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
-    _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl', sessions/'child.jsonl')
     starts=[dict(kind='start',run='r'+str(i),session='root',worker_sessions=['child'],at=f'2026-09-01T00:00:{second:02d}Z',
                  usage={'input_tokens':total,'output_tokens':0,'total_tokens':total},usage_status='observed')
             for i,(second,total) in enumerate([(10,100),(20,200)])]
@@ -233,7 +236,6 @@ def test_saved_legacy_guardian_is_not_run_usage(tmp_path,monkeypatch):
 @pytest.mark.parametrize('host', ['codex', 'claude'])
 def test_saved_partial_child_interval_remains_partial_after_native_file_loss(tmp_path, monkeypatch, host):
     run = dict(run='r', session='root', at='2026-09-01T00:00:10Z', worker_sessions=['child'])
-    events = []
     if host == 'codex':
         home = tmp_path/'codex'; sessions = home/'sessions'; sessions.mkdir(parents=True)
         monkeypatch.setenv('CODEX_HOME', str(home))
@@ -241,7 +243,6 @@ def test_saved_partial_child_interval_remains_partial_after_native_file_loss(tmp
         rows = native(child, 'child', [(5,100),(10,150),(15,170)], 'root', owned=True)
         del rows[2]['payload']['usage']
         child.write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
-        _use_codex_fixture_files(monkeypatch, child)
     else:
         from taskplane.tests.test_claude_flow import message, write
         root = tmp_path/'claude/root.jsonl'; write(root, [])
@@ -250,13 +251,12 @@ def test_saved_partial_child_interval_remains_partial_after_native_file_loss(tmp
         del incomplete['message']['usage']['cache_read_input_tokens']
         write(child, [incomplete, message('known', agent='child', at='2026-09-01T00:00:16Z')])
         run.update(host='claude', transcript_path=str(root))
-        events.append(dict(run='r', child='child', agent_transcript_path=str(child)))
-    before = flow_usage.reconcile(run, events)
+    before = flow_usage.reconcile(run, [])
     prior = next(s for s in before['sessions'] if s['session'] == 'child')
     assert prior['status'] == 'partial' and prior['usage'] is not None
     child.unlink()
     for _ in range(2):
-        recovered = flow_usage.reconcile(run, [*events, dict(kind='usage',run='r',measurement=before)])
+        recovered = flow_usage.reconcile(run, [dict(kind='usage',run='r',measurement=before)])
         row = next(s for s in recovered['sessions'] if s['session'] == 'child')
         assert row['usage'] == prior['usage'] and row['status'] == 'partial'
         assert row['recovery_status'] == 'recorded; native counter unavailable'
@@ -283,10 +283,9 @@ def test_child_outcome_does_not_require_usage_counter(tmp_path,monkeypatch):
     monkeypatch.setattr(flow,'observed_parent',lambda *_:'root')
     event=dict(cwd=str(tmp_path),thread_id='child',hook_event_name='PreToolUse',tool_name='Write',call_id='child-denial',tool_input={'path':'app.py'})
     with pytest.raises(w.Refusal): flow.hook(event)
-    from taskplane import live_telemetry
-    value = live_telemetry.read(tmp_path, s)
-    assert 'child' in value['sessions'] and value['outcomes']['denied'] == 1
-    assert value['sessions']['child']['baseline'] is None
+    rows=[r for r in flow.read_events(tmp_path) if r.get('call_id')=='child-denial']
+    assert len(rows)==1 and rows[0]['session']=='child' and rows[0]['outcome']=='denied'
+    assert rows[0]['usage'] is None
 
 
 def test_parent_keyed_hook_uses_only_verified_native_child_environment(monkeypatch):
@@ -311,12 +310,11 @@ def test_denials_early_returns_and_journal_failure_keep_original_decision(tmp_pa
     with pytest.raises(w.Refusal): flow.hook(event,governor=c)
     flow.hook({**event,'tool_name':'Read','call_id':'read'},governor=c)
     flow.hook(dict(cwd=str(tmp_path),thread_id='root',hook_event_name='Stop'),governor=c)
-    from taskplane import live_telemetry
-    value = live_telemetry.read(tmp_path, s)
-    assert value['outcomes']['denied'] == 1 and value['outcomes']['admitted'] == 1
-    assert value['observation_count'] == 3
-    def fail(*args,**kwargs): raise OSError('optional telemetry unavailable')
-    monkeypatch.setattr(live_telemetry,'observe',fail)
+    rows=[r for r in flow.read_events(tmp_path) if r.get('kind')=='hook']
+    assert [(r.get('call_id'),r['outcome']) for r in rows[:2]] == [('deny','denied'),('read','admitted')]
+    assert any(r['event']=='Stop' for r in rows)
+    def fail(*args,**kwargs): raise OSError('optional journal unavailable')
+    monkeypatch.setattr(flow,'append',fail)
     with pytest.raises(w.Refusal,match='outside'): flow.hook(event,governor=c)
 
 
@@ -331,7 +329,7 @@ def test_late_task_publication_is_explicit_run_bound_and_idempotent(tmp_path,mon
     command=['attach','--workspace',str(tmp_path),'--run',s['run'],'--tasks','.taskplane/late-tasks.json','--update-context','--expected-revision',str(s['revision'])]
     assert flow.main(command,governor=c)==0
     capsys.readouterr()
-    assert c.context(s['run'],task='LATE')['brief']['phase']=='product'
+    assert c.context(s['run'],task='LATE')['phase']=='product'
     assert flow.main(command,governor=c)==0
     capsys.readouterr()
     assert c.report()['revision']==s['revision']+1

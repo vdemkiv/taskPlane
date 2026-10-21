@@ -1,9 +1,3 @@
-> **Archived design — not current operational guidance.**
-> This historical proposal predates the compact workflow. Current new runs resume
-> a durable `brief/v1` with `ownership/v1`; they do not replay this document's
-> old loop, receipt, startup or state-store protocols. Use [state ownership](state-spec.md),
-> [context](context-optimization.md) and [the shared flow](../skills/tp-go/references/shared-flow.md).
-
 # Stateless harness integration and legacy Build continuity
 
 This is implementation evidence for the approved R-0001/T19 repair. It is not
