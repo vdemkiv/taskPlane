@@ -40,8 +40,20 @@ def read_member(path: Path) -> bytes:
         return stream.read()
 
 
-def source_identity(members: dict[str, bytes]) -> dict:
-    """Compare the exact archived bytes with one captured commit, not its label."""
+def host_member(name: str, data: bytes, host: str | None) -> bytes:
+    """Apply the single declared host transformation to source or committed bytes."""
+    if host == "openai" and name == "hooks/hooks.json":
+        hooks = json.loads(data)
+        if not isinstance(hooks, dict):
+            raise ValueError("Hook registration must be an object")
+        if "modules" in hooks:
+            del hooks["modules"]
+            return (json.dumps(hooks, indent=2) + "\n").encode("utf-8")
+    return data
+
+
+def source_identity(members: dict[str, bytes], host: str | None = None) -> dict:
+    """Compare archived bytes with a commit, including declared host transforms."""
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
                             capture_output=True, text=True)
     revision = commit.stdout.strip() if commit.returncode == 0 else ""
@@ -57,7 +69,21 @@ def source_identity(members: dict[str, bytes]) -> dict:
                     blobs[name.decode("utf-8", errors="surrogateescape")] = oid.decode()
     comparable = bool(revision and tree is not None and tree.returncode == 0)
     differences = []
+    transforms = []
     for name, data in members.items():
+        if comparable and host == "openai" and name == "hooks/hooks.json" and name in blobs:
+            committed = subprocess.run(["git", "cat-file", "blob", blobs[name]], cwd=ROOT,
+                                       capture_output=True)
+            if committed.returncode == 0:
+                try:
+                    expected = host_member(name, committed.stdout, host)
+                except (ValueError, TypeError):
+                    expected = None
+                if expected is not None and expected != committed.stdout:
+                    transforms.append({"path": name, "operation": "remove-claude-mod-registration"})
+                    if expected != data:
+                        differences.append(name)
+                    continue
         blob = b"blob " + str(len(data)).encode() + b"\0" + data
         digest = hashlib.sha256(blob) if len(revision) == 64 else hashlib.sha1(blob, usedforsecurity=False)
         if blobs.get(name) != digest.hexdigest():
@@ -67,7 +93,8 @@ def source_identity(members: dict[str, bytes]) -> dict:
     return {"source_commit": revision or None,
             "source_dirty": bool(dirty.stdout.strip()) if dirty.returncode == 0 else None,
             "matches_source_commit": not differences if comparable else None,
-            "source_member_differences": sorted(differences) if comparable else None}
+            "source_member_differences": sorted(differences) if comparable else None,
+            "source_transforms": transforms}
 
 
 def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
@@ -107,13 +134,8 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"Package member must be a regular file: {path}")
     members = {path.relative_to(ROOT).as_posix(): read_member(path) for path in sorted(files)}
-    if host == "openai":
-        hooks = json.loads(members["hooks/hooks.json"])
-        if "modules" in hooks:
-            # Codex shares the command guards, but does not load Claude Mods.
-            del hooks["modules"]
-            members["hooks/hooks.json"] = (json.dumps(hooks, indent=2) + "\n").encode("utf-8")
-    identity = source_identity(members)
+    members = {name: host_member(name, data, host) for name, data in members.items()}
+    identity = source_identity(members, host)
     output_dir.mkdir(parents=True, exist_ok=True)
     name = f"taskplane-{version}-openai.zip" if host == "openai" else f"taskplane-{version}.{suffix}"
     target = output_dir / name

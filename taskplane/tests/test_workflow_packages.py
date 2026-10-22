@@ -359,3 +359,30 @@ def test_mod_packages_exclude_generated_tooling_and_are_reproducible(tmp_path, m
         module.symlink_to(ROOT/'mods/taskplane.tsx')
         with pytest.raises(ValueError, match='regular file'):
             package_plugin.package(host, tmp_path/'rejected')
+
+
+def test_package_receipt_verifies_only_declared_codex_transform(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.run(['git', *args], cwd=tmp_path, check=True,
+                              capture_output=True, text=True).stdout.strip()
+    git('init')
+    git('config', 'user.email', 'fixture@example.invalid')
+    git('config', 'user.name', 'Package fixture')
+    source = {'modules': ['../mods/taskplane.tsx'], 'hooks': {'Stop': [{'command': 'guard'}]}}
+    target = tmp_path/'hooks/hooks.json'
+    target.parent.mkdir()
+    target.write_text(json.dumps(source))
+    git('add', 'hooks/hooks.json')
+    git('commit', '-m', 'fixture')
+    monkeypatch.setattr(package_plugin, 'ROOT', tmp_path)
+    shipped = (json.dumps({'hooks': source['hooks']}, indent=2) + '\n').encode()
+    receipt = package_plugin.source_identity({'hooks/hooks.json': shipped}, 'openai')
+    assert receipt['matches_source_commit'] is True
+    assert receipt['source_transforms'] == [
+        {'path': 'hooks/hooks.json', 'operation': 'remove-claude-mod-registration'}]
+    assert package_plugin.source_identity({'hooks/hooks.json': shipped}, 'claude')['matches_source_commit'] is False
+    assert package_plugin.source_identity({'hooks/hooks.json': shipped.replace(b'guard', b'bypass')}, 'openai')['matches_source_commit'] is False
+    # A changed working tree must never become the expected committed baseline.
+    target.write_bytes(shipped.replace(b'guard', b'changed'))
+    assert package_plugin.source_identity({'hooks/hooks.json': target.read_bytes()}, 'openai')['matches_source_commit'] is False
+    assert package_plugin.source_identity({'hooks/hooks.json': shipped}, 'openai')['matches_source_commit'] is True
