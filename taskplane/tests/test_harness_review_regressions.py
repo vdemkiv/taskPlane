@@ -372,3 +372,77 @@ def test_resumed_owned_history_without_prior_baseline_stays_partial(tmp_path):
     result=read_owned_interval([source],'worker',start=start)
     assert result['usage']['total_tokens']==20 and result['status']=='partial'
     assert 'resumed_baseline_unavailable' in result['errors']
+
+
+def test_production_journal_readers_never_use_offline_oracle(tmp_path,monkeypatch,capsys):
+    c,s=setup(tmp_path)
+    flow.append(tmp_path,dict(kind='start',run=s['run'],session='root',phase='product'))
+    before=c.report()
+    def forbidden(*args,**kwargs):
+        raise AssertionError('Production replayed the offline journal oracle')
+    monkeypatch.setattr(flow,'read_events',forbidden)
+    event=dict(cwd=str(tmp_path),thread_id='root',hook_event_name='PreToolUse',
+               tool_name='Write',tool_input={'path':'app.py'},call_id='denial')
+    with pytest.raises(w.Refusal):
+        flow.hook(event,governor=c)
+    model=flow.report(tmp_path,s['run'],governor=c)
+    assert model['workflow']['revision']==before['revision']
+    assert model['hook_outcomes']['denied']==1
+    assert flow.main(['report','--workspace',str(tmp_path),'--run',s['run']],governor=c)==0
+    capsys.readouterr()
+    assert c.report()['revision']==before['revision']
+
+
+def test_cold_journal_cannot_redirect_current_native_report(tmp_path,monkeypatch):
+    from taskplane import flow_journal as journal
+    c,s=setup(tmp_path)
+    flow.append(tmp_path,dict(kind='start',run='old',session='root',phase='product'))
+    flow.append(tmp_path,dict(kind='finish',run='old',session='root'))
+    flow.append(tmp_path,dict(kind='start',run=s['run'],session='root',phase='product'))
+    monkeypatch.setattr(journal,'RECORDS',1)
+    model=flow.report(tmp_path,governor=c)
+    assert model['run']==s['run'] and model['workflow']['run']==s['run']
+    assert model['journal_coverage']['status']=='partial'
+    assert model['tool_calls'] is None
+    assert model['usage_measurement']['status'] != 'fresh'
+    assert c.report()['revision']==s['revision']
+
+
+def test_paged_milestones_do_not_suppress_complete_native_usage(tmp_path,monkeypatch):
+    c,s=setup(tmp_path)
+    flow.append(tmp_path,dict(kind='start',run=s['run'],session='root',phase='product'))
+    path=tmp_path/flow.JOURNAL
+    with path.open('a') as stream:
+        for i in range(300):
+            stream.write(json.dumps(dict(kind='progress',run=s['run'],session='root',phase='product',note=str(i)))+'\n')
+    called=[]
+    def measured(run,rows,state,expected=(),**kwargs):
+        called.append(rows)
+        return dict(tokens={'total_tokens':12345},sessions=[],token_coverage={'status':'complete'})
+    monkeypatch.setattr(flow,'reconcile_usage',measured)
+    flow.report(tmp_path,s['run'],governor=c)
+    result=flow.report(tmp_path,s['run'],governor=c)
+    assert called and result['tokens']=={'total_tokens':12345}
+    assert len(result['milestones'])==256 and result['journal_detail']['partial']
+    assert result['token_coverage']['journal_detail_status']=='partial'
+    assert 'journal_status' not in result['token_coverage']
+
+
+def test_large_report_keeps_native_total_equal_to_small_report(tmp_path,monkeypatch):
+    c,s=setup(tmp_path)
+    home=tmp_path/'native-home'; sessions=home/'sessions'; sessions.mkdir(parents=True)
+    monkeypatch.setenv('CODEX_HOME',str(home))
+    native(sessions/'root.jsonl','root',[(5,100)])
+    baseline=flow.counter(dict(transcript_path=str(sessions/'root.jsonl'),host='codex'),'root')
+    native(sessions/'root.jsonl','root',[(5,100),(15,200),(25,300)])
+    flow.append(tmp_path,dict(kind='start',run=s['run'],session='root',phase='product',
+        at='2026-09-01T00:00:10Z',**baseline))
+    before=flow.report(tmp_path,s['run'],governor=c)
+    assert before['tokens'] and before['tokens']['total_tokens']==200, (before.get('sessions'),before['token_coverage'],before['evidence_errors'])
+    with (tmp_path/flow.JOURNAL).open('a') as stream:
+        for i in range(300):
+            stream.write(json.dumps(dict(kind='progress',run=s['run'],session='root',phase='product',note=str(i)))+'\n')
+    flow.report(tmp_path,s['run'],governor=c)
+    after=flow.report(tmp_path,s['run'],governor=c)
+    assert after['journal_detail']['partial'] and len(after['milestones'])==256
+    assert after['tokens']==before['tokens'] and after['sessions'][0]['usage']==before['sessions'][0]['usage']

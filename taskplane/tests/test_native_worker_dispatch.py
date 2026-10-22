@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import shlex
+from copy import deepcopy
 
 import pytest
 
@@ -107,6 +108,149 @@ def test_historical_name_only_spawn_and_list_status_resolve_actual_uuid(tmp_path
                                            'agent_status':{'completed':'Private result is not retained in lifecycle state'}}]}},s['run'])
     assert c.report()['workers'][row['grant_id']]['state']=='result_pending'
     assert 'Private result' not in json.dumps(c.report()['workers'])
+
+
+@pytest.mark.parametrize('prefix', ['', 'collaboration.', 'functions.collaboration.', 'collaboration'])
+@pytest.mark.parametrize('status_field,status', [
+    ('status', 'errored'),
+    ('agent_status', {'errored': 'Selected model is at capacity. Please try a different model.'}),
+])
+@pytest.mark.parametrize('initial', ['bootstrapping', 'running', 'cancel_requested'])
+def test_codex_errored_closes_live_attempt_as_failure(tmp_path, prefix, status_field, status, initial):
+    c, s = setup(tmp_path)
+    item = reserve(c, s); row = item['grant']; launch(c, s, item)
+    if initial != 'bootstrapping':
+        consume(c, s, row, 'native-0')
+    if initial == 'cancel_requested':
+        c.guard({'tool_name': prefix + 'interrupt_agent', 'tool_input': {'target': 'native-0'}}, s['run'])
+    assert c.report()['workers'][row['grant_id']]['state'] == initial
+    assert not c.adapter.can_seal(c.report())
+    poll = {'hook_event_name': 'PreToolUse', 'tool_name': prefix + 'list_agents',
+            'call_id': 'error-poll', 'tool_input': {}}
+    c.guard(poll, s['run'])
+    response = {'agents': [{'agent_name': '/root/' + row['task_name'], status_field: status}]}
+    event = {**poll, 'hook_event_name': 'PostToolUse', 'tool_response': json.dumps(response)}
+    c.observe(event, s['run'])
+    failed = c.report()['workers'][row['grant_id']]
+    reference = 'error-poll/' + row['grant_id']
+    assert failed['state'] == failed['terminal_status'] == 'failed'
+    assert failed['ended_at'] and failed['events'][reference] == 'failed'
+    errors = [v for v in failed['reconciliation_events'].values() if v['kind'] == 'native_terminal_error']
+    assert [v['value'] for v in errors] == [{'status': 'errored', 'reference': reference}]
+    assert c.adapter.can_seal(c.report())
+    assert not wr.result_valid(tmp_path, c.report(), 'T0')
+    assert 'Selected model' not in json.dumps(failed)  # Lifecycle stores a reference, not arbitrary result text.
+    c.observe(event, s['run'])
+    assert c.report()['workers'][row['grant_id']] == failed
+    next_poll = {**poll, 'call_id': 'error-poll-again'}
+    c.guard(next_poll, s['run'])
+    c.observe({**next_poll, 'hook_event_name': 'PostToolUse', 'tool_response': response}, s['run'])
+    repeated = c.report()['workers'][row['grant_id']]
+    assert repeated['state'] == 'failed' and repeated['ended_at'] == failed['ended_at']
+    assert repeated['events'] == failed['events']
+    assert not c.report().get('task_results')
+
+
+@pytest.mark.parametrize('status', [None, 'unknown', 'error', 'running', {},
+                                    {'errored': 'capacity', 'completed': 'ambiguous'}])
+def test_unknown_or_ambiguous_codex_status_does_not_join(tmp_path, status):
+    c, s = setup(tmp_path); item = reserve(c, s); launch(c, s, item)
+    before = c.report()['workers']
+    c.observe({'hook_event_name': 'PostToolUse', 'tool_name': 'collaboration.list_agents',
+               'tool_response': {'agents': [{'agent_id': 'native-0', 'agent_status': status}]}}, s['run'])
+    assert c.report()['workers'] == before
+    assert not c.adapter.can_seal(c.report())
+
+
+@pytest.mark.parametrize('target', ['foreign-worker', '/foreign/T0', 'root', ''])
+def test_codex_error_for_foreign_identity_does_not_join(tmp_path, target):
+    c, s = setup(tmp_path); item = reserve(c, s); launch(c, s, item)
+    before = c.report()['workers']
+    c.observe({'hook_event_name': 'PostToolUse', 'tool_name': 'list_agents',
+               'tool_response': {'agents': [{'agent_id': target, 'agent_status': {'errored': 'capacity'}}]}}, s['run'])
+    assert c.report()['workers'] == before
+
+
+@pytest.mark.parametrize('prefix', ['evil.', 'evilcollaboration'])
+def test_foreign_status_tool_cannot_close_codex_error(tmp_path, prefix):
+    c, s = setup(tmp_path); item = reserve(c, s); launch(c, s, item)
+    before = c.report()['workers']
+    c.observe({'hook_event_name': 'PostToolUse', 'tool_name': prefix + 'list_agents',
+               'tool_response': {'agents': [{'agent_id': 'native-0', 'status': 'errored'}]}}, s['run'])
+    assert c.report()['workers'] == before
+
+
+@pytest.mark.parametrize('parent', [None, 'foreign'])
+def test_codex_error_cannot_bind_name_without_root_lineage(tmp_path, monkeypatch, parent):
+    c, s = setup(tmp_path); item = reserve(c, s); row = item['grant']
+    home = tmp_path / 'native'; logs = home / 'sessions'; logs.mkdir(parents=True)
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    event = {'tool_name': 'spawn_agent', 'call_id': 'name-only', 'tool_input': {
+        'task_name': row['task_name'], 'message': item['message'], 'fork_turns': 'none'}}
+    c.guard(event, s['run'])
+    metadata(logs / 'foreign.jsonl', {**s, 'root': parent}, row)
+    c.observe({**event, 'hook_event_name': 'PostToolUse',
+               'tool_response': {'task_name': '/root/' + row['task_name']}}, s['run'])
+    before = c.report()['workers']
+    c.observe({'hook_event_name': 'PostToolUse', 'tool_name': 'list_agents', 'tool_response': {
+        'agents': [{'agent_name': '/root/' + row['task_name'], 'agent_status': {'errored': 'capacity'}}]}}, s['run'])
+    assert c.report()['workers'] == before
+    assert before[row['grant_id']]['worker_id'] is None
+
+
+def test_codex_error_preserves_revoked_attempt(tmp_path):
+    c, s = setup(tmp_path); item = reserve(c, s); launch(c, s, item)
+    # Isolated lifecycle fixture represents an already revoked unavailable attempt.
+    state = c.report(); row = state['workers'][item['grant']['grant_id']]
+    row.update(state='failed', terminal_status='unavailable', revoked_at=wr.now())
+    before = deepcopy(row)
+    event = {'hook_event_name': 'PostToolUse', 'tool_name': 'list_agents', 'call_id': 'late-error',
+             'tool_response': {'agents': [{'agent_id': 'native-0', 'status': 'errored'}]}}
+    wr.observe(state, event)
+    assert {k: row[k] for k in before} == before
+    assert not row.get('ended_at')
+    assert {v['kind'] for v in row['reconciliation_events'].values()} == {'native_terminal_error', 'late_terminal'}
+    after = deepcopy(row); wr.observe(state, event)
+    assert row == after
+
+
+def test_codex_error_cannot_accept_and_fresh_retry_ignores_stale_polls(tmp_path):
+    c, s = setup(tmp_path); item = reserve(c, s); launch(c, s, item)
+    consume(c, s, item['grant'], 'native-0')
+    poll = {'hook_event_name': 'PreToolUse', 'tool_name': 'collaboration.list_agents',
+            'call_id': 'old-poll', 'tool_input': {}}
+    c.guard(poll, s['run'])
+    response = {'agents': [{'agent_id': 'native-0', 'agent_status': {'errored': 'capacity'}}]}
+    c.observe({**poll, 'hook_event_name': 'PostToolUse', 'tool_response': response}, s['run'])
+    failed = c.report()['workers'][item['grant']['grant_id']]
+    (tmp_path / 'T0.md').write_text('Fixture result is present even though its worker failed.\n')
+    request = {'outputs': ['T0.md'], 'checks': [{'name': 'Fixture check', 'status': 'pass', 'evidence': 'T0.md'}]}
+    with pytest.raises(w.Refusal, match='not joined'):
+        c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0',
+                 grant=item['grant']['grant_id'], request=request)
+    assert not wr.result_valid(tmp_path, c.report(), 'T0')
+    with pytest.raises(w.Refusal, match='prerequisites'):
+        reserve(c, s, task='DEP')
+    retry = reserve(c, s, worker_id='native-0', retry_reason='Native capacity failure; retry as a fresh attempt.')
+    dispatch = {'tool_name': 'followup_task', 'call_id': 'retry-call', 'tool_input': {
+        'target': 'native-0', 'message': retry['message']}}
+    c.guard(dispatch, s['run'])
+    c.observe({**dispatch, 'hook_event_name': 'PostToolUse', 'tool_response': {}}, s['run'])
+    consume(c, s, retry['grant'], 'native-0')
+    before = c.report()['workers']
+    c.observe({**poll, 'hook_event_name': 'PostToolUse', 'tool_response': response}, s['run'])
+    c.observe({**poll, 'call_id': 'uncorrelated', 'hook_event_name': 'PostToolUse', 'tool_response': response}, s['run'])
+    assert c.report()['workers'] == before
+    assert before[retry['grant']['grant_id']]['state'] == 'running'
+    fresh = {**poll, 'call_id': 'fresh-poll'}
+    c.guard(fresh, s['run'])
+    c.observe({**fresh, 'hook_event_name': 'PostToolUse',
+               'tool_response': {'agents': [{'agent_id': 'native-0', 'status': 'completed'}]}}, s['run'])
+    result = c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0',
+                      grant=retry['grant']['grant_id'], request=request)
+    assert result['grant'] == retry['grant']['grant_id'] != item['grant']['grant_id']
+    assert wr.result_valid(tmp_path, c.report(), 'T0')
+    assert c.report()['workers'][item['grant']['grant_id']] == failed
 
 
 @requires_native_reader

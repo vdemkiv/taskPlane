@@ -462,6 +462,10 @@ class Controller:
             s.update(goal=str(authorized.get("goal", request.get("goal", ""))),
                      started_at=datetime.now(timezone.utc).isoformat(), profile=self.adapter.profile,
                      initial_context_tasks=self._initial_tasks(request, authorized["scope"]))
+            if request.get('initial_journal_observation') == 'cli-start/v1':
+                # Commit before optional journal I/O. A lost first observation
+                # stays unavailable; a retry cannot invent a newer baseline.
+                s['initial_journal_observation'] = 'cli-start/v1'
             self.adapter.state_created(s, authorized)
             if contract:
                 s["workspace_contract"] = {k: contract[k] for k in ("project_id", "digest")}
@@ -479,11 +483,14 @@ class Controller:
             db["runs"][s["run"]] = s
             db["active"] = s["run"]
             self._write(target, db)
-            return self._started_result(s)
+            return self._started_result(s, created=True)
 
-    def _started_result(self, state: dict[str, Any]) -> dict[str, Any]:
+    def _started_result(self, state: dict[str, Any], *, created: bool = False) -> dict[str, Any]:
         """Bind setup observations under the store lock after the run is durable."""
         result = deepcopy(state)
+        # Return-only discriminator from the locked authoritative start. A cold
+        # advisory index cannot establish whether this invocation created a run.
+        result['start_created'] = created
         if self.adapter.profile == "native_workflow":
             try:
                 workflow_local.Harness(self.workspace, self.root).bind(state)
@@ -799,17 +806,19 @@ class Controller:
         """Resolve an actor only through exact admitted native launch evidence."""
         from . import worker_runtime as workers
         from .context_handoff import binding
+        from .claude_invocation import completion_matches
         target = self._path()
         with primitives.file_lock(str(target)):
             db = self._read(target)
             # A late post-hook may close its admitted observation after replacement;
             # it receives no execution grant from the historical worker identity.
-            if event.get('hook_event_name') == 'PostToolUse':
+            if event.get('hook_event_name') in {'PostToolUse', 'PostToolUseFailure'}:
                 call = event.get('tool_use_id') or event.get('call_id')
                 matches = [row for row in db.get('admissions', {}).values()
                            if row.get('principal') == actor and row.get('call_id') == call
                            and row.get('tool') == (event.get('tool_name') or event.get('tool'))
-                           and row.get('input_digest') == primitives.content_fingerprint(event.get('tool_input', {}))]
+                           and completion_matches(
+                               row, {'input_digest': primitives.content_fingerprint(event.get('tool_input', {}))})]
                 if len(matches) == 1:
                     return actor
             w.require(db["active"], "scope_violation", "Claude child has no active parent run.")
@@ -952,7 +961,8 @@ class Controller:
             row = db.get("admissions", {}).get(key)
             if row is None:
                 return None
-            w.require(all(row.get(k) == v for k, v in identity.items()),
+            from .claude_invocation import completion_matches
+            w.require(completion_matches(row, identity),
                       "scope_violation", "Completion conflicts with admitted tool call.")
             if row["state"] == "completed":
                 return cast(dict[str, Any], deepcopy(row))

@@ -5,12 +5,11 @@ records repeat message usage; count each API message once, not each JSONL row.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-import json
+from datetime import datetime
 import os
 from pathlib import Path
 import shlex
-from typing import Any
+from typing import Any, Iterator
 
 if __package__:
     from .spend import normalize_usage as _package_normalize
@@ -53,124 +52,105 @@ def bind_session(event: dict[str, Any]) -> None:
 
 
 def transcript(session: str, event: dict[str, Any]) -> Path | None:
-    explicit = event.get('transcript_path') or event.get('transcript')
-    if not explicit and session == os.environ.get('TASKPLANE_CLAUDE_SESSION_ID'):
-        explicit = os.environ.get('TASKPLANE_CLAUDE_TRANSCRIPT')
-    if explicit:
-        return Path(explicit).expanduser()
-    if session == 'local' or Path(session).name != session:
-        return None
-    home = Path(os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude')))
-    paths = list((home / 'projects').glob(f'*/{session}.jsonl'))
-    return paths[0] if len(paths) == 1 else None
+    with action_budget() as budget:
+        explicit = event.get('transcript_path') or event.get('transcript')
+        if not explicit and session == os.environ.get('TASKPLANE_CLAUDE_SESSION_ID'):
+            explicit = os.environ.get('TASKPLANE_CLAUDE_TRANSCRIPT')
+        if explicit:
+            return Path(explicit).expanduser()
+        if session == 'local' or Path(session).name != session:
+            return None
+        home = Path(os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude')))
+        found = None
+        for entry in _entries(home / 'projects', budget):
+            if entry.is_dir(follow_symlinks=False):
+                candidate = Path(entry.path) / (session + '.jsonl')
+                if candidate.is_file():
+                    if found is not None:
+                        return None
+                    found = candidate
+        # A partial inventory cannot establish unique native identity.
+        return None if budget.discovery_incomplete else found
 
 
-def read_snapshot(path: Path, session: str, *, agent: str | None = None,
-                  cutoff: float | None = None, start: float | None = None) -> dict[str, Any]:
-    messages: dict[str, list[tuple[float | None, dict[str, int] | None]]] = {}
-    errors: set[str] = set()
-    started = None
-    matched = False
-    with path.open(encoding='utf-8') as stream:
-        for line in stream:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue  # A final line can still be in flight.
-            if not isinstance(row, dict) or row.get('sessionId') != session:
-                continue
-            if agent and row.get('agentId') != agent:
-                continue
-            if not agent and (row.get('agentId') or row.get('isSidechain')):
-                continue
-            at = timestamp(row.get('timestamp'))
-            matched = True
-            if at is not None:
-                started = at if started is None else min(started, at)
-            message = row.get('message')
-            if row.get('type') != 'assistant' or not isinstance(message, dict):
-                continue
-            key = message.get('id') or row.get('requestId')
-            if not key or message.get('model') == '<synthetic>':
-                continue
-            if at is None and (cutoff is not None or start is not None):
-                errors.add('missing_message_timestamp')
-                continue
-            if cutoff is not None and at is not None and at >= cutoff:
-                continue
-            raw_usage = message.get('usage')
-            usage = normalize_usage(raw_usage if isinstance(raw_usage, dict) else {}, provider='claude')
-            if not usage['available']:
-                messages.setdefault(key, []).append((at, None))
-                continue
-            # Cache writes are uncached input in the shared host-neutral view.
-            uncached = usage['uncached_input_tokens'] + usage['cache_creation_tokens']
-            value = {'input_tokens': uncached + usage['cached_input_tokens'],
-                     'cached_input_tokens': usage['cached_input_tokens'],
-                     'uncached_input_tokens': uncached,
-                     'output_tokens': usage['output_tokens'],
-                     'reasoning_tokens': usage['reasoning_tokens'],
-                     'total_tokens': usage['raw_total_tokens']}
-            messages.setdefault(key, []).append((at, value))
-    if not matched:
-        raise ValueError('Claude session identity unavailable')
-    measured = []
-    active = False
-    for records in messages.values():
-        # Stable order preserves streamed rows sharing a native timestamp.
-        records.sort(key=lambda row: row[0] if row[0] is not None else float('-inf'))
-        present = [value for _, value in records if value is not None]
-        if any(any(b[k] < a[k] for k in USAGE_KEYS) for a, b in zip(present, present[1:])):
-            errors.add('counter_decreased')
-            continue
-        end_value = records[-1][1]
-        if start is None:
-            active = True
-            if end_value is None:
-                errors.add('missing_message_usage')
-            else:
-                measured.append(end_value)
-            continue
-        owned = [(at, value) for at, value in records if at is not None and at >= start]
-        active = active or bool(owned)
-        if not owned:
-            continue
-        prior = [value for at, value in records if at is not None and at < start]
-        baseline = prior[-1] if prior else dict.fromkeys(USAGE_KEYS, 0)
-        if baseline is None or end_value is None:
-            errors.add('missing_message_boundary')
-            continue
-        measured.append({k: end_value[k] - baseline[k] for k in USAGE_KEYS})
-    total = ({key: sum(m[key] for m in measured) for key in USAGE_KEYS}
-             if measured or (start is not None and not errors) else None)
-    sample_times = [at for records in messages.values() for at, value in records if at is not None and value is not None]
-    return {'usage': total, 'started': started,
-            'measured_at': datetime.fromtimestamp(max(sample_times), timezone.utc).isoformat() if sample_times else None,
-            'interval': {'start': start, 'end_exclusive': cutoff},
-            'partial': bool(errors), 'errors': sorted(errors), 'active': active}
+# Shared across nested counter/report/session readers for one public action.
+from taskplane.claude_usage_cache import action_budget as action_budget, read_snapshot as read_snapshot
+from taskplane import claude_usage_cache as _cache
 
 
-def sessions(run: dict[str, Any], events: list[dict[str, Any]],
+def _entries(directory: Path, budget: _cache.Budget) -> Iterator[os.DirEntry[str]]:
+    """Bound directory enumeration itself, including nonmatching entries."""
+    try:
+        with os.scandir(directory) as entries:
+            while budget.entries < budget.max_entries:
+                try:
+                    entry = next(entries)
+                except StopIteration:
+                    return
+                budget.take('entries')
+                yield entry
+            # No extra entry is consumed to prove exhaustion. Conservatively
+            # report incomplete when the last allowed slot is occupied.
+            budget.discovery_incomplete = True
+    except FileNotFoundError:
+        return
+    except OSError:
+        budget.discovery_incomplete = True
+        return
+
+
+def _sessions(run: dict[str, Any], events: list[dict[str, Any]],
              cutoff: float | None) -> tuple[list[dict[str, Any]], int]:
     root = run['session']
     path = transcript(root, run)
     candidates: dict[str, Path | None] = {root: path}
-    observed = set(run.get('worker_sessions', []))
-    if path:
-        for child in path.with_suffix('').glob('subagents/agent-*.jsonl'):
-            candidates[child.stem.removeprefix('agent-')] = child
+    budget = _cache._CURRENT.get()
+    assert budget is not None
+    observed = set()
+    page = _cache.rotation(path, root + '/participants', budget) if path else 0
+    workers = run.get('worker_sessions', [])
+    # Supplied inventories are already in memory: indexed slices can advance
+    # across actions without walking an unbounded prefix to reach the next page.
+    available = budget.max_entries - budget.entries
+    worker_limit = min(len(workers), available // 2 if events else available)
+    if len(workers) > worker_limit:
+        budget.discovery_incomplete = True
+    worker_start = (page * max(1, worker_limit)) % len(workers) if workers else 0
+    for index in range(worker_limit):
+        budget.take('entries')
+        sid = workers[(worker_start + index) % len(workers)]
+        observed.add(sid)
+        if path:
+            candidates[sid] = path.with_suffix('') / 'subagents' / ('agent-' + sid + '.jsonl')
     # SubagentStop supplies the authoritative path, including host variations.
-    for event in events:
+    event_limit = min(len(events), budget.max_entries - budget.entries)
+    if len(events) > event_limit:
+        budget.discovery_incomplete = True
+    event_start = (page * max(1, event_limit)) % len(events) if events else 0
+    # Preserve chronological last-path-wins within this bounded page.
+    event_indexes = sorted((event_start + i) % len(events) for i in range(event_limit))
+    for index in event_indexes:
+        budget.take('entries')
+        event = events[index]
         if event.get('run') == run['run'] and event.get('child'):
             child = event['child']
             observed.add(child)
             candidates.setdefault(child, None)
             if event.get('agent_transcript_path'):
                 candidates[child] = Path(event['agent_transcript_path']).expanduser()
+    if path:
+        for entry in _entries(path.with_suffix('') / 'subagents', budget):
+            if entry.name.startswith('agent-') and entry.name.endswith('.jsonl') and entry.is_file(follow_symlinks=False):
+                child = Path(entry.path)
+                candidates.setdefault(child.stem.removeprefix('agent-'), child)
     result = []
-    errors = 0
+    errors = int(budget.discovery_incomplete)
     started = timestamp(run.get('at'))
-    for sid, source in candidates.items():
+    ordered = list(candidates.items())
+    if path and len(ordered) > 1:
+        shift = _cache.rotation(path, root, budget) % len(ordered)
+        ordered = ordered[shift:] + ordered[:shift]
+    for sid, source in ordered:
         snapshot: dict[str, Any] = {}
         try:
             if source:
@@ -178,7 +158,7 @@ def sessions(run: dict[str, Any], events: list[dict[str, Any]],
         except (OSError, ValueError):
             errors += 1
         born = snapshot.get('started')
-        if sid != root and born is not None and cutoff is not None and born >= cutoff:
+        if sid != root and born is not None and cutoff is not None and born >= cutoff and not snapshot.get('partial'):
             continue
         native = snapshot.get('usage')
         baseline = starting_baseline(run) if sid == root else {}
@@ -214,4 +194,11 @@ def sessions(run: dict[str, Any], events: list[dict[str, Any]],
                        'basis': 'start baseline' if sid == root else 'owned message interval [start, end)',
                        'attribution_schema': 'taskplane.owned-interval/v1' if sid != root else None,
                        'interval': {'start': started, 'end_exclusive': cutoff} if sid != root else None})
+    result.sort(key=lambda item: item['session'] != root)
     return result, errors
+
+
+def sessions(run: dict[str, Any], events: list[dict[str, Any]],
+             cutoff: float | None) -> tuple[list[dict[str, Any]], int]:
+    with action_budget(run.get('workspace')):
+        return _sessions(run, events, cutoff)
