@@ -1116,6 +1116,10 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--profile", choices=["native_workflow", "protected_host"], default="native_workflow")
     parser.add_argument("--scope", help="Exact phase scope JSON for native workflow start")
     parser.add_argument("--request-reference", default="", help="Reference to the actual user request")
+    parser.add_argument("--mods", action="store_true", help="Complete versioned Claude Mod snapshot")
+    parser.add_argument("--mods-generation", type=int, default=0, help="Client selection generation")
+    parser.add_argument("--mods-preview", action="store_true", help="Read-only Mod preview; refuses mutation")
+    parser.add_argument("--mods-request-json", help="Strict observed-UI prepare, record_ui or receipt request")
     parser.add_argument("--decision-json", default="", help="Observed decision envelope; never host authentication")
     parser.add_argument("--policy-json", default="", help="Observed user policy envelope; never host authentication")
     parser.add_argument("--presentation", choices=["linked", "verified", "blocked"])
@@ -1146,6 +1150,12 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         parser.error("worker options apply only to flow worker")
     if (args.section is not None or args.page is not None) and args.read is None:
         parser.error("--section and --page require --read")
+    if args.mods and args.action != "report":
+        parser.error("--mods applies only to report")
+    if args.mods_request_json is not None and (args.action != "decide" or args.decision_json or args.native_event):
+        parser.error("--mods-request-json is exclusive to observed Mod decisions")
+    if (args.mods_preview or args.mods_generation) and not (args.mods or args.mods_request_json is not None):
+        parser.error("Mod options require a Mod snapshot or request")
     workspace = Path(args.workspace or os.getcwd()).resolve()
     workspace_validated = False
     protected: dict[str, Any] = {}
@@ -1219,6 +1229,23 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         if controller.principal != controller.root:
             workflow.require(args.action == "context" or args.action == "worker" and args.operation == "claim",
                              "scope_violation", "Worker CLI is limited to claim and scoped context.")
+        if args.mods or args.mods_request_json is not None:
+            if controller.principal != controller.root:
+                from .worker_runtime import find
+                workflow.require(find(protected, controller.principal) is None,
+                                 "scope_violation", "Worker CLI is limited to claim and scoped context.")
+            from . import claude_mods
+            if args.mods:
+                response = claude_mods.snapshot(workspace, args.run, controller,
+                    generation=args.mods_generation, preview=args.mods_preview)
+            else:
+                request = claude_mods.read_request(args.mods_request_json)
+                if args.run and request.get("binding"):
+                    workflow.require(args.run == request["binding"]["run"],
+                                     "decision_binding", "CLI run differs from displayed binding.")
+                response = claude_mods.decide(controller, request, preview=args.mods_preview, run_id=args.run)
+            print(json.dumps(response, ensure_ascii=False))
+            return 0
         if args.action in {"inspect", "prevalidate"}:
             workflow.require(args.run, "invalid_evidence", "Select the exact run for recovery inspection.")
             recovery_read = (controller.inspect(args.run, args.kind or "", args.reference or "",

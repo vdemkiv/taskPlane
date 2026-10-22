@@ -907,3 +907,18 @@ Exact setup/control command handles are recorded when the host reports them runn
 including before the first run. Empty stdin polls and Ctrl-C can drain those current
 handles across startup; executable input, terminal/foreign/stale handles are refused.
 Known running handles block sealing. Unobserved host processes remain unknown.
+
+
+## Claude Mods interface
+
+Claude hosts supporting Mods load `mods/taskplane.tsx` through `hooks/hooks.json`.
+`flow report --mods --workspace PATH [--run RUN] [--mods-generation N]` returns the
+versioned complete selected-run snapshot, separate run/context usage, evidence,
+checkpoint binding and capabilities. Missing measurements remain unknown.
+`flow decide --mods-request-json JSON` accepts the bounded `prepare`, `record_ui`
+and `receipt` operations documented in [Claude Mods](claude-mods.md). Preparation
+and opening a pane never approve. Only an explicit confirmed control can record
+the immutable choice and comment against the exact displayed binding. Preview
+(`--mods-preview`) cannot submit a decision. Existing 2.31.7 owner/session and
+host permission restrictions remain authoritative; foreign-session CLI reads
+are refused. Unsupported hosts use the existing dashboard and conversation flow.

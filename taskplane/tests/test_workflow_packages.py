@@ -68,7 +68,12 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
         assert set(sidecar['member_sha256']) == set(archive.namelist())
         for name in archive.namelist():
             assert not Path(name).is_absolute() and '..' not in Path(name).parts
-            assert archive.read(name) == (ROOT/name).read_bytes(), name
+            expected_bytes = (ROOT/name).read_bytes()
+            if host == "openai" and name == "hooks/hooks.json":
+                expected_hooks = json.loads(expected_bytes)
+                expected_hooks.pop("modules", None)
+                expected_bytes = (json.dumps(expected_hooks, indent=2) + "\n").encode()
+            assert archive.read(name) == expected_bytes, name
             assert sidecar['member_sha256'][name] == hashlib.sha256(archive.read(name)).hexdigest()
         for link in re.findall(r'!?\[[^\]]*\]\(([^)]+)\)', archive.read('README.md').decode()):
             path = link.split('#', 1)[0]
@@ -81,6 +86,14 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
         dispatch = archive.read('skills/tp-go/references/codex-native-dispatch.md').decode()
         assert 'operation prepare' in dispatch and 'minimum live acceptance test' in dispatch
         assert 'hooks/hooks.json' in archive.namelist()
+        hooks = json.loads(archive.read('hooks/hooks.json'))
+        assert hooks['hooks'] == json.loads((ROOT/'hooks/hooks.json').read_text())['hooks']
+        assert ('mods/taskplane.tsx' in archive.namelist()) == (host == 'claude')
+        assert ('docs/claude-mods.md' in archive.namelist()) == (host == 'claude')
+        if host == 'claude':
+            assert hooks['modules'] == ['../mods/taskplane.tsx']
+        else:
+            assert 'modules' not in hooks
         archive.extractall(extracted)
     # The ordinary shipped profile must work without the protected fixture.
     exercise((tmp_path/(host+'-native')).resolve(), 'claude' if host=='claude' else 'codex', root=extracted)
@@ -317,3 +330,59 @@ def test_native_default_instruction_contract():
         assert 'returned `next_action`' in text and 'Only the root verifies' in text, name
         assert 'When authorized, use the installed native dispatch protocol' not in text, name
     assert 'Native worker dispatch remains unsupported by the current cooperative adapter' not in (ROOT/'docs/cli-reference.md').read_text()
+
+
+@pytest.mark.parametrize("host", ["openai", "claude"])
+def test_mod_packages_exclude_generated_tooling_and_are_reproducible(tmp_path, monkeypatch, host):
+    import shutil
+    staged = tmp_path/'source'
+    # Stage independently selected source directories, excluding local runtime state.
+    for directory in ('.claude-plugin', '.codex-plugin', 'hooks', 'assets', 'skills', 'agents', 'lenses', 'taskplane', 'docs', 'mods'):
+        shutil.copytree(ROOT/directory, staged/directory, ignore=shutil.ignore_patterns('__pycache__', 'node_modules'))
+    for name in ('README.md', 'CHANGELOG.md', 'LICENSE', 'PRIVACY.md', 'TERMS.md'):
+        shutil.copyfile(ROOT/name, staged/name)
+    generated = ['.claude-plugin/types/claude-code/index.d.ts', '.codex-plugin/types/generated.json',
+                 'hooks/node_modules/test/index.js', 'hooks/generated.d.ts', 'mods/extra.tsx',
+                 'mods/node_modules/typescript/lib/typescript.js', 'mods/tsconfig.tsbuildinfo']
+    for name in generated:
+        p = staged/name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('must not ship')
+    monkeypatch.setattr(package_plugin, 'ROOT', staged)
+    first = package_plugin.package(host, tmp_path/'first')
+    second = package_plugin.package(host, tmp_path/'second')
+    assert first['sha256'] == second['sha256']
+    assert not set(generated) & first['member_sha256'].keys()
+    if host == 'claude':
+        module = staged/'mods/taskplane.tsx'
+        module.unlink()
+        module.symlink_to(ROOT/'mods/taskplane.tsx')
+        with pytest.raises(ValueError, match='regular file'):
+            package_plugin.package(host, tmp_path/'rejected')
+
+
+def test_package_receipt_verifies_only_declared_codex_transform(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.run(['git', *args], cwd=tmp_path, check=True,
+                              capture_output=True, text=True).stdout.strip()
+    git('init')
+    git('config', 'user.email', 'fixture@example.invalid')
+    git('config', 'user.name', 'Package fixture')
+    source = {'modules': ['../mods/taskplane.tsx'], 'hooks': {'Stop': [{'command': 'guard'}]}}
+    target = tmp_path/'hooks/hooks.json'
+    target.parent.mkdir()
+    target.write_text(json.dumps(source))
+    git('add', 'hooks/hooks.json')
+    git('commit', '-m', 'fixture')
+    monkeypatch.setattr(package_plugin, 'ROOT', tmp_path)
+    shipped = (json.dumps({'hooks': source['hooks']}, indent=2) + '\n').encode()
+    receipt = package_plugin.source_identity({'hooks/hooks.json': shipped}, 'openai')
+    assert receipt['matches_source_commit'] is True
+    assert receipt['source_transforms'] == [
+        {'path': 'hooks/hooks.json', 'operation': 'remove-claude-mod-registration'}]
+    assert package_plugin.source_identity({'hooks/hooks.json': shipped}, 'claude')['matches_source_commit'] is False
+    assert package_plugin.source_identity({'hooks/hooks.json': shipped.replace(b'guard', b'bypass')}, 'openai')['matches_source_commit'] is False
+    # A changed working tree must never become the expected committed baseline.
+    target.write_bytes(shipped.replace(b'guard', b'changed'))
+    assert package_plugin.source_identity({'hooks/hooks.json': target.read_bytes()}, 'openai')['matches_source_commit'] is False
+    assert package_plugin.source_identity({'hooks/hooks.json': shipped}, 'openai')['matches_source_commit'] is True
