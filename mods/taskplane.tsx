@@ -6,7 +6,7 @@ export type Binding = Readonly<{
   checkpoint: string; manifest_digest: string; scope_digest: string;
 }>;
 type RecordData = Record<string, unknown>;
-export type Finding = RecordData & { id: string; title?: string; sources?: RecordData[] };
+export type Finding = RecordData & { id: string; origin_run?: string; title?: string; sources?: RecordData[] };
 export type Snapshot = {
   schema: 'taskplane.claude-mods-snapshot/v1';
   selection: { workspace: string; root: string; run: string | null; generation: number };
@@ -30,6 +30,7 @@ const PANE = 'taskplane-checkpoint';
 const REQUEST = 'taskplane.claude-mods-request/v1';
 const display = (value: unknown): string => value === undefined || value === null ? 'Unknown' : typeof value === 'string' ? value : JSON.stringify(value);
 const bindingKey = (binding: Binding | null | undefined): string => binding ? JSON.stringify([binding.workspace,binding.root,binding.run,binding.revision,binding.visit,binding.checkpoint,binding.manifest_digest,binding.scope_digest]) : '';
+const findingKey = (finding: Finding): string => JSON.stringify([finding.origin_run ?? null, finding.id]);
 const percent = (value: number | undefined) => value === undefined ? 'Unknown' : `${value}%`;
 const runTokens = (s?: Snapshot) => display(s?.run_usage.tokens?.total_tokens);
 const coverage = (s?: Snapshot) => { const c = s?.run_usage.coverage; if (!c || typeof c !== 'object') return display(c); const v = c as RecordData; return Number(v.unmeasured_sessions) > 0 || Number(v.partial_sessions) > 0 ? 'Partial coverage' : typeof v.measured_sessions === 'number' && v.measured_sessions > 0 ? `${v.measured_sessions} measured sessions` : 'Unknown coverage'; };
@@ -117,7 +118,7 @@ export class Coordinator {
         this.stale = !this.confirmed || this.now - this.confirmed >= 5000;
         if (!run && s.selection.run) { this.run = this.runInput = s.selection.run; await this.persist(); }
         if (generation !== this.generation) { this.queued = true; continue; }
-        if (!this.finding && s.findings?.length) this.finding = s.findings[0]?.id;
+        if (!this.finding && s.findings?.length) this.finding = findingKey(s.findings[0]!);
         if (this.stale) this.message = 'Stale — controller confirmation is old or invalid';
         else if (!this.pending) this.message = s.status === 'ready' ? 'Fresh' : s.status === 'no_run' ? 'No selected run' : 'Selected run unavailable';
       } catch (error) {
@@ -205,11 +206,11 @@ export class Coordinator {
     else { this.pending = undefined; this.message = 'Confirmation cancelled; draft retained'; }
     this.io.changed(); return this.persist();
   }
-  pick(id: string) { this.finding = id; this.page = 0; this.io.changed(); }
+  pick(key: string) { this.finding = key; this.page = 0; this.io.changed(); }
   move(delta: number) {
-    const items = this.snapshot?.findings ?? [], index = items.findIndex(x => x.id === this.finding);
+    const items = this.snapshot?.findings ?? [], index = items.findIndex(x => findingKey(x) === this.finding);
     const next = items[Math.max(0, Math.min(items.length - 1, index + delta))];
-    if (next) this.pick(next.id);
+    if (next) this.pick(findingKey(next));
   }
 }
 function validReceipt(receipt: RecordData | undefined, attempt: Pending): boolean {
@@ -306,8 +307,8 @@ export const register: Register = (on, options) => {
     if (!c) return <Text>Taskplane is loading. Use .taskplane/dashboard.html if host startup is unavailable.</Text>;
     const attempt = c.pending;
     const reason = c.eligibility(binding);
-    const finding = s?.findings?.find(x => x.id === c.finding);
-    const index = s?.findings?.findIndex(x => x.id === c.finding) ?? -1;
+    const finding = s?.findings?.find(x => findingKey(x) === c.finding);
+    const index = s?.findings?.findIndex(x => findingKey(x) === c.finding) ?? -1;
     const content = finding ? c.view === 'finding' ? lines(Object.fromEntries(Object.entries(finding).filter(([key]) => key !== 'sources' && key !== 'checks'))) : c.view === 'source' ? (finding.sources?.length ? finding.sources.map(source => `${lines(Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'text')))}\n${source.status === 'available' ? display(source.text ?? 'Evidence body unavailable') : 'Evidence unavailable'}${source.truncated ? '\n[Controller excerpt truncated]' : ''}`).join('\n\n') : 'Source evidence unavailable') : `Current checks\n${lines(s?.current_checks)}\nFinding verification / historical records\n${lines(finding.checks ?? finding.verification)}` : '';
     const previousDrafts = Object.entries(c.drafts).filter(([key,text]) => key !== bindingKey(binding) && text.length > 0);
     const oldDraft = previousDrafts.find(([key]) => key === c.historyKey) ?? previousDrafts.at(-1);
@@ -353,7 +354,7 @@ export const register: Register = (on, options) => {
       </Box> : null}
       <Text bold>Evidence browser</Text>
       {s?.status !== 'ready' || !s.findings ? <Text>Findings unavailable</Text> : s.findings.length === 0 ? <Text>No findings recorded</Text> : <Box flexDirection="column">
-        <Select key="finding-number" label="Numbered findings" value={finding?.id} options={s.findings.map((f,i) => ({ value: f.id, label: `${i+1}. ${f.title ?? f.id}` }))} onSelect={id => c.pick(id)} />
+        <Select key="finding-number" label="Numbered findings" value={c.finding} options={s.findings.map((f,i) => ({ value: findingKey(f), label: `${i+1}. ${f.title ?? f.id}` }))} onSelect={id => c.pick(id)} />
         <Box flexDirection={e.props.bodyColumns < 72 ? 'column' : 'row'} flexWrap="wrap">
           <Button key="previous" label="Previous finding" onPress={() => c.move(-1)} />
           <Button key="next" label="Next finding" onPress={() => c.move(1)} />

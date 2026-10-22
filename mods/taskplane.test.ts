@@ -3,6 +3,7 @@ import type { On, RenderElement, RenderPropsOf } from 'claude-code';
 import { Coordinator } from './taskplane';
 import type { Binding, Snapshot } from './taskplane';
 
+const findingSelection = (id: string, origin: string | null = null) => JSON.stringify([origin, id]);
 const binding: Binding = { workspace: '/fixture', root: 'session-1', run: 'run-1', revision: 7, visit: 'visit-1', checkpoint: 'checkpoint-1', manifest_digest: 'evidence-1', scope_digest: 'scope-1' };
 const snapshot = (generation = 0, run = 'run-1'): Snapshot => ({
   schema: 'taskplane.claude-mods-snapshot/v1', selection: { workspace: '/fixture', root: 'session-1', run, generation }, status: 'ready', identity: { ...binding, run }, phase: 'build', work: 'complete', decision: 'pending', revision: 7, packet_revision: 6,
@@ -174,11 +175,11 @@ test('drafts are checkpoint scoped and oversize input is never truncated or subm
 });
 
 test('stable finding selection survives reorder and reports removal without choosing a neighbor', async () => {
-  const f = fixture(); await f.c.restore(undefined); f.c.pick('F-12');
+  const f = fixture(); await f.c.restore(undefined); f.c.pick(findingSelection('F-12'));
   f.io.report = async (_,generation) => ({ ...snapshot(generation), findings: snapshot().findings!.toReversed() });
-  await f.c.refresh(); expect(f.c.finding).toBe('F-12');
+  await f.c.refresh(); expect(f.c.finding).toBe(findingSelection('F-12'));
   f.io.report = async (_,generation) => ({ ...snapshot(generation), findings: [] });
-  await f.c.refresh(); expect(f.c.finding).toBe('F-12');
+  await f.c.refresh(); expect(f.c.finding).toBe(findingSelection('F-12'));
 });
 
 function hostFixtures(on: On, initial = snapshot(), session = 'session-1') {
@@ -228,7 +229,7 @@ for (const surface of ['terminal','desktop'] as const) {
       expect(await ui.find({ type: 'Text', text: 'Run tokens: 0' })).toBeDefined();
       expect(await ui.find({ type: 'Text', text: 'Context window: Unknown' })).toBeDefined();
       expect(await ui.find({ type: 'Text', text: 'checkpoint-1' })).toBeDefined();
-      await ui.select({ key: 'finding-number', value: 'F-12' });
+      await ui.select({ key: 'finding-number', value: findingSelection('F-12') });
       expect(await ui.find({ type: 'Text', text: 'Finding 12 of 12' })).toBeDefined();
       await ui.press({ key: 'previous' }); expect(await ui.find({ type: 'Text', text: 'Finding 11 of 12' })).toBeDefined();
       await ui.press({ key: 'next' }); await ui.press({ key: 'view-source' });
@@ -278,7 +279,7 @@ test('host permission refusal retains draft and prevents final confirmation', as
 test('host missing, empty, removed findings remain distinct', async ($, on) => {
   const f = hostFixtures(on); await $.session.start({ cwd: '/fixture', surface: 'terminal', isInteractive: true });
   const ui = await $.ui.mount({ plugin: 'taskplane', surface: 'terminal', component: 'Pane', requestId: 'taskplane-checkpoint', props: pane(40) });
-  await ui.select({ key: 'finding-number', value: 'F-12' });
+  await ui.select({ key: 'finding-number', value: findingSelection('F-12') });
   f.state.value.findings = [f.state.value.findings![0]!]; await ui.press({ key: 'refresh' });
   expect(await ui.find({ type: 'Text', text: 'Selected finding no longer' })).toBeDefined();
   f.state.value.findings = []; await ui.press({ key: 'refresh' }); expect(await ui.find({ type: 'Text', text: 'No findings recorded' })).toBeDefined();
@@ -485,3 +486,39 @@ test('foreign automatic selection and foreign saved attempts cannot acquire nati
   expect(f.c.stale).toBe(true); expect(f.c.snapshot).toBeUndefined();
   expect(f.calls).toHaveLength(0);
 });
+
+for (const surface of ['terminal','desktop'] as const) {
+  test(`${surface}: same-ID findings retain origin through navigation, reorder and removal`, async ($, on) => {
+    const s = snapshot();
+    s.findings = [
+      { id: 'F-1', origin_run: 'original', title: 'Inherited obligation', disposition: 'unresolved', verification: 'historical', sources: [{ reference: 'old.json', status: 'available', text: 'Original evidence' }] },
+      { id: 'F-1', origin_run: 'replacement', title: 'Current obligation', disposition: 'accepted', verification: 'verified', sources: [{ reference: 'new.json', status: 'available', text: 'Replacement evidence' }] },
+      { id: 'F-2', origin_run: 'replacement', title: 'Following obligation' }
+    ];
+    const f = hostFixtures(on, s);
+    await $.session.start({ cwd: '/fixture', surface, isInteractive: true });
+    const ui = await $.ui.mount({ plugin: 'taskplane', surface, component: 'Pane', requestId: 'taskplane-checkpoint', props: pane(40) });
+    expect(await ui.find({ type: 'Text', text: 'Finding 1 of 3 · F-1 · Inherited obligation' })).toBeDefined();
+    await ui.press({ key: 'next' });
+    expect(await ui.find({ type: 'Text', text: 'Finding 2 of 3 · F-1 · Current obligation' })).toBeDefined();
+    await ui.press({ key: 'view-source' });
+    expect(await ui.find({ type: 'Text', text: 'Replacement evidence' })).toBeDefined();
+    await ui.press({ key: 'next' });
+    expect(await ui.find({ type: 'Text', text: 'Finding 3 of 3 · F-2' })).toBeDefined();
+    await ui.press({ key: 'previous' });
+    expect(await ui.find({ type: 'Text', text: 'Current obligation' })).toBeDefined();
+    await ui.select({ key: 'finding-number', value: findingSelection('F-1', 'original') });
+    expect(await ui.find({ type: 'Text', text: 'Original evidence' })).toBeDefined();
+    await ui.select({ key: 'finding-number', value: findingSelection('F-1', 'replacement') });
+    f.state.value.findings = f.state.value.findings!.toReversed();
+    await ui.press({ key: 'refresh' });
+    expect(await ui.find({ type: 'Text', text: 'Current obligation' })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: 'Replacement evidence' })).toBeDefined();
+    f.state.value.findings = f.state.value.findings!.filter(x => x.title !== 'Current obligation');
+    await ui.press({ key: 'refresh' });
+    expect(await ui.find({ type: 'Text', text: 'Selected finding no longer' })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: 'Original evidence' })).toBeUndefined();
+    expect(f.calls).toHaveLength(0);
+    await ui.unmount();
+  });
+}
