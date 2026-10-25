@@ -603,7 +603,8 @@ def check_historical_finish_preserves_active(c, finished, active):
     assert replay == finished
     assert target.read_bytes() == before
     db = json.loads(before)
-    assert db['active'] == active['run'] and db['runs'][active['run']] == active
+    assert db['active'] == active['run']
+    assert db['runs'][active['run']] == {k:v for k,v in active.items() if k != 'start_created'}
     resumed = h.Controller(c.workspace, c.root, c.adapter)
     assert resumed.report()['run'] == active['run']
     assert resumed.report()['revision'] == active['revision']

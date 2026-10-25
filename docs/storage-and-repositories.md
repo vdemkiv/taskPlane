@@ -84,3 +84,58 @@ is reported as a precondition—not mislabelled as graph sparsity.
 identifiable checkout is registered as a non-destructive alias. Dirty,
 ambiguous, or local-only checkouts are reported for human review. Migration
 never moves or deletes source, and new source acquisition never writes there.
+
+## Native snapshot retention
+
+New native dashboard pairs use a separate `snapshot-managed-v1.sqlite3`
+generation with a workspace-bound marker. The old `snapshot-catalog.json`, old
+pairs, controller history and approvals are preserved unchanged. They are never
+adopted into deletion ownership. This change bounds future transient growth; it
+does not reclaim the historical backlog.
+
+A producer must register references before publishing them:
+
+```python
+from taskplane.snapshot_retention import register_references
+register_references(workspace, complete_value, "external-report")
+# Only now publish the report containing the snapshot reference.
+```
+
+Use `format="json"` for complete JSON bytes/text, `format="text"` for complete
+UTF-8 text, and the default for a decoded structured value. Never register a
+truncated preview. Registration recognizes complete native snapshot names,
+local paths and file URLs, including complete tokens in report links or prose.
+Ordinary names such as `snapshot-v1.json` are ignored. Invalid declared native
+paths, unavailable pairs, incomplete traversal and exhausted verification budgets
+raise before publication. A successful registration permanently pins its pairs;
+a failed later publication may safely retain an extra pin.
+
+Reference traversal uses one iterator per ancestor (maximum depth 32), rather than
+allocating a stack entry for every sibling. Its 64 MiB work budget counts every
+value and key, including UTF-8 text, scalar and container units. This conservative
+lower bound on serialized JSON size admits supported large payloads without an
+independent 100,000-node ceiling. Complete text/JSON input also retains 64 MiB byte
+admission. Cycles, unsupported values and exhausted budgets refuse registration;
+no partial reference set is published.
+
+Context storage, evidence sealing, lifecycle closures, journal/attachment writes
+and snapshot publication register their complete inputs. External writers that
+write raw files must use the same registration API first. A raw file on disk no
+longer implicitly protects a new managed pair. Legacy files remain preserved.
+
+Collection uses a persisted finite high-water mark and descending indexed cursor.
+Pins, selected views, latest active views and leases are checked again for each
+candidate. New publication does not restart a sweep. Each call examines at most
+64 candidates and reserves at most 128 MiB for complete pair verification, enough
+for the existing two 64 MiB member limits. A smaller configured allowance defers
+the candidate explicitly. Deletion intent is committed before either unlink;
+recovery verifies any surviving member before completing that intent. Missing or
+corrupt ownership is never rebuilt into deletion permission. These are logical
+row, SQLite VM and source-byte bounds, not hard wall-clock or internal I/O limits.
+
+The lock order is controller/context/journal, then snapshot. Registration releases
+the snapshot lock before the producer writes its reference. Closure and snapshot
+producers already holding that lock use its internal registration helper. The
+collector never calls controller or context APIs. Directory inventory remains a
+separate optional observation and may report a lower bound; legacy totals remain
+unknown when not independently measured.

@@ -18,6 +18,7 @@ import stat
 import uuid
 from typing import Any, Callable, cast
 from taskplane import workflow, workflow_host, workflow_local, depgraph, workspace_binding, runtime_command, flow_journal
+from taskplane import codex_usage_cache as codex_cache, snapshot_retention
 
 if __package__:
     from . import native_session_meter as _package_meter
@@ -71,7 +72,9 @@ def append(workspace: Path, row: dict[str, Any]) -> None:
     ignore = storage.runtime_file(str(workspace), ".gitignore")
     if not ignore.exists():
         primitives.atomic_write_bytes(str(ignore), b"*\n")
-    payload = (json.dumps({"at": datetime.now(timezone.utc).isoformat(), **row}) + "\n").encode()
+    recorded = {"at": datetime.now(timezone.utc).isoformat(), **row}
+    payload = (json.dumps(recorded) + "\n").encode()
+    snapshot_retention.register_references(workspace, recorded, "flow-journal")
     storage.runtime_file(str(workspace), "flow-events.jsonl.lock")
     with primitives.file_lock(str(path)):
         storage.runtime_file(str(workspace), "flow-events.jsonl")
@@ -129,7 +132,7 @@ def counter(event: dict[str, Any], session: str) -> dict[str, Any]:
     if claude_session(event):
         root = str(event.get("session_id") or session)
         claude_path = claude_flow_usage.transcript(root, event)
-        identity = {"host": "claude", "transcript_path": str(claude_path) if claude_path else None}
+        identity: dict[str, Any] = {"host": "claude", "transcript_path": str(claude_path) if claude_path else None}
         try:
             if claude_path:
                 snapshot = claude_flow_usage.read_snapshot(claude_path, root)
@@ -139,46 +142,56 @@ def counter(event: dict[str, Any], session: str) -> dict[str, Any]:
             pass
         return {**identity, "usage": None, "usage_status": "unavailable"}
     path = event.get("transcript_path") or event.get("transcript")
-    candidates: list[str | Path] = [path] if isinstance(path, str) else []
-    if session != "local":
-        home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-        candidates.extend((home / "sessions").glob(f"**/*{session}*.jsonl"))
+    candidates, errors = codex_cache.known_paths(session, path=path if isinstance(path, str) else None)
+    identity = {"host": "codex", "session_paths": {session: candidates}, "discovery_errors": errors}
     if candidates:
         try:
             snapshot = native_session_meter.read_logical_snapshot(candidates, session)
-            return {"usage": snapshot["usage"],
+            return {**identity, "usage": snapshot["usage"],
                     "parent": snapshot.get("parent_session_id"),
                     "agent": snapshot.get("agent_path"),
                     "usage_status": "partial" if snapshot["partial"] else "observed"}
         except (OSError, ValueError):
             pass
-    return {"usage": None, "usage_status": "unavailable"}
+    return {**identity, "usage": None, "usage_status": "unavailable"}
+
+
+def observed_lineage(event: dict[str, Any], session: str) -> tuple[bool, str | None]:
+    """Keep unreadable lineage distinct from validated parentless metadata."""
+    if claude_session(event):
+        return True, event.get('parent_session_id')
+    path = event.get("transcript_path") or event.get("transcript")
+    # A host-supplied exact transcript needs no catalog or inventory fallback.
+    errors: list[str] = []
+    if isinstance(path, str):
+        candidates = [path]
+    else:
+        candidates, errors = codex_cache.known_paths(session)
+    parents: set[str | None] = set()
+    complete = bool(candidates) and not errors
+    for candidate in candidates:
+        try:
+            metadata = codex_cache.read_metadata(candidate, session)
+            parents.add(metadata.get('parent_session_id'))
+        except (OSError, ValueError):
+            complete = False
+    return complete and len(parents) == 1, next(iter(parents)) if len(parents) == 1 else None
 
 
 def observed_parent(event: dict[str, Any], session: str) -> str | None:
-    """Read native lineage independently of whether usage has been emitted yet."""
-    if claude_session(event):
-        return None  # Claude ancestry comes from parent fields and child-start events.
-    path = event.get("transcript_path") or event.get("transcript")
-    candidates = [Path(path)] if isinstance(path, str) else []
-    if session != "local":
-        home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-        candidates.extend((home / "sessions").glob(f"**/*{session}*.jsonl"))
-    parents: set[str] = set()
-    for candidate in candidates:
-        try:
-            fd = os.open(candidate, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-            with os.fdopen(fd, "rb") as stream:
-                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                    continue
-                # Share the canonical metadata parser, but require no token counter.
-                metadata, _ = native_session_meter._session_metadata(
-                    stream.read(native_session_meter.MAX_METADATA_BYTES))
-            if metadata["session_id"] == session and metadata.get("parent_session_id"):
-                parents.add(str(metadata["parent_session_id"]))
-        except (OSError, ValueError):
-            continue
-    return next(iter(parents)) if len(parents) == 1 else None
+    """Positive ancestry observation; absence is not proof of root authority."""
+    return observed_lineage(event, session)[1]
+
+
+def root_session(event: dict[str, Any], session: str) -> bool:
+    if any(event.get(k) for k in ('parent_session_id', 'agent_id', 'subagent_id')):
+        return False
+    # Preserve non-Codex host contracts; their explicit child fields govern.
+    if claude_session(event) or not (event.get('thread_id') or os.environ.get('CODEX_THREAD_ID')
+                                    or event.get('host') == 'codex'
+                                    or event.get('transcript_path') or event.get('transcript')):
+        return True
+    return observed_lineage(event, session) == (True, None)
 
 
 def active_run(rows: list[dict[str, Any]], session: str, parent: str | None = None) -> dict[str, Any] | None:
@@ -314,6 +327,13 @@ def select_controller(workspace: Path, actor: str, parent: str | None, *,
         fallback = _controller(workspace, str(legacy["session"] if legacy else parent),
                                profile, event=event, principal=actor)
         return fallback, fallback.report()
+    if pending_start and own.adapter.profile == 'native_workflow':
+        local = cast(workflow_local.LocalWorkflow, own.adapter)
+        # Existing state and validated interrupted initialization carry their
+        # own authority. Only first use needs current native root evidence.
+        if not local.state_exists(allow_pending=True) and not local.pending_initialization():
+            workflow.require(root_session(event or {}, actor), 'unsupported_authority',
+                             'Fresh workflow initialization requires verified native root identity.')
     return own, own_state
 
 
@@ -345,8 +365,12 @@ def usage_measurement(measurement: dict[str, Any], attempted_at: str) -> dict[st
     usable = [s for s in delivery if isinstance(s.get("usage"), dict) and s["usage"]]
     times = [measurement_time(s.get("measured_at")) for s in usable]
     known = sorted({t for t in times if t is not None})
+    coverage = measurement.get("token_coverage", {})
+    incomplete = any(coverage.get(key, "complete") != "complete" for key in (
+        "discovery_status", "replay_status", "detail_status", "aggregate_status",
+        "journal_status", "journal_detail_status"))
     complete = (bool(usable) and len(usable) == len(delivery) and all(times)
-                and not measurement.get("token_coverage", {}).get("discovery_errors"))
+                and not coverage.get("discovery_errors") and not incomplete)
     statuses = {"recorded" if str(s.get("status", "")).startswith("recorded") else s.get("status") for s in usable}
     status = ("unavailable" if not usable else "partial" if not complete else
               "fresh" if statuses == {"measured"} else "recorded" if statuses == {"recorded"} else
@@ -377,17 +401,22 @@ def capture_attachments(workspace: Path, artifacts: dict[str, Any]) -> dict[str,
     for key in ("tasks", "reviews"):
         if artifacts.get(key):
             try:
-                captured[key] = json.loads(artifact(workspace, artifacts[key]).read_text())
+                body = json.loads(artifact(workspace, artifacts[key]).read_text())
             except (OSError, ValueError):
                 captured[key] = None
+            else:
+                snapshot_retention.register_references(workspace, body, "flow-attachment")
+                captured[key] = body
     for relative in artifacts.get("evidence", []):
         try:
             raw = artifact(workspace, relative).read_bytes()
+        except (OSError, ValueError):
+            captured.setdefault("evidence", {})[relative] = None
+        else:
+            snapshot_retention.register_references(workspace, raw, "flow-attachment", format="text")
             captured.setdefault("evidence", {})[relative] = {
                 "digest": primitives.content_fingerprint(raw), "text": raw[:48000].decode("utf-8", errors="replace"),
                 "limited": len(raw) > 48000}
-        except (OSError, ValueError):
-            captured.setdefault("evidence", {})[relative] = None
     return captured
 
 
@@ -424,7 +453,7 @@ def graph_view(workspace: Path, state: dict[str, Any], historical: bool) -> dict
 
 def reconcile_usage(run: dict[str, Any], rows: list[dict[str, Any]], state: dict[str, Any],
                     expected: list[str] | tuple[str, ...] = (), *,
-                    closing: dict[str, Any] | None = None) -> dict[str, Any]:
+                    closing: dict[str, Any] | None = None, workspace: Path | None = None) -> dict[str, Any]:
     """Keep the same participant coverage in live and committed observations."""
     workers = {r['worker_id'] for r in state.get('workers', {}).values() if r.get('worker_id')}
     declared = set(expected) | workers
@@ -440,12 +469,13 @@ def reconcile_usage(run: dict[str, Any], rows: list[dict[str, Any]], state: dict
                 declared.update(str(review['agent']) for review in group
                                 if isinstance(review, dict) and review.get('agent'))
     return flow_usage.reconcile({**run, 'worker_sessions': sorted(workers)}, rows,
-                                sorted(declared), closing=closing)
+                                sorted(declared), closing=closing, workspace=workspace)
 
 
 def report(workspace: Path, run_id: str | None = None, *,
            governor: workflow_host.Controller | None = None) -> dict[str, Any] | None:
-    with flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace):
+    with (flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
+          codex_cache.action_budget(workspace)):
         return _report(workspace, run_id, governor=governor)
 
 
@@ -532,7 +562,7 @@ def _report(workspace: Path, run_id: str | None = None, *,
     try:
         if not journal.usage_complete:
             raise ValueError('Journal usage inputs pending')
-        result.update(reconcile_usage(run, rows, governed, expected))
+        result.update(reconcile_usage(run, rows, governed, expected, workspace=workspace))
     except (OSError, ValueError, TypeError, KeyError):
         result["evidence_errors"].append("Native session reconciliation unavailable; showing hook observations")
     measured_at = datetime.now(timezone.utc).isoformat()
@@ -545,7 +575,9 @@ def _report(workspace: Path, run_id: str | None = None, *,
         if measured.get("session") == run["session"] and run.get("usage") and measured.get("native_usage"):
             if any(measured["native_usage"].get(k, -1) < v for k,v in run["usage"].items()):
                 measured.update(usage=None, measured_at=None, status="partial; counters reset below run baseline")
-    if result.get("sessions"):
+    coverage = result.get("token_coverage", {})
+    if (result.get("sessions") and coverage.get("detail_status", "complete") == "complete"
+            and coverage.get("aggregate_status") != "partial"):
         delivery = [s for s in result["sessions"] if s.get("role") != "host_approval_review"]
         values = [s["usage"] for s in delivery if s.get("usage") is not None]
         result["tokens"] = {k:sum(v.get(k, 0) for v in values) for k in values[0]} if values else None
@@ -611,9 +643,15 @@ def _report(workspace: Path, run_id: str | None = None, *,
     result['journal_detail'] = {'page_size': 256, 'continuation': 'flow_journal.Projection.page(run, after=offset)',
                                 'partial': journal.detail_partial}
     result['token_coverage']['journal_detail_status'] = 'partial' if journal.detail_partial else 'complete'
-    if not journal.usage_complete:
+    if not journal.usage_complete or not result['journal_coverage']['caught_up']:
         result['token_coverage']['journal_status'] = 'partial'
-        result['usage_measurement']['status'] = 'partial'
+    result['usage_measurement'] = usage_measurement(result, measured_at)
+    if 'snapshot' in result:
+        result['snapshot'].update({
+            'measurement_status': result['usage_measurement']['status'],
+            'measurement_at': result['usage_measurement']['measured_at'],
+            'measurement_oldest_at': result['usage_measurement']['oldest_at'],
+            'measurement_newest_at': result['usage_measurement']['newest_at']})
     return result
 
 
@@ -709,7 +747,8 @@ def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: s
         workspace_binding.ensure(workspace)
     except workflow.Refusal:
         return {}  # A denied selection must not create a competing journal or session export.
-    with flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace):
+    with (flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
+          codex_cache.action_budget(workspace)):
         return _observe_hook_action(workspace, event, outcome=outcome, reason=reason)
 
 
@@ -879,12 +918,12 @@ def _hook(event: dict[str, Any], *,
                 runtime_command.workspace_selector(words[2:])
             except ValueError as exc:
                 raise workflow.Refusal('scope_violation', str(exc)) from None
-    if governor is None and _workspace_admin(event):
+    if governor is None and _workspace_admin(event) and root_session(event, session):
         return {}  # The administration command still validates proof and active-state recovery.
     if (governor is None and event.get('hook_event_name') in {'PreToolUse', 'PostToolUse'}
-            and not any(event.get(k) for k in ('parent_session_id', 'agent_id', 'subagent_id'))
             and runtime_command.installed(words, cwd, absolute=True)
-            and words[2:] in (['version', '--verify'], ['help', '--md'])):
+            and words[2:] in (['version', '--verify'], ['help', '--md'])
+            and root_session(event, session)):
         return {'hookSpecificOutput': {'hookEventName': event['hook_event_name'],
                 'additionalContext': 'Read-only runtime diagnostics do not create or validate workspace binding.'}}
     try:
@@ -900,7 +939,7 @@ def _hook(event: dict[str, Any], *,
             return {}
         if isinstance(exc, workspace_binding.MissingBinding) and governor is None:
             name = event.get('hook_event_name')
-            root = not any(event.get(k) for k in ('parent_session_id', 'agent_id', 'subagent_id'))
+            root = root_session(event, session)
             if root and (name == 'UserPromptSubmit' or name == 'SessionStart'
                          or name in {'PreToolUse', 'PostToolUse'} and _onboarding_read(event)):
                 return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': exc.guidance()}}
@@ -1027,7 +1066,8 @@ def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = N
         workspace = workspace_binding.resolve_workspace(None, event=event)
     except (workflow.Refusal, OSError, ValueError):
         workspace = None
-    with flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace):
+    with (flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
+          codex_cache.action_budget(workspace)):
         return _hook_action(event, governor=governor)
 
 
@@ -1190,7 +1230,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         workspace = workspace_binding.resolve_workspace(selected)
     except (workflow.Refusal, OSError, ValueError):
         workspace = None
-    with flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace):
+    with (flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
+          codex_cache.action_budget(workspace)):
         return _main(arguments, compact=compact, prepare=prepare, governor=governor)
 
 
@@ -1301,7 +1342,10 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
                 'unsupported_authority', 'Claude invocation references apply only to worker claim or scoped context.')
         if args.action == 'recover':
             session = session_id({})
-            workflow.require(not observed_parent({}, session), 'scope_violation', 'Native children cannot restore workflow state.')
+            # Recovery independently proves the existing root binding through
+            # its initialization marker and exact database copy, not counters.
+            workflow.require(not observed_parent({}, session), 'scope_violation',
+                             'Native children cannot restore workflow state.')
             controller = governor or _controller(workspace, session, args.profile)
             recovery_result = controller.recover_initialization(args.recover_from or '', args.expected_sha256 or '',
                         args.run or '', args.expected_revision, args.request_reference)
@@ -1458,7 +1502,7 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
                 rows = journal.usage_rows(outgoing_run)
                 if not journal.usage_complete:
                     raise ValueError('Journal usage inputs pending')
-                before_measurement = reconcile_usage(outgoing_run, rows, outgoing_state)
+                before_measurement = reconcile_usage(outgoing_run, rows, outgoing_state, workspace=workspace)
             except (OSError, ValueError, TypeError, KeyError):
                 observation_errors.append("Transition counters unavailable; phase allocation remains partial.")
         start_counter = counter({}, session) if args.action == "start" else {}
@@ -1578,7 +1622,7 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
                     closing = {**start_counter, "session": controller.root, "at": cutoff}
                     if not journal.usage_complete:
                         raise ValueError('Journal usage inputs pending')
-                    measurement = reconcile_usage(outgoing_run, rows, outgoing_state, closing=closing)
+                    measurement = reconcile_usage(outgoing_run, rows, outgoing_state, closing=closing, workspace=workspace)
                 if (after_outgoing["revision"] != outgoing_state["revision"]
                         or args.action == "start" and committed_state["run"] != outgoing_state["run"]):
                     prior_closures = bounded_closures(workspace, outgoing_state['run'], controller.root,

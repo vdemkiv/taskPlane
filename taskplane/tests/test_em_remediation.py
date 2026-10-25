@@ -1,5 +1,6 @@
 """Public regressions for the September Engineering findings and entry phases."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -146,6 +147,10 @@ def native(path, total, *, resumed=False, sid="root", timestamp="2026-09-01T00:0
             {"type": "token_usage_record", "ordinal": 2, "timestamp": timestamp,
              "payload": {"thread_id": sid, "thread_token_usage": {
                  "input_tokens": total - 10, "cached_input_tokens": 0, "output_tokens": 10, "total_tokens": total}}}]
+    if path.exists():
+        prior = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[-1]['ordinal'] = max(r.get('ordinal', 0) for r in prior) + 1
+        rows = prior + [rows[-1]]
     path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
 
 
@@ -156,6 +161,9 @@ def test_resumed_task_start_captures_one_logical_baseline(tmp_path, monkeypatch)
     native(sessions / 'part1-root.jsonl', 100)
     native(sessions / 'part2-root.jsonl', 160, resumed=True, timestamp="2026-09-01T00:00:06Z")
     native(sessions / 'foreign-root.jsonl', 999, sid='unrelated')
+    from taskplane.tests.test_flow_integration import index_native
+    index_native(sessions / 'part2-root.jsonl', 'root')
+    index_native(sessions / 'foreign-root.jsonl', 'unrelated')
     from taskplane import workflow_host
     from taskplane.tests.test_workflow_host import FixtureHost
     workspace = tmp_path / 'workspace'
@@ -593,7 +601,7 @@ def test_journal_malformed_metadata_rebuilds_without_crashing(tmp_path, body):
     journal_fixture(tmp_path, [dict(kind='start', run='r', session='root')])
     journal_read(tmp_path)
     location = tmp_path / '.taskplane' / journal.CACHE
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         db.execute('UPDATE meta SET body=?', (body,))
     assert journal_read(tmp_path)[1]['status'] == 'unavailable'
     assert journal_read(tmp_path)[1]['status'] == 'complete'
@@ -643,7 +651,7 @@ def test_journal_corrupt_metadata_fields_are_rebuilt(tmp_path, field, value):
     journal_fixture(tmp_path, [dict(kind='start', run='r', session='root')])
     journal_read(tmp_path)
     location = tmp_path / '.taskplane' / journal.CACHE
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         meta = json.loads(db.execute('SELECT body FROM meta').fetchone()[0])
         meta[field] = value
         db.execute('UPDATE meta SET body=?', (json.dumps(meta),))
@@ -721,7 +729,7 @@ def test_journal_corrupt_reducer_bodies_never_skip_valid_source(tmp_path, monkey
     path = journal_fixture(tmp_path, [start, first])
     assert journal_read(tmp_path)[0]['tool_calls'] == 1
     location = tmp_path / '.taskplane' / journal.CACHE
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         prior = json.loads(db.execute('SELECT body FROM meta').fetchone()[0])
         db.execute(f'UPDATE {table} SET body=?', (body,))
     later = {**first, 'call_id': 'later', 'usage': {'total_tokens': 30}}
@@ -746,7 +754,7 @@ def test_journal_corrupt_reducer_bodies_never_skip_valid_source(tmp_path, monkey
         assert budget.records <= 1 and view.db is None
     quarantine = list(location.parent.glob(journal.CACHE + '.corrupt-*'))
     assert len(quarantine) == 1 and not location.exists()
-    with sqlite3.connect(quarantine[0]) as db:
+    with closing(sqlite3.connect(quarantine[0])) as db, db:
         # The failed batch preserves its exact previous committed checkpoint,
         # indexed events, dedup keys and contributions in the quarantined copy.
         assert json.loads(db.execute('SELECT body FROM meta').fetchone()[0]) == prior
@@ -793,7 +801,7 @@ def test_journal_total_field_corruption_is_unavailable(tmp_path, field, value):
     start = dict(kind='start', run='r', session='root')
     journal_fixture(tmp_path, [start])
     journal_read(tmp_path)
-    with sqlite3.connect(tmp_path / '.taskplane' / journal.CACHE) as db:
+    with closing(sqlite3.connect(tmp_path / '.taskplane' / journal.CACHE)) as db, db:
         total = json.loads(db.execute('SELECT body FROM totals').fetchone()[0])
         total[field] = value
         db.execute('UPDATE totals SET body=?', (json.dumps(total),))
@@ -815,7 +823,7 @@ def test_journal_cached_detail_bodies_are_validated_before_return(tmp_path, acce
     path = journal_fixture(tmp_path, [start, hook])
     original = path.read_bytes()
     journal_read(tmp_path)
-    with sqlite3.connect(tmp_path / '.taskplane' / journal.CACHE) as db:
+    with closing(sqlite3.connect(tmp_path / '.taskplane' / journal.CACHE)) as db, db:
         if access in ('start', 'active', 'page'):
             db.execute("UPDATE events SET body=? WHERE kind='start'", (body,))
         else:
@@ -852,7 +860,7 @@ def test_journal_other_cached_reducers_rebuild_without_advancing(tmp_path, table
     path = journal_fixture(tmp_path, [start, hook])
     journal_read(tmp_path)
     location = tmp_path / '.taskplane' / journal.CACHE
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         before = json.loads(db.execute('SELECT body FROM meta').fetchone()[0])
         if table == 'actions':
             db.execute("UPDATE actions SET n='bad'")
@@ -875,7 +883,7 @@ def test_journal_cached_required_detail_fields_cannot_escape_validation(tmp_path
     start = dict(kind='start', run='r', session='root', captured={'reviews': []})
     journal_fixture(tmp_path, [start])
     journal_read(tmp_path)
-    with sqlite3.connect(tmp_path / '.taskplane' / journal.CACHE) as db:
+    with closing(sqlite3.connect(tmp_path / '.taskplane' / journal.CACHE)) as db, db:
         if table == 'start':
             db.execute("UPDATE events SET body='{}'")
         else:
@@ -897,7 +905,7 @@ def test_journal_cache_corruption_rolls_back_the_entire_uncommitted_batch(tmp_pa
     path = journal_fixture(tmp_path, [start])
     journal_read(tmp_path)
     location = tmp_path / '.taskplane' / journal.CACHE
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         prior = json.loads(db.execute('SELECT body FROM meta').fetchone()[0])
         db.execute("UPDATE totals SET body='[]'")
     with path.open('a') as stream:
@@ -908,7 +916,7 @@ def test_journal_cache_corruption_rolls_back_the_entire_uncommitted_batch(tmp_pa
         view = journal.projection(tmp_path)
         assert view.meta == prior
         assert view.coverage()['status'] == 'unavailable'
-    with sqlite3.connect(next(location.parent.glob(journal.CACHE + '.corrupt-*'))) as db:
+    with closing(sqlite3.connect(next(location.parent.glob(journal.CACHE + '.corrupt-*')))) as db, db:
         assert db.execute('SELECT count(*) FROM events').fetchone()[0] == 1
         assert json.loads(db.execute('SELECT body FROM meta').fetchone()[0]) == prior
     result, coverage, _ = journal_read(tmp_path)
@@ -1122,7 +1130,7 @@ def test_journal_structural_schema_upgrade_is_bounded_and_nonquarantining(tmp_pa
     journal_read(tmp_path)
     original = path.read_bytes()
     location = path.parent / journal.CACHE
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         meta = json.loads(db.execute('SELECT body FROM meta').fetchone()[0])
         old_generation = meta['generation']
         meta['schema'] = journal.SCHEMA - 1
@@ -1150,7 +1158,7 @@ def test_journal_structural_normalized_corruption_rebuilds(tmp_path, damage):
     path = journal_structural_fixture(tmp_path, [start, hook])
     journal_read(tmp_path)
     location = path.parent / journal.CACHE
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         before = json.loads(db.execute('SELECT body FROM meta').fetchone()[0])
         if damage == 'sample-counter':
             db.execute("UPDATE counters SET body='[]' WHERE session!=''")
@@ -1236,7 +1244,7 @@ def test_journal_structural_action_write_invariant_is_not_cache_corruption(tmp_p
     row = dict(kind='hook', run='r', session='root', call_id='one', action='a', event='PreToolUse')
     path = journal_structural_fixture(tmp_path, [row])
     journal_read(tmp_path)
-    with sqlite3.connect(path.parent / journal.CACHE) as db:
+    with closing(sqlite3.connect(path.parent / journal.CACHE)) as db, db:
         db.execute('UPDATE actions SET n=?', ('9' * 64,))
         before = json.loads(db.execute('SELECT body FROM meta').fetchone()[0])
     with path.open('a') as stream:

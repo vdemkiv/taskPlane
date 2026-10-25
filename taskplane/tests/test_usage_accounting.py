@@ -281,7 +281,8 @@ def test_resumed_codex_reset_is_not_restored_from_saved_or_closing_counts(
     baseline = counts(100)
     baseline.update(cached_input_tokens=20, uncached_input_tokens=80)
     run = {'run': 'run', 'session': 'root', 'usage': baseline, 'usage_status': 'observed',
-           'at': '2026-09-01T00:00:10Z'}
+           'at': '2026-09-01T00:00:10Z',
+           'session_paths': {'root': [str(folder / 'first.jsonl'), str(folder / 'resumed.jsonl')]}}
     saved = {'kind': 'usage', 'run': 'run', 'measurement': measured(0)}
     closing = {'kind': 'start', 'run': 'next', 'session': 'root',
                'at': '2026-09-01T00:00:20Z', 'usage': counts(200), 'usage_status': 'observed'}
@@ -290,3 +291,51 @@ def test_resumed_codex_reset_is_not_restored_from_saved_or_closing_counts(
     root = result['sessions'][0]
     assert root['usage'] is None and root['status'] == 'partial'
     assert root['errors']
+
+
+def test_codex_reconcile_preserves_fatal_lineage_over_replay_saved_totals(tmp_path, monkeypatch):
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    from taskplane.tests.test_history_bounds import _codex_native
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    root = _codex_native(tmp_path / 'root.jsonl', 'root', total=10)
+    first = _usage_file(tmp_path / 'first.jsonl', [_usage_record(10, 1)])
+    second = _usage_file(tmp_path / 'second.jsonl', [_usage_record(20, 2)])
+    run = {'run': 'run', 'session': 'root', 'usage': counts(0), 'at': '2026-09-01T00:00:00Z',
+           'worker_sessions': ['child'], 'transcript_path': str(root),
+           'session_paths': {'child': [str(first), str(second)]}}
+    saved = {'kind': 'usage', 'run': 'run', 'measurement': {'sessions': [
+        {'session': 'child', 'agent': 'child', 'role': 'lens', 'usage': counts(20),
+         'native_usage': counts(20), 'status': 'measured',
+         'attribution_schema': 'taskplane.owned-interval/v1',
+         'interval': {'start': flow_usage._time(run['at']), 'end_exclusive': None}}]}}
+    report = flow_usage.reconcile(run, [saved])
+    child = next(s for s in report['sessions'] if s['session'] == 'child')
+    assert child['usage'] is None and child['status'] == 'partial' and child['attribution_unknown']
+    assert any('restart evidence' in e for e in child['errors'])
+    assert report['tokens']['total_tokens'] == 10
+    assert report['token_coverage']['partial_sessions'] == 1
+
+
+def test_phase_rejects_attribution_unknown_even_if_legacy_status_says_measured():
+    s = state()
+    baseline = flow.usage_point(s, measured(0))
+    current = measured(20)
+    current['sessions'][0]['attribution_unknown'] = True
+    point = flow.usage_point(s, current)
+    # Cover both preserved and malformed/legacy point callers.
+    point['sessions'][0]['attribution_unknown'] = True
+    result = flow_usage.phase_accounting([baseline], point, s, current)
+    assert not result['attributed']
+    assert all(item['category'] != 'phase' for item in result['intervals'])
+
+
+def test_codex_declared_unfound_reviewer_remains_unknown_without_accumulating(tmp_path, monkeypatch):
+    from taskplane.tests.test_history_bounds import _codex_native
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    root = _codex_native(tmp_path / 'root.jsonl', 'root', total=10)
+    run = {'run': 'r', 'session': 'root', 'usage': counts(0), 'at': '2026-09-01T00:00:00Z',
+           'transcript_path': str(root)}
+    for _ in range(3):
+        result = flow_usage.reconcile(run, [], expected=['unfound-reviewer'])
+        assert result['token_coverage']['unmeasured_sessions'] == 1
+        assert result['tokens']['total_tokens'] == 10

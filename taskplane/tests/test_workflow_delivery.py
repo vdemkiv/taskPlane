@@ -101,7 +101,12 @@ def test_standalone_public_entry_has_shared_artifacts_and_no_fake_predecessors(t
     code, r = cli(c, capsys, "start", "--phase", phase, "--standalone")
     assert code == 0
     assert [v["phase"] for v in r["workflow"]["visits"]] == [phase]
-    assert r["tasks"] and (c.workspace/".taskplane/knowledge/graph.json").exists()
+    assert r["tasks"] == []  # Start does not invent an execution plan.
+    _, _, tasks = prepare(c.workspace, phase)
+    code, r = cli(c, capsys, "attach", "--tasks", "tasks.json", "--update-context",
+                  "--run", r["run"], "--expected-revision", str(r["workflow"]["revision"]))
+    assert code == 0 and {t["id"] for t in r["tasks"]} == {t["id"] for t in tasks["tasks"]}
+    assert (c.workspace/".taskplane/knowledge/graph.json").exists()
     assert (c.workspace/".taskplane/dashboard.html").exists()
 
 

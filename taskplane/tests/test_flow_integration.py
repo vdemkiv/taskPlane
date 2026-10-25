@@ -1,5 +1,6 @@
 """Advisory runs share evidence, graph and actual native lens usage."""
 import json
+import sqlite3
 import pytest
 from datetime import datetime
 from pathlib import Path
@@ -9,13 +10,32 @@ from taskplane import dashboard, depgraph
 from taskplane.tests.test_native_session_meter import _write_segment
 
 
+def index_native(path, sid):
+    """Publish fixture discovery through the native indexed catalog contract."""
+    home = next((p.parent for p in path.parents if p.name in {'sessions', 'archived_sessions'}), None)
+    if home is None:
+        return
+    with sqlite3.connect(home/'state_5.sqlite') as db:
+        db.execute('CREATE TABLE IF NOT EXISTS threads(id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL)')
+        db.execute('INSERT OR REPLACE INTO threads VALUES (?,?)', (sid, str(path.resolve())))
+
+
 def native(path, sid, total, *, parent=None, at='2026-09-01T00:00:00Z', guardian=False):
+    prior = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
     _write_segment(path, session_id=sid, total=total, parent=parent)
+    index_native(path, sid)
     rows=[json.loads(x) for x in path.read_text().splitlines()]
     rows[0]['payload']['timestamp']=at
     if guardian:
         rows[0]['payload']['thread_source']='guardian_review'
         rows[0]['payload']['source']={'subagent':{'other':'guardian'}}
+    if prior:
+        # Growing native histories append counters; rewriting ordinal7 simulates
+        # a source replacement and must not be used to model ordinary progress.
+        counter = rows[-1]
+        counter['ordinal'] = max(r.get('ordinal', 0) for r in prior) + 1
+        counter['timestamp'] = f"2026-09-01T00:00:{counter['ordinal']:02d}Z"
+        rows = prior + [counter]
     path.write_text('\n'.join(json.dumps(x) for x in rows)+'\n')
 
 
@@ -205,9 +225,12 @@ def test_archived_sessions_and_unrelated_metadata_errors_are_scoped(tmp_path, mo
     path.write_text('\n'.join(json.dumps(row) for row in rows)+'\n')
     result = flow_usage.reconcile(run, [])
     assert next(s for s in result['sessions'] if s['session'] == 'lens')['usage']['total_tokens'] == 90
-    assert result['token_coverage']['discovery_errors'] == 0
-    assert result['token_coverage']['inventory_errors'] == 1
-    assert result['token_coverage']['discovery_diagnostics'][0]['scope'] == 'unrelated_inventory'
+    coverage = result['token_coverage']
+    assert coverage['native_inventory_complete'] is False
+    diagnostics = coverage['discovery_diagnostics']
+    assert any(d.get('session') == 'unrelated' for d in diagnostics)
+    assert any(d.get('reason') == 'native_catalog_does_not_cover_orphan_or_legacy_segments' for d in diagnostics)
+    assert not any(d.get('session') in {'root', 'lens'} for d in diagnostics)
 
 
 def test_counter_reset_is_unknown_not_zero(tmp_path, monkeypatch):

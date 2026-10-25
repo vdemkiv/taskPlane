@@ -56,6 +56,9 @@ class NativeSessionMeterError(ValueError):
 class CounterChronologyError(NativeSessionMeterError):
     """Observed counters conflict; a saved baseline must not hide the conflict."""
 
+class NativeIdentityError(NativeSessionMeterError):
+    """Observed identity is invalid; source loss must not revive cached usage."""
+
 def _canonical(value: object) -> bytes:
     return _json_primitives.canonical_bytes(value, ensure_ascii=True)
 
@@ -79,7 +82,7 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
             raise NativeSessionMeterError("native session metadata is oversized")
         try:
             row = json.loads(raw)
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError, RecursionError):
             continue
         if not isinstance(row, Mapping) or row.get("type") != "session_meta":
             continue
@@ -89,7 +92,7 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
         session_id = str(payload.get("id") or "").strip()
         root_id = str(payload.get("session_id") or session_id).strip()
         if not session_id or not root_id:
-            raise NativeSessionMeterError("native session identity is missing")
+            raise NativeIdentityError("native session identity is missing")
         declared_parent = str(payload.get("forked_from_id") or payload.get("parent_thread_id") or "").strip()
         history = payload.get("history_base")
         if history is not None and (
@@ -101,7 +104,7 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
                 for field in ("end_ordinal_exclusive", "end_byte_offset")
             )
         ):
-            raise NativeSessionMeterError("native restart identity is invalid")
+            raise NativeIdentityError("native restart identity is invalid")
         parent = (
             str(payload.get("forked_from_id") or payload.get("parent_thread_id") or "").strip()
             or None
@@ -140,7 +143,7 @@ def _latest_counter(tail: bytes, *, at_or_before: float | None = None,
             continue
         try:
             row = json.loads(raw)
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError, RecursionError):
             continue
         if not isinstance(row, Mapping):
             continue
@@ -215,17 +218,37 @@ def _latest_counter(tail: bytes, *, at_or_before: float | None = None,
 
 def read_snapshot(path: str, *, at_or_before: float | None = None,
                   allow_unsequenced: bool = False) -> dict[str, Any]:
+    if __package__:
+        from . import codex_usage_cache as _package_cache
+        codex_usage_cache = _package_cache
+    else:
+        import codex_usage_cache as _flat_cache
+        codex_usage_cache = _flat_cache
+    with codex_usage_cache.action_budget() as budget:
+        return _read_snapshot(path, at_or_before=at_or_before,
+                              allow_unsequenced=allow_unsequenced, budget=budget)
+
+
+def _read_snapshot(path: str, *, at_or_before: float | None,
+                   allow_unsequenced: bool, budget: Any) -> dict[str, Any]:
     """Read one identity and bounded counter, optionally at an authenticated stop."""
     selected = os.path.realpath(str(path or ""))
     try:
-        with open(selected, "rb") as stream:
+        budget.take('files')
+        if any(p.is_symlink() for p in (Path(path), *Path(path).parents)):
+            raise NativeSessionMeterError('symlinked native snapshot')
+        fd = os.open(selected, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+        with os.fdopen(fd, "rb") as stream:
             before = os.fstat(stream.fileno())
             if not stat.S_ISREG(before.st_mode):
                 raise NativeSessionMeterError("native session source is not a regular file")
-            prefix = stream.read(min(before.st_size, MAX_METADATA_BYTES))
+            prefix_size = min(before.st_size, MAX_METADATA_BYTES)
+            tail_size = min(before.st_size, MAX_COUNTER_TAIL_BYTES + 1)
+            budget.take('source_bytes', prefix_size + tail_size)
+            prefix = stream.read(prefix_size)
             tail_offset = max(0, before.st_size - MAX_COUNTER_TAIL_BYTES)
             stream.seek(tail_offset)
-            tail = stream.read(MAX_COUNTER_TAIL_BYTES + 1)
+            tail = stream.read(tail_size)
             after = os.fstat(stream.fileno())
     except OSError as exc:
         raise NativeSessionMeterError(
@@ -276,6 +299,18 @@ def read_snapshot(path: str, *, at_or_before: float | None = None,
 
 def read_logical_snapshot(paths: Sequence[str | Path], session_id: str, *,
                           at_or_before: float | None = None) -> dict[str, Any]:
+    if __package__:
+        from . import codex_usage_cache as _package_cache
+        cache = _package_cache
+    else:
+        import codex_usage_cache as _flat_cache
+        cache = _flat_cache
+    with cache.action_budget():
+        return _read_logical_snapshot(paths, session_id, at_or_before=at_or_before)
+
+
+def _read_logical_snapshot(paths: Sequence[str | Path], session_id: str, *,
+                           at_or_before: float | None = None) -> dict[str, Any]:
     """Reconcile physical segments for one proven native task identity.
 
     A cumulative thread counter covers earlier segments. Legacy segment counters
@@ -309,142 +344,67 @@ def read_logical_snapshot(paths: Sequence[str | Path], session_id: str, *,
 
 
 def read_owned_interval(paths: Sequence[str | Path], session_id: str, *,
-                        start: float, end: float | None = None) -> dict[str, Any]:
-    """Bounded historical recovery with [start, end) response ownership.
+                        start: float, end: float | None = None,
+                        workspace: str | Path | None = None, budget: Any = None) -> dict[str, Any]:
+    """Resume metadata-only replay for the exact half-open ownership interval."""
+    if __package__:
+        from . import codex_usage_cache as _package_cache
+        codex_usage_cache = _package_cache
+    else:
+        import codex_usage_cache as _flat_cache
+        codex_usage_cache = _flat_cache
+    with codex_usage_cache.action_budget(workspace, budget=budget) as allowance:
+        return codex_usage_cache.interval(paths, session_id, start=start, end=end, budget=allowance)
 
-    Keep only counters/response IDs, never prompts. Prefer identified response
-    deltas; cumulative boundary subtraction is a fallback, never added to them.
-    Missing/reset/conflicting/truncated data stays partial or unavailable.
-    """
-    keys = ("input_tokens", "cached_input_tokens", "uncached_input_tokens", "output_tokens", "reasoning_tokens", "total_tokens")
-    zero = dict.fromkeys(keys, 0)
-    responses: dict[str, tuple[float, dict[str, int]]] = {}
-    counters: dict[tuple[float, str], dict[str, int]] = {}
-    errors: set[str] = set()
-    used = 0
-    earliest: float | None = None
-    resumed = False
-    owned = False
 
-    def counts(raw: Any) -> dict[str, int]:
-        if not isinstance(raw, dict):
-            raise NativeSessionMeterError("Missing owned usage")
-        value = {"input_tokens": _nonnegative(raw.get("input_tokens"), "input"),
-                 "cached_input_tokens": _nonnegative(raw.get("cached_input_tokens", 0), "cache"),
-                 "output_tokens": _nonnegative(raw.get("output_tokens"), "output"),
-                 "reasoning_tokens": _nonnegative(raw.get("reasoning_output_tokens", raw.get("reasoning_tokens", 0)), "reasoning"),
-                 "total_tokens": _nonnegative(raw.get("total_tokens"), "total")}
-        value["uncached_input_tokens"] = value["input_tokens"] - value["cached_input_tokens"]
-        if (value["uncached_input_tokens"] < 0 or value["reasoning_tokens"] > value["output_tokens"]
-                or value["total_tokens"] != value["input_tokens"] + value["output_tokens"]):
-            raise NativeSessionMeterError("Owned usage does not reconcile")
-        return value
+def owned_counts(raw: Any) -> dict[str, int]:
+    """Normalize response and cumulative vectors using the same category rules."""
+    if not isinstance(raw, Mapping):
+        raise NativeSessionMeterError("Missing owned usage")
+    value = {"input_tokens": _nonnegative(raw.get("input_tokens"), "input"),
+             "cached_input_tokens": _nonnegative(raw.get("cached_input_tokens", 0), "cache"),
+             "output_tokens": _nonnegative(raw.get("output_tokens"), "output"),
+             "reasoning_tokens": _nonnegative(raw.get("reasoning_output_tokens", raw.get("reasoning_tokens", 0)), "reasoning"),
+             "total_tokens": _nonnegative(raw.get("total_tokens"), "total")}
+    value["uncached_input_tokens"] = value["input_tokens"] - value["cached_input_tokens"]
+    if (value["uncached_input_tokens"] < 0 or value["reasoning_tokens"] > value["output_tokens"]
+            or value["total_tokens"] != value["input_tokens"] + value["output_tokens"]):
+        raise NativeSessionMeterError("Owned usage does not reconcile")
+    return value
 
-    for name in sorted({str(Path(p).absolute()) for p in paths}):
-        path = Path(name)
-        try:
-            if any(p.is_symlink() for p in (path, *path.parents)):
-                raise NativeSessionMeterError("Symlinked native replay")
-            with path.open("rb") as stream:
-                before = os.fstat(stream.fileno())
-                if not stat.S_ISREG(before.st_mode):
-                    raise NativeSessionMeterError("Native replay is not regular")
-                metadata, _ = _session_metadata(stream.read(MAX_METADATA_BYTES))
-                if metadata["session_id"] != session_id:
-                    raise NativeSessionMeterError("Foreign native replay")
-                born = datetime.fromisoformat(metadata["started_at"].replace("Z", "+00:00")).timestamp()
-                earliest = born if earliest is None else min(earliest, born)
-                resumed = resumed or metadata["resumed"]
-                stream.seek(0)
-                while used < MAX_REPLAY_BYTES:
-                    raw = stream.readline(min(MAX_RECORD_BYTES + 1, MAX_REPLAY_BYTES - used))
-                    if not raw:
-                        break
-                    used += len(raw)
-                    if not raw.endswith(b"\n"):
-                        errors.add("oversized_or_inflight_record")
-                        while raw and not raw.endswith(b"\n") and used < MAX_REPLAY_BYTES:
-                            raw = stream.readline(min(MAX_RECORD_BYTES, MAX_REPLAY_BYTES - used))
-                            used += len(raw)
-                        continue
-                    try:
-                        record = json.loads(raw)
-                        payload = record.get("payload", {}) if isinstance(record, dict) else {}
-                        native = record.get("type") == "token_usage_record"
-                        legacy = record.get("type") == "event_msg" and payload.get("type") == "token_count"
-                        if not native and not legacy:
-                            continue
-                        if native and payload.get("thread_id") != session_id:
-                            continue
-                        if legacy and metadata.get("forked_history"):
-                            continue
-                        at = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
-                        if at.tzinfo is None:
-                            raise ValueError("timestamp lacks timezone")
-                        instant = at.timestamp()
-                        if end is not None and instant >= end:
-                            continue
-                        total = payload.get("thread_token_usage") if native else payload.get("info", {}).get("total_token_usage")
-                        if total is not None:
-                            value = counts(total)
-                            key = (instant, "thread" if native else name)
-                            if key in counters and counters[key] != value:
-                                errors.add("conflicting_counter")
-                            counters[key] = value
-                        if native and "usage" in payload:
-                            owned = True
-                            response = payload.get("response_id")
-                            if not isinstance(response, str) or not response:
-                                errors.add("missing_response_identity")
-                                continue
-                            value = counts(payload["usage"])
-                            if response in responses and responses[response] != (instant, value):
-                                errors.add("conflicting_response")
-                            responses[response] = (instant, value)
-                            if len(responses) > MAX_REPLAY_RESPONSES:
-                                errors.add("response_limit")
-                                break
-                    except (ValueError, KeyError, TypeError, AttributeError):
-                        errors.add("invalid_counter_record")
-                if used >= MAX_REPLAY_BYTES:
-                    errors.add("replay_byte_limit")
-                after = os.fstat(stream.fileno())
-                if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
-                    errors.add("native_source_changed")
-        except (OSError, ValueError):
-            errors.add("native_source_unavailable")
-    thread = [(at, v) for (at, kind), v in counters.items() if kind == "thread"]
-    samples = sorted(thread or [(at, v) for (at, _), v in counters.items()], key=lambda x: x[0])
-    if not thread and len(paths) > 1:
-        errors.add("legacy_segment_boundaries_unknown")
-    reset = any(any(b[k] < a[k] for k in keys) for (_, a), (_, b) in zip(samples, samples[1:]))
-    if reset:
-        errors.add("counter_reset")
-    prior = [value for at, value in samples if at < start]
-    baseline = prior[-1] if prior else zero if earliest is not None and not resumed and not errors else None
-    native_usage = samples[-1][1] if samples else None
-    usage = None
-    basis = "unavailable interval"
-    if owned:
-        usage = {k: sum(v[k] for at, v in responses.values() if at >= start) for k in keys}
-        basis = "owned response replay [start, end)"
-        if baseline is None and resumed:
-            errors.add("resumed_baseline_unavailable")
-        if baseline is not None and native_usage is not None and not reset:
-            if any(usage[k] != native_usage[k] - baseline[k] for k in keys):
-                errors.add("owned_counter_mismatch")
-    elif baseline is not None and native_usage is not None and not reset:
-        if all(native_usage[k] >= baseline[k] for k in keys):
-            usage = {k: native_usage[k] - baseline[k] for k in keys}
-            basis = "owned session cumulative boundaries [start, end)"
-    if errors and not owned:
-        usage = None
-    return {"usage": usage, "native_usage": native_usage, "baseline": baseline,
-            "status": "partial" if errors else "measured" if usage is not None else "unavailable",
-            "basis": basis, "errors": sorted(errors), "bytes_read": used,
-            "responses": sum(at >= start for at, _ in responses.values()),
-            "measured_at": datetime.fromtimestamp(samples[-1][0], timezone.utc).isoformat() if samples else None,
-            "interval": {"start": start, "end_exclusive": end}}
+
+def counter_pair(before: Mapping[str, Any], after: Mapping[str, Any], label: str) -> None:
+    """Validate adjacent canonical boundaries, including every token category."""
+    a, b = _counter_order(before), _counter_order(after)
+    if (a == b or (a[0] == b[0] and
+            any(row.get("ordinal_basis") != "native" for row in (before, after)))):
+        if before["usage"] != after["usage"]:
+            raise CounterChronologyError(f"conflicting {label} counter boundary")
+    if any(after["usage"][key] < before["usage"][key] for key in USAGE_KEYS):
+        raise CounterChronologyError(f"{label} counter moved backwards")
+
+
+def validate_segment_lineage(rows: Sequence[Mapping[str, Any]]) -> None:
+    """Prove physical replacement and logical lineage for snapshots and replay."""
+    ordered = sorted(rows, key=lambda row: (*_counter_order(row), bool(row.get("resumed"))))
+    for field in ("session_id", "parent_session_id", "agent_path"):
+        if len({row[field] for row in ordered if row.get(field)}) > 1:
+            raise CounterChronologyError("native task segment lineage disagrees")
+    distinct, physical, records = [], set(), set()
+    for row in ordered:
+        source = row["source"]
+        identity = (source["device"], source["inode"])
+        if identity in physical:
+            continue
+        physical.add(identity)
+        record = (source["metadata_record_sha256"], source["counter_record_sha256"])
+        if row.get("counter_scope") == "thread":
+            if record in records:
+                continue
+            records.add(record)
+        distinct.append(row)
+    if any(not row.get("resumed") for row in distinct[1:]):
+        raise CounterChronologyError("native source replacement has no restart evidence")
 
 
 def validate_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -501,13 +461,7 @@ def _counter_order(row: Mapping[str, Any]) -> tuple[float, int]:
 def _chronological_counter(rows: Sequence[dict[str, Any]], label: str) -> dict[str, Any]:
     ordered = sorted(rows, key=_counter_order)
     for before, after in zip(ordered, ordered[1:]):
-        a, b = _counter_order(before), _counter_order(after)
-        if (a == b or (a[0] == b[0] and
-                any(row.get("ordinal_basis") != "native" for row in (before, after)))):
-            if before["usage"] != after["usage"]:
-                raise CounterChronologyError(f"conflicting {label} counter boundary")
-        if any(after["usage"][key] < before["usage"][key] for key in USAGE_KEYS):
-            raise CounterChronologyError(f"{label} counter moved backwards")
+        counter_pair(before, after, label)
     return ordered[-1]
 
 
@@ -533,25 +487,7 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for row in ordered_segments:
         sessions.setdefault(str(row["session_id"]), []).append(row)
     for rows in sessions.values():
-        rows.sort(key=lambda row: (*_counter_order(row), bool(row.get("resumed"))))
-        for field in ("parent_session_id", "agent_path"):
-            if len({row[field] for row in rows if row.get(field)}) > 1:
-                raise CounterChronologyError("native task segment lineage disagrees")
-        # Archive/copy inventories can expose an identical thread observation
-        # through multiple physical files. Exact native record hashes prove
-        # that duplicate without inventing restart provenance for other files.
-        distinct = []
-        seen_thread_records = set()
-        for row in rows:
-            source = row["source"]
-            record = (source["metadata_record_sha256"], source["counter_record_sha256"])
-            if row.get("counter_scope") == "thread":
-                if record in seen_thread_records:
-                    continue
-                seen_thread_records.add(record)
-            distinct.append(row)
-        if any(not row.get("resumed") for row in distinct[1:]):
-            raise CounterChronologyError("native source replacement has no restart evidence")
+        validate_segment_lineage(rows)
     usage_keys = (
         "input_tokens",
         "cached_input_tokens",

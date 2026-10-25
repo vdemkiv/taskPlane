@@ -100,6 +100,7 @@ def test_global_legacy_report_fallback_bounds_directory_inventory(tmp_path, monk
 
 
 def test_known_native_report_skips_legacy_fallback_inventory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
     from taskplane.tests.test_workflow_local import setup
     _, state = setup(tmp_path)
     monkeypatch.setenv('CODEX_THREAD_ID', 'root')
@@ -107,7 +108,8 @@ def test_known_native_report_skips_legacy_fallback_inventory(tmp_path, monkeypat
     def scandir(path):
         assert isinstance(path, int) or Path(path) != tmp_path / '.taskplane'
         return original(path)
-    monkeypatch.setattr(os, 'scandir', scandir)
+    # Observe only the legacy lookup, not the independent bounded storage scan.
+    monkeypatch.setattr(flow, 'os', SimpleNamespace(**{**vars(os), 'scandir': scandir}))
     assert flow.report(tmp_path)['run'] == state['run']
     assert flow.report(tmp_path, state['run'])['run'] == state['run']
 

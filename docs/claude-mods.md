@@ -29,6 +29,8 @@ CLI access remains restricted by the existing 2.31.7 controller.
 comes from the Claude session. Their sources and measurement details are separate.
 Missing data displays **Unknown**; a measured zero remains zero. Partial coverage
 does not imply a complete total or permit an inferred context percentage.
+The band shows **Partial coverage** when journal accounting or usage measurement
+is incomplete, even if every discovered session has measured counters.
 
 The coordinator refreshes every two seconds and on explicit **Refresh** or run
 selection. Reads are serialized; obsolete selection responses are discarded.
@@ -43,6 +45,11 @@ Enter a **Revision comment**, choose **Accept** or **Request changes**, then rea
 the frozen choice, full binding, and exact comment. Press **Confirm Accept** or
 **Confirm Request changes** to submit that observation. Opening, closing, typing,
 or preparing the confirmation does not approve a checkpoint.
+Eligibility is shown separately for each choice. Evidence drift blocks **Accept**,
+while **Request changes** and its saved confirmation remain available for the same
+exact checkpoint binding when the controller permits that negative response.
+Polling projects state eligibility; preparation and submission retain the backend
+permission and binding checks. A refusal preserves the comment and attempt.
 
 The request binds workspace, owning session, run, visit, checkpoint, workflow
 revision, evidence manifest digest, and scope digest. Taskplane records an
@@ -120,6 +127,9 @@ removed from its archived hook JSON; it receives no `mods/` assets or this guide
 The source hook file is unchanged by packaging. Sidecar hashes describe the exact
 archived bytes, including that deliberate Codex transformation, and do not imply
 that transformed bytes match a source commit.
+Packaging and `version --verify` share one version check, covering both plugin
+manifests and both marketplace version fields. Packaging archives the validated
+manifest bytes and refuses inconsistent inputs before creating an archive.
 
 Generated `.claude-plugin/types/` and `.codex-plugin/types/`, declaration files,
 `node_modules`, bytecode, and tooling caches are excluded. Keep generated host

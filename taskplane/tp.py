@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "taskplane"))
 
-from taskplane import depgraph, flow, graph_primitives, primitives, storage, workspace_binding
+from taskplane import depgraph, flow, graph_primitives, primitives, storage, version_contract, workspace_binding
 
 
 def _git(workspace: str, *args: str) -> str:
@@ -40,16 +40,9 @@ def _git_paths(workspace: str, *args: str) -> list[str]:
 
 
 def _version(verify: bool) -> dict[str, Any]:
-    manifests = [p for p in (ROOT / ".codex-plugin/plugin.json", ROOT / ".claude-plugin/plugin.json") if p.is_file()]
-    versions = [json.loads(p.read_text())["version"] for p in manifests]
-    market = ROOT / ".claude-plugin/marketplace.json"
-    if market.is_file():
-        data = json.loads(market.read_text())
-        versions.extend([data["version"], data["plugins"][0]["version"]])
-    result: dict[str, Any] = {"version": versions[0]}
-    if verify:
-        result["ok"] = len(set(versions)) == 1
-    return result
+    result = version_contract.inspect_versions({name: (ROOT / name).read_bytes()
+        for name in version_contract.MANIFEST_PATHS if (ROOT / name).is_file()})
+    return result if verify else {"version": result["version"]}
 
 
 def main(argv: list[str] | None = None) -> int:

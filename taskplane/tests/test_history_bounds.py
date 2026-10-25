@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import pytest
 from taskplane import claude_flow_usage as claude, claude_usage_cache as cache
@@ -332,12 +333,14 @@ def test_corrupt_cache_rebuild_is_bounded_and_source_unchanged(tmp_path):
 
 
 def test_cache_lock_contention_does_not_block_or_replay(tmp_path):
-    import fcntl
     path=tmp_path/'root.jsonl'; write(path,[message()])
     location=cache.cache_path(path,'root',None,tmp_path); take(path,workspace=tmp_path)
-    with open(str(location)+'.lock','a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        result,budget=take(path,workspace=tmp_path)
+    with open(str(location)+'.lock','a+b') as lock:
+        release = cache._acquire_lock(lock)
+        try:
+            result,budget=take(path,workspace=tmp_path)
+        finally:
+            release()
     assert result['errors']==['cache_busy'] and budget.records==budget.source_bytes==0
 
 
@@ -366,7 +369,7 @@ def test_cache_contains_metadata_only_and_queries_are_indexed(tmp_path):
     write(path,[row]); take(path,workspace=tmp_path)
     location=cache.cache_path(path,'root',None,tmp_path)
     assert b'secret prompt body XYZ' not in location.read_bytes()
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         plan=db.execute('EXPLAIN QUERY PLAN SELECT value FROM samples WHERE gen=? AND mid=? AND value IS NOT NULL '
                         'AND (at,pos)<(?,?) ORDER BY at DESC,pos DESC LIMIT 1',('g','m',1,2)).fetchall()
         assert all('TEMP B-TREE' not in str(row) and 'SCAN samples' not in str(row) for row in plan)
@@ -392,7 +395,7 @@ def test_small_record_budget_rotates_known_children_across_actions(tmp_path):
 def test_incompatible_cache_quarantines_recovery_sidecars(tmp_path, monkeypatch):
     path=tmp_path/'root.jsonl'; write(path,[message()]); take(path,workspace=tmp_path)
     location=cache.cache_path(path,'root',None,tmp_path)
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         meta=json.loads(db.execute('SELECT body FROM meta').fetchone()[0]); meta['schema']=-1
         db.execute('UPDATE meta SET body=?',(json.dumps(meta),))
     # Simulate leftover sidecars after the DB connection has opened. Recovery
@@ -487,7 +490,7 @@ def test_copied_foreign_filter_cache_cannot_supply_root_totals(tmp_path):
 def test_corrupt_negative_query_vector_is_not_published(tmp_path):
     path=tmp_path/'root.jsonl'; write(path,[message()]); take(path,workspace=tmp_path)
     location=cache.cache_path(path,'root',None,tmp_path)
-    with sqlite3.connect(location) as db:
+    with closing(sqlite3.connect(location)) as db, db:
         state=json.loads(db.execute('SELECT body FROM queries').fetchone()[0])
         state['total']['total_tokens']=-1
         db.execute('UPDATE queries SET body=?',(json.dumps(state),))
@@ -521,7 +524,7 @@ def test_recovery_bytes_share_the_action_budget(tmp_path):
 def test_sqlite_external_lock_returns_without_waiting_or_source_replay(tmp_path):
     path=tmp_path/'root.jsonl'; write(path,[message()]); take(path,workspace=tmp_path)
     location=cache.cache_path(path,'root',None,tmp_path)
-    with sqlite3.connect(location) as other:
+    with closing(sqlite3.connect(location)) as other, other:
         other.execute('BEGIN EXCLUSIVE')
         result,budget=take(path,workspace=tmp_path)
     assert result['partial'] and result['usage'] is None and budget.source_bytes==0
@@ -583,3 +586,345 @@ def test_recovery_guard_observes_sidecars_after_lock_acquisition(tmp_path, monke
     assert location.read_bytes() == original
     assert Path(str(location) + suffix).stat().st_size == cache.MAX_RECOVERY_BYTES + 1
     assert not Path(str(location) + '.invalid').exists()
+
+
+def test_codex_replay_persists_bounded_progress_and_suffix_only_append(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as cache, native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    monkeypatch.setattr(meter, 'MAX_RECORD_BYTES', 1024)
+    monkeypatch.setattr(meter, 'MAX_METADATA_BYTES', 1024)
+    path = _usage_file(tmp_path / 'large.jsonl', [
+        item for n in range(1, 31) for item in (
+            {'type': 'response_item', 'payload': {'text': 'private-' + 'x' * 600}},
+            _usage_record(n, n))])
+    offsets = []
+    for _ in range(60):
+        budget = cache.Budget(max_bytes=8192, max_records=8)
+        result = meter.read_owned_interval([path], 'child', start=0, budget=budget)
+        assert budget.source_bytes <= budget.max_bytes
+        assert budget.records <= budget.max_records
+        with closing(sqlite3.connect(cache.cache_path())) as db, db:
+            offsets.append(json.loads(db.execute('SELECT meta FROM sources').fetchone()[0])['offset'])
+        if result['status'] == 'measured':
+            break
+    assert result['usage']['total_tokens'] == 30
+    assert len(set(offsets)) > 2 and offsets == sorted(offsets)
+    warm = cache.Budget(max_bytes=8192, max_records=8)
+    assert meter.read_owned_interval([path], 'child', start=0, budget=warm)['usage']['total_tokens'] == 30
+    assert warm.records == 0 and warm.source_bytes < 2048
+    with path.open('a') as stream:
+        stream.write(json.dumps(_usage_record(35, 35)) + '\n')
+    append = cache.Budget(max_bytes=8192, max_records=8)
+    assert meter.read_owned_interval([path], 'child', start=0, budget=append)['usage']['total_tokens'] == 35
+    assert append.records == 1 and append.source_bytes < 4096
+    assert b'private-' not in cache.cache_path().read_bytes()
+
+
+def test_codex_replay_resumes_in_fresh_process(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as cache, native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    import subprocess
+    import sys
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    path = _usage_file(tmp_path / 'restart.jsonl', [_usage_record(n, n) for n in range(1, 14)])
+    code = '''import json,sys
+from taskplane import codex_usage_cache as c,native_session_meter as m
+m.MAX_RECORD_BYTES=1024;m.MAX_METADATA_BYTES=1024
+b=c.Budget(max_bytes=8192,max_records=4)
+r=m.read_owned_interval([sys.argv[1]],'child',start=0,budget=b)
+print(json.dumps([r,b.records]))'''
+    results = [json.loads(subprocess.check_output([sys.executable, '-c', code, str(path)], text=True)) for _ in range(9)]
+    assert results[-1][0]['usage']['total_tokens'] == 13
+    assert results[-1][1] == 0
+    assert any(r[0]['status'] == 'partial' for r in results[:-1])
+    assert meter.read_owned_interval([path], 'child', start=0)['usage']['total_tokens'] == 13
+
+
+def test_codex_cache_corruption_and_replacement_are_not_measured_zero(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as cache, native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    path = _usage_file(tmp_path / 'generation.jsonl', [_usage_record(10, 1)])
+    assert meter.read_owned_interval([path], 'child', start=0)['usage']['total_tokens'] == 10
+    cache.cache_path().write_bytes(b'broken derived state')
+    assert meter.read_owned_interval([path], 'child', start=0)['status'] == 'partial'
+    assert meter.read_owned_interval([path], 'child', start=0)['usage']['total_tokens'] == 10
+    replacement = _usage_file(tmp_path / 'replacement.jsonl', [_usage_record(30, 2)])
+    replacement.replace(path)
+    result = meter.read_owned_interval([path], 'child', start=0)
+    assert result['usage'] is None and 'source_generation_changed' in result['errors']
+    assert meter.read_owned_interval([path], 'child', start=0)['usage'] is None
+
+
+def test_codex_query_failure_does_not_rollback_ingested_offset(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as cache, native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    path = _usage_file(tmp_path / 'atomic.jsonl', [_usage_record(10, 1)])
+    original = cache._reduce
+    monkeypatch.setattr(cache, '_reduce', lambda *args: (_ for _ in ()).throw(cache.Exhausted('query')))
+    assert meter.read_owned_interval([path], 'child', start=0)['status'] == 'partial'
+    monkeypatch.setattr(cache, '_reduce', original)
+    budget = cache.Budget()
+    assert meter.read_owned_interval([path], 'child', start=0, budget=budget)['usage']['total_tokens'] == 10
+    assert budget.records == 0
+
+
+def test_codex_source_commit_crash_rolls_back_cursor_and_rows(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as cache, native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    path = _usage_file(tmp_path / 'atomic-source.jsonl', [_usage_record(10, 1)])
+    original = cache._ingest
+    def crash(*args):
+        original(*args)
+        raise ValueError('before source commit')
+    monkeypatch.setattr(cache, '_ingest', crash)
+    assert meter.read_owned_interval([path], 'child', start=0)['status'] == 'partial'
+    monkeypatch.setattr(cache, '_ingest', original)
+    assert meter.read_owned_interval([path], 'child', start=0)['usage']['total_tokens'] == 10
+
+
+def test_codex_torn_record_and_impossible_budget_are_explicit(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as cache, native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    path = _usage_file(tmp_path / 'torn.jsonl', [_usage_record(10, 1)])
+    with path.open('a') as stream:
+        stream.write(json.dumps(_usage_record(20, 2)))
+    assert meter.read_owned_interval([path], 'child', start=0)['status'] == 'partial'
+    with path.open('a') as stream:
+        stream.write('\n')
+    assert meter.read_owned_interval([path], 'child', start=0)['usage']['total_tokens'] == 20
+    too_small = meter.read_owned_interval([path], 'child', start=0, budget=cache.Budget(max_bytes=1024))
+    assert too_small['usage'] is None and too_small['errors'] == ['budget_too_small']
+
+
+def _codex_catalog_fixture(home, entries):
+    with closing(sqlite3.connect(home / 'state_5.sqlite')) as db, db:
+        db.execute('CREATE TABLE threads(id TEXT PRIMARY KEY,rollout_path TEXT NOT NULL)')
+        db.executemany('INSERT INTO threads VALUES(?,?)', [(sid, str(path)) for sid, path in entries])
+
+
+def _codex_native(path, sid, parent=None, total=10):
+    from taskplane.tests.test_native_session_meter import _usage_record
+    record = _usage_record(total, 1)
+    record['payload']['thread_id'] = sid
+    rows = [{'type': 'session_meta', 'payload': {'id': sid, 'parent_thread_id': parent,
+             'timestamp': '2026-09-01T00:00:00Z'}}, record]
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    return path
+
+
+def test_codex_catalog_keysets_reach_late_child_without_glob_or_prefix_restart(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as codex, native_session_meter as meter
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    monkeypatch.setattr(meter, 'MAX_RECORD_BYTES', 1024)
+    monkeypatch.setattr(meter, 'MAX_METADATA_BYTES', 1024)
+    root = _codex_native(tmp_path / 'root.jsonl', 'root')
+    entries = [(f'a{n:03}', _codex_native(tmp_path / f'{n}.jsonl', f'a{n:03}')) for n in range(60)]
+    late = _codex_native(tmp_path / 'late.jsonl', 'z-child', 'root')
+    _codex_catalog_fixture(tmp_path, [*entries, ('root', root), ('z-child', late)])
+    monkeypatch.setattr(Path, 'glob', lambda *_: (_ for _ in ()).throw(AssertionError('inventory fallback')))
+    found = False
+    cursors = []
+    for _ in range(25):
+        budget = codex.Budget(max_bytes=8192, max_entries=16)
+        metadata, diagnostics = codex.discover({'run': 'r', 'session': 'root', 'transcript_path': str(root)}, budget)
+        assert budget.entries <= 16 and budget.files <= 16 and budget.source_bytes <= 8192
+        assert budget.rows <= budget.max_rows and budget.vm_steps <= budget.max_vm_steps
+        assert not budget.coverage()['native_inventory_complete']
+        with closing(sqlite3.connect(codex.cache_path())) as db, db:
+            cursors.append(json.loads(db.execute('SELECT state FROM cursors').fetchone()[0])['last'])
+        found = found or any(row['session_id'] == 'z-child' for row in metadata)
+        if found:
+            break
+    assert found and len(set(cursors)) > 5
+    assert diagnostics[-1]['scope'] == 'inventory'
+
+
+def test_codex_known_worker_catalog_lookup_precedes_background_sweep(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as codex
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    root = _codex_native(tmp_path / 'root.jsonl', 'root')
+    child = _codex_native(tmp_path / 'child.jsonl', 'z-known', 'root')
+    _codex_catalog_fixture(tmp_path, [('root', root), ('z-known', child)])
+    metadata, _ = codex.discover({'run': 'r', 'session': 'root', 'worker_sessions': ['z-known']}, codex.Budget())
+    assert {m['session_id'] for m in metadata} == {'root', 'z-known'}
+
+
+def test_codex_catalog_unavailable_preserves_exact_paths_and_explicit_incompleteness(tmp_path, monkeypatch):
+    from taskplane import flow_usage
+    from taskplane.tests.test_usage_accounting import counts
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    root = _codex_native(tmp_path / 'root.jsonl', 'root', total=40)
+    run = {'run': 'r', 'session': 'root', 'at': '2026-09-01T00:00:00Z',
+           'usage': counts(0), 'transcript_path': str(root)}
+    result = flow_usage.reconcile(run, [])
+    assert result['tokens']['total_tokens'] == 40
+    assert result['token_coverage']['discovery_status'] == 'partial'
+    assert result['token_coverage']['catalog_status'] == 'partial'
+    assert result['token_coverage']['native_inventory_complete'] is False
+
+
+def test_codex_run_subtotal_survives_rotating_session_pages(tmp_path, monkeypatch):
+    from taskplane import flow_usage, codex_usage_cache as codex, native_session_meter as meter
+    from taskplane.tests.test_usage_accounting import counts
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    monkeypatch.setattr(meter, 'MAX_RECORD_BYTES', 1024)
+    monkeypatch.setattr(meter, 'MAX_METADATA_BYTES', 1024)
+    root = _codex_native(tmp_path / 'root.jsonl', 'root', total=40)
+    children = [(f'child-{n:02}', _codex_native(tmp_path / f'child-{n}.jsonl', f'child-{n:02}', 'root', n + 1))
+                for n in range(12)]
+    _codex_catalog_fixture(tmp_path, [('root', root), *children])
+    run = {'run': 'r', 'session': 'root', 'at': '2026-09-01T00:00:00Z',
+           'usage': counts(0), 'transcript_path': str(root)}
+    totals = []
+    for _ in range(24):
+        with codex.action_budget(budget=codex.Budget(max_entries=24, max_bytes=32768)) as budget:
+            result = flow_usage.reconcile(run, [])
+            assert budget.files <= budget.max_entries
+            totals.append(result['tokens']['total_tokens'] if result['tokens'] else None)
+    assert totals[-1] == 40 + sum(range(1, 13))
+    assert totals[-4:] == [118] * 4
+    assert result['token_coverage']['measured_sessions'] == 13
+
+
+def test_codex_cache_lock_and_recovery_budget_fail_without_source_reads(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as codex, native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    source = _usage_file(tmp_path / 'locked.jsonl', [_usage_record(10, 1)])
+    location = codex.cache_path()
+    with location.with_suffix('.lock').open('a+b') as lock:
+        release = cache._acquire_lock(lock)
+        try:
+            budget = codex.Budget()
+            result = meter.read_owned_interval([source], 'child', start=0, budget=budget)
+            assert result['status'] == 'partial' and result['usage'] is None
+            assert budget.source_bytes == 0
+        finally:
+            release()
+    journal = Path(str(location) + '-journal')
+    journal.write_bytes(b'x' * 2048)
+    budget = codex.Budget(max_recovery_bytes=1024)
+    result = meter.read_owned_interval([source], 'child', start=0, budget=budget)
+    assert result['status'] == 'partial' and 'recovery_bytes' in result['errors']
+    assert budget.source_bytes == 0
+
+
+def test_codex_flow_import_and_cache_paths_without_posix_apis(tmp_path):
+    script = '''
+import os, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+os.environ['HOME'] = str(root)
+sys.modules['fcntl'] = None
+if hasattr(os, 'getuid'):
+    del os.getuid
+from taskplane import flow, codex_usage_cache as codex
+codex.tempfile.gettempdir = lambda: str(root)
+standalone = codex.cache_path()
+assert standalone.parent.is_dir()
+assert standalone == codex.cache_path()
+workspace = codex.cache_path(root)
+assert workspace.is_relative_to(root.resolve())
+assert workspace.name.startswith('codex-usage-') and workspace.suffix == '.sqlite3'
+'''
+    result = subprocess.run([sys.executable, '-c', script, str(tmp_path)],
+                            cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('fail_body', [False, True])
+def test_codex_database_uses_windows_lock_and_releases_on_exit(tmp_path, monkeypatch, fail_body):
+    from types import SimpleNamespace
+    from taskplane import codex_usage_cache as codex
+    location = tmp_path / 'usage.sqlite3'
+    monkeypatch.setattr(codex, 'cache_path', lambda _: location)
+    calls = []
+    def locking(fd, operation, size):
+        assert size == 1
+        calls.append(operation)
+    monkeypatch.setitem(sys.modules, 'msvcrt', SimpleNamespace(LK_NBLCK=2, LK_UNLCK=0, locking=locking))
+    acquire = cache._acquire_lock
+    monkeypatch.setattr(cache, '_acquire_lock', lambda stream: acquire(stream, 'nt'))
+    def use_database():
+        with codex._database(codex.Budget()) as db:
+            assert calls == [2]
+            assert db.execute('SELECT 1').fetchone() == (1,)
+            if fail_body:
+                raise RuntimeError('body failed')
+    if fail_body:
+        with pytest.raises(RuntimeError, match='body failed'):
+            use_database()
+    else:
+        use_database()
+    assert calls == [2, 0]
+    assert location.with_suffix('.lock').read_bytes() == b'\0'
+
+
+@pytest.mark.parametrize('error', [ImportError('missing API'), OSError('native busy')])
+def test_codex_native_lock_failure_never_opens_database_or_sources(tmp_path, monkeypatch, error):
+    from taskplane import codex_usage_cache as codex, native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    source = _usage_file(tmp_path / 'child.jsonl', [_usage_record(10, 1)])
+    monkeypatch.setattr(codex, 'cache_path', lambda _: tmp_path / 'usage.sqlite3')
+    def denied(_):
+        raise error
+    monkeypatch.setattr(cache, '_acquire_lock', denied)
+    monkeypatch.setattr(sqlite3, 'connect', lambda *a, **kw: pytest.fail('unlocked database open'))
+    budget = codex.Budget()
+    result = meter.read_owned_interval([source], 'child', start=0, budget=budget)
+    assert result['status'] == 'partial' and result['usage'] is None
+    assert budget.source_bytes == 0
+    if isinstance(error, ImportError):
+        assert 'cache_lock_unsupported' in result['errors']
+
+
+@pytest.mark.parametrize('target', ['database', 'lock'])
+def test_codex_cache_rejects_symlinks_before_locking(tmp_path, monkeypatch, target):
+    from taskplane import codex_usage_cache as codex
+    location = tmp_path / 'usage.sqlite3'
+    destination = tmp_path / 'outside'
+    destination.write_bytes(b'preserve')
+    candidate = location if target == 'database' else location.with_suffix('.lock')
+    candidate.symlink_to(destination)
+    monkeypatch.setattr(codex, 'cache_path', lambda _: location)
+    monkeypatch.setattr(cache, '_acquire_lock', lambda _: pytest.fail('symlink reached locking'))
+    with pytest.raises(ValueError, match='symlinked'):
+        with codex._database(codex.Budget()):
+            pytest.fail('symlinked cache opened')
+    assert destination.read_bytes() == b'preserve'
+
+
+def test_codex_oversized_record_discards_forward_with_permanent_gap(tmp_path, monkeypatch):
+    from taskplane import codex_usage_cache as codex, native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    monkeypatch.setattr(meter, 'MAX_RECORD_BYTES', 1024)
+    monkeypatch.setattr(meter, 'MAX_METADATA_BYTES', 1024)
+    path = _usage_file(tmp_path / 'oversized.jsonl', [
+        {'type': 'response_item', 'payload': {'text': 'SECRET_PAYLOAD_' * 1500}}, _usage_record(20, 1)])
+    for _ in range(20):
+        result = meter.read_owned_interval([path], 'child', start=0, budget=codex.Budget(max_bytes=8192))
+        if result['native_usage'] is not None:
+            break
+    assert result['native_usage']['total_tokens'] == 20
+    assert result['usage'] is None and 'oversized_record' in result['errors']
+    assert result['status'] == 'partial'
+    assert b'SECRET_PAYLOAD_' not in codex.cache_path().read_bytes()
+
+
+def test_codex_interval_changes_cannot_reuse_prior_subtotal(tmp_path, monkeypatch):
+    from taskplane import native_session_meter as meter
+    from taskplane.tests.test_native_session_meter import _usage_file, _usage_record
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    path = _usage_file(tmp_path / 'interval.jsonl', [
+        _usage_record(10, 1, at='2026-09-01T00:00:05Z'),
+        _usage_record(30, 2, at='2026-09-01T00:00:15Z')])
+    start = datetime.fromisoformat('2026-09-01T00:00:10+00:00').timestamp()
+    assert meter.read_owned_interval([path], 'child', start=0)['usage']['total_tokens'] == 30
+    assert meter.read_owned_interval([path], 'child', start=start)['usage']['total_tokens'] == 20
+    assert meter.read_owned_interval([path], 'child', start=0, end=start)['usage']['total_tokens'] == 10

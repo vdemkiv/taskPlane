@@ -96,6 +96,10 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
             assert 'modules' not in hooks
         archive.extractall(extracted)
     # The ordinary shipped profile must work without the protected fixture.
+    version_check = subprocess.run([sys.executable, str(extracted/'taskplane/tp.py'), 'version', '--verify'],
+                                   cwd=tmp_path, capture_output=True, text=True)
+    assert version_check.returncode == 0, version_check.stdout + version_check.stderr
+    assert json.loads(version_check.stdout) == {'version': fresh['version'], 'ok': True}
     exercise((tmp_path/(host+'-native')).resolve(), 'claude' if host=='claude' else 'codex', root=extracted)
     exercise_autonomous((tmp_path/(host+'-autonomous')).resolve(),
                         'claude' if host=='claude' else 'codex', root=extracted)
@@ -386,3 +390,111 @@ def test_package_receipt_verifies_only_declared_codex_transform(tmp_path, monkey
     target.write_bytes(shipped.replace(b'guard', b'changed'))
     assert package_plugin.source_identity({'hooks/hooks.json': target.read_bytes()}, 'openai')['matches_source_commit'] is False
     assert package_plugin.source_identity({'hooks/hooks.json': shipped}, 'openai')['matches_source_commit'] is True
+
+
+@pytest.mark.parametrize("host", ["openai", "claude"])
+@pytest.mark.parametrize("field", ["codex", "claude", "market", "entry"])
+def test_version_skew_refuses_package_before_output_and_agrees_with_cli(tmp_path, monkeypatch, host, field):
+    from taskplane import tp, version_contract
+    for name in version_contract.MANIFEST_PATHS:
+        target = tmp_path/name
+        target.parent.mkdir(exist_ok=True)
+        target.write_bytes((ROOT/name).read_bytes())
+    name = version_contract.MANIFEST_PATHS[{"codex": 0, "claude": 1, "market": 2, "entry": 2}[field]]
+    data = json.loads((tmp_path/name).read_bytes())
+    if field == "entry": next(p for p in data['plugins'] if p['name'] == 'taskplane')['version'] = '0.0.0'
+    else: data['version'] = '0.0.0'
+    (tmp_path/name).write_text(json.dumps(data))
+    monkeypatch.setattr(package_plugin, 'ROOT', tmp_path)
+    monkeypatch.setattr(tp, 'ROOT', tmp_path)
+    assert tp._version(True)['ok'] is False
+    stream = io.StringIO()
+    with redirect_stdout(stream): assert tp.main(['version', '--verify']) == 1
+    assert json.loads(stream.getvalue())['ok'] is False
+    with pytest.raises(ValueError, match='versions disagree'):
+        package_plugin.package(host, tmp_path/'output')
+    assert not (tmp_path/'output').exists()
+
+
+@pytest.mark.parametrize("defect", ['empty', 'json', 'version', 'missing_entry', 'duplicate_entry', 'plugins', 'entry_version'])
+def test_version_contract_rejects_malformed_manifest_inventory(defect):
+    from taskplane import version_contract as contract
+    values = {name: (ROOT/name).read_bytes() for name in contract.MANIFEST_PATHS}
+    if defect == 'empty': values = {}
+    elif defect == 'json': values[contract.MANIFEST_PATHS[0]] = b'['
+    elif defect == 'version': values[contract.MANIFEST_PATHS[0]] = b'{"version": 0}'
+    else:
+        market = json.loads(values[contract.MANIFEST_PATHS[2]])
+        if defect == 'missing_entry': market['plugins'] = []
+        elif defect == 'duplicate_entry': market['plugins'] *= 2
+        elif defect == 'plugins': market['plugins'] = {}
+        else: market['plugins'][0].pop('version')
+        values[contract.MANIFEST_PATHS[2]] = json.dumps(market).encode()
+    with pytest.raises(ValueError): contract.inspect_versions(values)
+
+
+@pytest.mark.parametrize("host", ['openai', 'claude'])
+def test_packaging_reuses_validated_manifest_bytes_and_extracted_version(tmp_path, monkeypatch, host):
+    from taskplane import version_contract as contract
+    read = package_plugin.read_member
+    seen = {}
+    def once(path):
+        name = path.relative_to(ROOT).as_posix()
+        if name in contract.MANIFEST_PATHS:
+            assert name not in seen, 'Manifest must not be reread after validation'
+            seen[name] = read(path)
+            return seen[name]
+        return read(path)
+    monkeypatch.setattr(package_plugin, 'read_member', once)
+    result = package_plugin.package(host, tmp_path/'output')
+    with zipfile.ZipFile(result['archive']) as archive:
+        for name, data in seen.items():
+            if name in archive.namelist(): assert archive.read(name) == data
+        archive.extractall(tmp_path/'extracted')
+    check = subprocess.run([sys.executable, str(tmp_path/'extracted/taskplane/tp.py'), 'version', '--verify'],
+                           cwd=tmp_path, capture_output=True, text=True)
+    assert check.returncode == 0, check.stdout + check.stderr
+    assert json.loads(check.stdout) == {'version': result['version'], 'ok': True}
+
+
+@pytest.mark.parametrize("host", ['openai', 'claude'])
+def test_direct_packaging_scripts_import_shared_contract_from_source(tmp_path, host):
+    check = subprocess.run([sys.executable, str(ROOT/f'scripts/package_{host}.py'), '--output-dir', str(tmp_path/'output')],
+                           cwd=tmp_path, capture_output=True, text=True)
+    assert check.returncode == 0, check.stdout + check.stderr
+    assert Path(json.loads(check.stdout)['archive']).is_file()
+
+
+def test_unsafe_consistent_package_version_still_refuses_before_output(tmp_path, monkeypatch):
+    from taskplane import version_contract as contract
+    for name in contract.MANIFEST_PATHS[:2]:
+        target = tmp_path/name
+        target.parent.mkdir()
+        target.write_text(json.dumps({'version': '../unsafe'}))
+    monkeypatch.setattr(package_plugin, 'ROOT', tmp_path)
+    with pytest.raises(ValueError, match='safe semantic version'):
+        package_plugin.package('openai', tmp_path/'output')
+    assert not (tmp_path/'output').exists()
+
+
+@pytest.mark.parametrize("host", ['openai', 'claude'])
+@pytest.mark.parametrize("field", ['codex', 'claude', 'market', 'entry'])
+def test_unsafe_version_precedes_mismatch_in_shared_contract(tmp_path, monkeypatch, host, field):
+    from taskplane import tp, version_contract as contract
+    values = {name: (ROOT/name).read_bytes() for name in contract.MANIFEST_PATHS}
+    name = contract.MANIFEST_PATHS[{'codex': 0, 'claude': 1, 'market': 2, 'entry': 2}[field]]
+    data = json.loads(values[name])
+    target = next(p for p in data['plugins'] if p['name'] == 'taskplane') if field == 'entry' else data
+    target['version'] = '../../escape'
+    values[name] = json.dumps(data).encode()
+    for name, raw in values.items():
+        path = tmp_path/name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(raw)
+    monkeypatch.setattr(package_plugin, 'ROOT', tmp_path)
+    monkeypatch.setattr(tp, 'ROOT', tmp_path)
+    for inspect_version in (lambda: contract.inspect_versions(values), lambda: tp._version(True),
+                            lambda: package_plugin.package(host, tmp_path/'output')):
+        with pytest.raises(ValueError, match='safe semantic version'):
+            inspect_version()
+    assert not (tmp_path/'output').exists()

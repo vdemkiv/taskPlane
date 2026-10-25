@@ -5,17 +5,19 @@ from typing import Any
 from datetime import datetime
 import json
 import os
-import stat
-import hashlib
 from pathlib import Path
 
 if __package__:
     from . import native_session_meter as _package_meter
+    from . import codex_usage_cache as _package_cache
+    cache = _package_cache
     from . import claude_flow_usage as _package_claude
     claude = _package_claude
     meter = _package_meter
 else:
     import native_session_meter as _flat_meter
+    import codex_usage_cache as _flat_cache
+    cache = _flat_cache
     import claude_flow_usage as _flat_claude
     claude = _flat_claude
     meter = _flat_meter
@@ -32,108 +34,77 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
                     diagnostics: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], int]:
     root = run['session']
     started = _time(run.get('at'))
-    home = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
-    metadata = []
-    failures = []
-    paths = sorted({p for folder in ('sessions', 'archived_sessions')
-                    for p in (home / folder).glob('**/*.jsonl')})
-    for path in paths:
-        prefix = b''
-        try:
-            if any(p.is_symlink() for p in (path, *path.parents)):
-                raise ValueError('symlinked native metadata')
-            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
-            with os.fdopen(fd, 'rb') as stream:
-                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                    raise ValueError('native metadata is not regular')
-                prefix = stream.readline(meter.MAX_METADATA_BYTES)
-            item, _ = meter._session_metadata(prefix)
-            item['path'] = path
-            metadata.append(item)
-        except (OSError, ValueError) as exc:
-            try:
-                row = json.loads(prefix)
-                payload = row.get('payload', {}) if isinstance(row, dict) else {}
-            except (ValueError, UnicodeError):
-                payload = {}
-            if not isinstance(payload, dict):
-                payload = {}
-            failures.append({'session': payload.get('id'),
-                'parent': payload.get('forked_from_id') or payload.get('parent_thread_id'),
-                'path_fingerprint': hashlib.sha256(str(path).encode()).hexdigest(),
-                'reason': str(exc)[:200]})
-    ids = {root}
-    selected = []
-    while True:
-        selected = [m for m in metadata if m['session_id'] in ids or (
-            m.get('parent_session_id') in ids
-            and (m.get('thread_source') == 'guardian_review' or m['session_id'] in run.get('worker_sessions', []) or started is None
-                 or (_time(m['started_at']) or 0) >= started)
-            and (cutoff is None or (_time(m['started_at']) or 0) < cutoff))]
-        found = ids | {m['session_id'] for m in selected}
-        if found == ids:
-            break
-        ids = found
-    discovery_errors = 0
-    for failure in failures:
-        related = failure['session'] in ids or failure['parent'] in ids
-        unknown = not failure['session']
-        failure['scope'] = 'run_lineage' if related else 'unclassified' if unknown else 'unrelated_inventory'
-        discovery_errors += int(related or unknown)
-    if diagnostics is not None:
-        diagnostics.extend(failures)
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for item in selected:
-        grouped.setdefault(item['session_id'], []).append(item)
-    grouped.setdefault(root, [])
-    sessions = []
-    for sid, segments in grouped.items():
-        meta = segments[0] if segments else {}
-        role = ('orchestrator' if sid == root else 'host_approval_review'
-                if meta.get('thread_source') == 'guardian_review' else 'lens')
-        errors = []
-        attribution_unknown = False
-        snapshot: dict[str, Any] = {}
-        try:
-            snapshot = meter.read_logical_snapshot(
-                [segment['path'] for segment in segments], sid, at_or_before=cutoff)
-            native = snapshot['usage']
-            if snapshot['partial']:
-                errors.append('native counter unavailable')
-        except (OSError, ValueError) as exc:
-            native = None
-            if segments:
-                errors.append(f'segment counters could not be reconciled: {exc}')
-                attribution_unknown = isinstance(exc, meter.CounterChronologyError)
-        baseline = meter.starting_baseline(run) if sid == root else None
-        if sid == root and baseline is None:
-            errors.append('run baseline is partial or unavailable; attribution is unknown')
-            attribution_unknown = True
-        usage = ({k: max(0, v - (baseline or {}).get(k, 0)) for k, v in native.items()}
-                  if native and (sid != root or baseline is not None) else None)
-        if native and baseline and any(v < baseline.get(k, 0) for k, v in native.items()):
-            usage = None
-            errors.append('native counter moved below run baseline; reset attribution is unknown')
-            attribution_unknown = True
-        interval = None
-        if sid != root and started is not None:
-            interval = meter.read_owned_interval([segment['path'] for segment in segments], sid, start=started, end=cutoff)
-            usage, native = interval['usage'], interval['native_usage']
-            errors = interval['errors']
-        sessions.append({'session': sid, 'agent': meta.get('agent_path') or role,
-                         'role': role, 'usage': usage, 'native_usage': native,
-                         'status': 'partial' if errors else 'measured' if usage else 'unavailable',
-                         'basis': interval['basis'] if interval else 'start baseline' if sid == root else 'child created during flow',
-                         'interval': interval.get('interval') if interval else None,
-                         'measured_at': (interval or snapshot).get('measured_at'),
-                         'measurement_source': 'native_sample',
-                         'attribution_schema': 'taskplane.owned-interval/v1' if interval else None,
-                         'attribution_unknown': attribution_unknown,
-                         'errors': errors})
-    return sessions, discovery_errors
+    with cache.action_budget() as budget:
+        metadata, failures = cache.discover({**run, 'discovery_cutoff': cutoff}, budget)
+        if diagnostics is not None:
+            diagnostics.extend(failures)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in metadata:
+            sid = item['session_id']
+            if (sid != root and item.get('thread_source') != 'guardian_review'
+                    and sid not in run.get('worker_sessions', []) and started is not None
+                    and (_time(item.get('started_at')) or 0) < started):
+                continue
+            if cutoff is not None and (_time(item.get('started_at')) or 0) >= cutoff:
+                continue
+            grouped.setdefault(sid, []).append(item)
+        grouped.setdefault(root, [])
+        sessions = []
+        # Give children the first service slots; root is bounded and cannot
+        # consume a fresh allowance for every child or every nested report.
+        for sid, segments in sorted(grouped.items(), key=lambda item: item[0] == root):
+            meta = segments[0] if segments else {}
+            role = ('orchestrator' if sid == root else 'host_approval_review'
+                    if meta.get('thread_source') == 'guardian_review' else 'lens')
+            interval = meter.read_owned_interval([segment['path'] for segment in segments], sid,
+                start=started if sid != root and started is not None else 0, end=cutoff)
+            native, usage = interval['native_usage'], interval['usage']
+            errors = list(interval['errors'])
+            attribution_unknown = interval.get('attribution_unknown', False)
+            if sid == root:
+                # Reconciled legacy lifetime sums support the observed root
+                # baseline even when no child interval baseline is provable.
+                errors = [e for e in errors if e != 'legacy_segment_boundaries_unknown']
+                baseline = meter.starting_baseline(run)
+                usage = None
+                if baseline is None:
+                    errors.append('run baseline is partial or unavailable; attribution is unknown')
+                    attribution_unknown = True
+                elif native is not None:
+                    if any(native[k] < baseline[k] for k in baseline):
+                        errors.append('native counter moved below run baseline; reset attribution is unknown')
+                        attribution_unknown = True
+                    elif not attribution_unknown and 'source_generation_changed' not in errors:
+                        usage = {k: native[k] - baseline[k] for k in baseline}
+            if attribution_unknown:
+                usage = None
+            recovered = interval.get('source_unavailable', False) and usage is not None
+            sessions.append({'session': sid, 'agent': meta.get('agent_path') or role,
+                'role': role, 'usage': usage, 'native_usage': native,
+                'status': 'partial' if errors else 'recorded; native counter unavailable' if recovered
+                          else 'measured' if usage is not None else 'unavailable',
+                **({'recovery_status': 'recorded; native counter unavailable'} if recovered else {}),
+                'basis': 'start baseline' if sid == root else interval['basis'],
+                'interval': {'start': started, 'end_exclusive': cutoff},
+                'measured_at': interval.get('measured_at'), 'measurement_source': 'native_sample',
+                'attribution_schema': None if sid == root else 'taskplane.owned-interval/v1',
+                'attribution_unknown': attribution_unknown, 'errors': sorted(set(errors))})
+        return sessions, len(failures)
 
 
 def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
+              expected: list[str] | tuple[str, ...] = (), *,
+              closing: dict[str, Any] | None = None,
+              workspace: str | Path | None = None) -> dict[str, Any]:
+    with cache.action_budget(workspace) as budget:
+        result = _reconcile(run, events, expected, closing=closing)
+        if run.get('host') != 'claude':
+            result = cache.merge_report(run, result, budget)
+            result['token_coverage'].update(budget.coverage())
+        return result
+
+
+def _reconcile(run: dict[str, Any], events: list[dict[str, Any]],
               expected: list[str] | tuple[str, ...] = (), *,
               closing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Read native identities and counters; never run tools or retain content.
@@ -186,6 +157,8 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
         if (prior.get('usage') and (current is None or not current.get('usage'))
                 and not (current or {}).get('errors')
                 and not (current or {}).get('attribution_unknown')
+                and not any(d.get('session') == prior['session'] or d.get('scope') == 'discovery'
+                            for d in diagnostics)
                 and (prior.get('role') != 'orchestrator' or start is not None)
                 and (prior.get('role') == 'orchestrator' or owned)):
             if current is not None:
@@ -272,7 +245,8 @@ def phase_accounting(points: list[dict[str, Any]], endpoint: dict[str, Any],
         if identity not in seen:
             unique.append(point)
             seen.add(identity)
-    bad_sessions: set[str] = set()
+    bad_sessions: set[str] = {s['session'] for s in measurement.get('sessions', [])
+                              if s.get('session') and s.get('attribution_unknown')}
     session_reasons: dict[str, set[str]] = {}
     for before, after in zip(unique, unique[1:]):
         old = {s['session']: s for s in before.get('sessions', []) if s.get('session')}
@@ -291,7 +265,8 @@ def phase_accounting(points: list[dict[str, Any]], endpoint: dict[str, Any],
             if reset:
                 bad_sessions.add(sid)
             delta = {k: end[k] - start[k] for k in start} if comparable and not reset else None
-            fresh = a.get('status') == b.get('status') == 'measured'
+            fresh = (a.get('status') == b.get('status') == 'measured'
+                     and not a.get('attribution_unknown') and not b.get('attribution_unknown'))
             role_known = a.get('role') == b.get('role') and bool(a.get('role'))
             visit = before.get('visit')
             phase = visits.get(visit)

@@ -52,7 +52,7 @@ class Store:
                 w.require(len(raw) <= OBJECT_LIMIT, "context_overflow", "Canonical context node is oversized.")
                 return {"schema": REFERENCE_SCHEMA, "kind": kind,
                         "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw), "source_key": source_key}
-        return Preview(self.workspace).put(kind, value)
+        return Preview(self.workspace)._put(kind, value)
 
     def _object(self, kind: str, data: Any, source_key: str, form: str) -> dict[str, Any]:
         value = {"schema": "taskplane.context-object/v1", "kind": kind,
@@ -81,6 +81,11 @@ class Store:
                 "bytes": len(raw), "source_key": source_key}
 
     def put(self, kind: str, value: Any, source_key: str = "") -> dict[str, Any]:
+        from .snapshot_retention import register_references
+        register_references(self.workspace, value, "durable-reference")
+        return self._put(kind, value, source_key)
+
+    def _put(self, kind: str, value: Any, source_key: str = "") -> dict[str, Any]:
         w.require(isinstance(kind, str) and 0 < len(kind) <= 128
                   and isinstance(source_key, str) and len(source_key) <= 256,
                   "invalid_context", "Invalid context object metadata.")
@@ -105,18 +110,18 @@ class Store:
                     chunk.append(body)
             if chunk:
                 chunks.append(chunk)
-            refs = [self.put(kind, part) for part in chunks]
+            refs = [self._put(kind, part) for part in chunks]
             return self._index(kind, refs, source_key, "dict-chunks" if isinstance(value, dict) else "list-chunks")
         # Small independently addressed bodies deduplicate unchanged inputs across phases.
         entries: list[Any]
         if isinstance(value, dict):
-            entries = [[key, self.put(kind, body)] for key, body in sorted(value.items())]
+            entries = [[key, self._put(kind, body)] for key, body in sorted(value.items())]
             form = "dict"
         elif isinstance(value, list):
-            entries = [self.put(kind, body) for body in value]
+            entries = [self._put(kind, body) for body in value]
             form = "list"
         elif isinstance(value, str):
-            entries = [self.put(kind, value[i:i + 1024]) for i in range(0, len(value), 1024)]
+            entries = [self._put(kind, value[i:i + 1024]) for i in range(0, len(value), 1024)]
             form = "text"
         else:
             raise w.Refusal("context_overflow", "Scalar context cannot fit its canonical node.")

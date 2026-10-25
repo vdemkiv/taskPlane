@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.35.2 — review fixes and release validation
+
+- Include the complete 2.35.1 bounded-history and worker-identity release below.
+- Correct usage accounting, workspace lineage handling, snapshot retention and checkpoint interaction issues identified by the subsequent engineering review, preserving existing approvals and historical evidence.
+- Validate finding closure against the exact accepted Build evidence in downstream Engineering and Retro checkpoints.
+- Align version reporting and package manifests, and exclude generated host declarations and local tooling from release archives.
+- Correct browser initialization and Windows test fixtures without relaxing recovery, bounded-processing or dashboard assertions; update the CI filelock dependency to 4.2.4.
+
 ## v2.35.1 — bounded history and reliable worker identity
 
 - Replace full-history Claude transcript and flow-journal processing on startup, hooks and reports with disposable incremental SQLite indexes, persisted offsets and exact contribution accounting.

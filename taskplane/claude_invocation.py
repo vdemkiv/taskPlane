@@ -28,9 +28,7 @@ _REFERENCE = re.compile(r'v1\.([0-9a-f]{2,800})\.([0-9a-f]{64})\.([0-9a-f]{64})\
 
 
 def _option(words: list[str], option: str) -> str | None:
-    values = [words[index + 1] for index, word in enumerate(words[:-1]) if word == option]
-    values.extend(word[len(option) + 1:] for word in words if word.startswith(option + '='))
-    return values[0] if len(values) == 1 else None
+    return runtime_command.single_option(words, option)
 
 
 def completion_matches(row: dict[str, Any], identity: dict[str, Any]) -> bool:
@@ -75,10 +73,14 @@ def issue(controller: Controller, event: dict[str, Any]) -> dict[str, Any] | Non
                   'unsupported_authority', 'Claude invocation requires a current admitted observed child.')
         assert row and state and worker
         workers.current(state, worker)
-        w.require(_option(words, '--run') == state['run'] and (
-            words[3] == 'worker' and _option(words, '--operation') == 'claim'
-            and _option(words, '--grant') == worker['grant_id']
-            or words[3] == 'context' and _option(words, '--task') == worker['task_id']),
+        try:
+            options = {name: _option(words[4:], name) for name in ('--run', '--operation', '--grant', '--task')}
+        except ValueError as exc:
+            raise w.Refusal('scope_violation', str(exc)) from None
+        w.require(options['--run'] == state['run'] and (
+            words[3] == 'worker' and options['--operation'] == 'claim'
+            and options['--grant'] == worker['grant_id']
+            or words[3] == 'context' and options['--task'] == worker['task_id']),
             'scope_violation', 'Claude invocation must name its exact current run and own grant or task.')
         w.require('claude_invocation' not in row, 'unsupported_authority', 'Claude invocation reference was already issued; do not replay this call.')
         token = 'v1.' + controller.root.encode().hex() + '.' + key + '.' + secrets.token_hex(32)

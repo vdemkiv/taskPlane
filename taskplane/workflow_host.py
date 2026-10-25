@@ -1021,10 +1021,13 @@ class Controller:
             words = workflow_local.runtime_words(event) if tool in {"Bash", "exec_command"} else []
             native_cli = (len(words) >= 3 and (self.workspace/words[1]).resolve() == Path(__file__).with_name('tp.py').resolve())
             if self.adapter.control_action(event, state) or native_cli:
+                from .runtime_command import single_option
+                try:
+                    operation = single_option(words[4:], '--operation')
+                except ValueError as exc:
+                    raise w.Refusal('scope_violation', str(exc)) from None
                 w.require(len(words) >= 4 and words[2] == "flow" and words[3] in {"context", "worker"}
-                          and (words[3] == "context" or "--operation" in words
-                               and words.index("--operation") + 1 < len(words)
-                               and words[words.index("--operation") + 1] == "claim"),
+                          and (words[3] == "context" or operation == "claim"),
                           "scope_violation", "Worker control is limited to claim and task context.")
                 return
             if tool == "write_stdin" and args.get("chars", "") in ("", "\x03"):

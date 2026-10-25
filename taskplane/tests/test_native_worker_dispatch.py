@@ -10,6 +10,108 @@ import pytest
 from taskplane import worker_runtime as wr, workflow as w
 from taskplane.tests.test_worker_runtime import setup, reserve, launch, consume
 from taskplane.tests.test_farm_workers import requires_native_reader
+from taskplane.tests.test_claude_invocation import launched, command_event, execute  # noqa: F401
+
+
+@pytest.mark.parametrize('words, expected', [
+    ([], None), (['--operation', 'claim'], 'claim'), (['--operation=claim'], 'claim'),
+    (['--run=r', '--operation=claim', '--grant', 'g'], 'claim'),
+])
+def test_exact_single_option_forms(words, expected):
+    from taskplane import claude_invocation, runtime_command
+    assert runtime_command.single_option(words, '--operation') == expected
+    assert claude_invocation._option(words, '--operation') == expected
+
+
+MALFORMED_OPERATIONS = [
+    ['--operation'], ['--operation='], ['--operation', ''], ['--operation', '--grant'],
+    ['--operation=--claim'], ['--operation', 'claim', '--operation=status'],
+    ['--operation=claim', '--operation'], ['--operation=claim', '--operation=claim'],
+    ['--oper=claim'], ['--operation', 'claim', '--oper=status'],
+    ['--', '--operation=claim'],
+]
+
+
+@pytest.mark.parametrize('words', MALFORMED_OPERATIONS)
+def test_exact_single_option_refuses_malformed_controls(words):
+    from taskplane import claude_invocation, runtime_command
+    for extract in (runtime_command.single_option, claude_invocation._option):
+        with pytest.raises(ValueError):
+            extract(words, '--operation')
+
+
+@pytest.mark.parametrize('words, admitted', [
+    (['--operation', 'claim'], True), (['--operation=claim'], True),
+    (['--operation=status'], False), (['--operation', 'join'], False),
+    *((words, False) for words in MALFORMED_OPERATIONS),
+])
+def test_worker_guard_claim_option_equivalence(tmp_path, words, admitted):
+    from taskplane import workflow_host as host
+    state = w.new_state(str(tmp_path), 'root', 'run',
+                        {'criteria': ['AC'], 'paths': {phase: [] for phase in w.PHASES}},
+                        entry='engineering', standalone=True)
+    state['workflow_available'] = True
+    state['workers'] = {'g': {'worker_id': 'child', 'prepared_at': '2026-01-01'}}
+    controller = host.Controller(tmp_path, 'root', host.installed_adapter('codex'), principal='child')
+    command = [str(Path(sys.executable).resolve()), str(Path(host.__file__).with_name('tp.py')),
+               'flow', 'worker', *words, '--workspace', str(tmp_path), '--run', 'run', '--grant', 'g']
+    event = dict(tool_name='exec_command', cwd=str(tmp_path), tool_input={'cmd': shlex.join(command)})
+    before = deepcopy(state)
+    if admitted:
+        controller._guard(event, state)
+    else:
+        with pytest.raises(w.Refusal):
+            controller._guard(event, state)
+    assert state == before
+
+
+@requires_native_reader
+@pytest.mark.parametrize('equals', [False, True])
+def test_claim_spellings_reach_actual_claude_child_identity(launched, equals):
+    from taskplane import flow
+    controller, state, item, _ = launched
+    event = command_event(launched)
+    if equals:
+        words = shlex.split(event['tool_input']['command'])
+        index = words.index('--operation')
+        words[index:index + 2] = ['--operation=claim']
+        event['tool_input']['command'] = shlex.join(words)
+    updated = flow.hook(event)['hookSpecificOutput']['updatedInput']
+    completed = execute(updated, controller.workspace)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    claimed = json.loads(completed.stdout)
+    assert claimed['grant_id'] == item['grant']['grant_id']
+    assert execute(updated, controller.workspace).returncode == 2
+    flow.hook({**event, 'tool_input': updated, 'hook_event_name': 'PostToolUse'})
+    sha = claimed['context']['handoff_ref']['sha256']
+    for index in range(10):
+        context = command_event(launched, action='context', call=f'context-{index}', extra=['--drain', sha])
+        output = flow.hook(context)['hookSpecificOutput']['updatedInput']
+        completed = execute(output, controller.workspace)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        delivered = json.loads(completed.stdout)
+        flow.hook({**context, 'tool_input': output, 'hook_event_name': 'PostToolUse'})
+        if delivered['done']:
+            break
+    else:
+        pytest.fail('Context did not finish in bounded fixture')
+    worker = controller.report()['workers'][item['grant']['grant_id']]
+    assert worker['worker_id'] == 'child'
+    assert worker['state'] == 'running' and worker['context_receipt']
+    assert wr.readiness(worker)['status'] == 'ready'
+
+
+@requires_native_reader
+@pytest.mark.parametrize('option', ['--run', '--grant', '--task', '--operation'])
+def test_claude_invocation_refuses_trailing_duplicate_option(launched, option):
+    from taskplane import flow
+    action = 'context' if option == '--task' else 'claim'
+    event = command_event(launched, action=action, extra=[option])
+    with pytest.raises(w.Refusal) as failure:
+        flow.hook(event)
+    assert failure.value.result()['reason'] == 'scope_violation'
+    controller, _, item, _ = launched
+    assert not controller.report()['workers'][item['grant']['grant_id']].get('claimed_at')
 
 
 def metadata(path, state, row, child='native-uuid'):
@@ -25,11 +127,13 @@ def test_desktop_child_actor_guards_scope_and_records_actual_binding(tmp_path, m
     monkeypatch.delenv('CODEX_THREAD_ID', raising=False)
     workspace = tmp_path/'repo'; workspace.mkdir()
     c, s = setup(workspace); item = reserve(c, s); launch(c, s, item)
-    metadata(logs/'native-0.jsonl', s, item['grant'], 'native-0')
+    transcript = logs/'native-0.jsonl'
+    metadata(transcript, s, item['grant'], 'native-0')
     flow.append(workspace, dict(kind='start', run=s['run'], session='root', phase='product'))
     event = dict(host='codex', cwd=str(workspace), session_id='root', agent_id='native-0',
                  agent_type='default', hook_event_name='PreToolUse', tool_name='Write',
-                 call_id='before-context', tool_input={'path':'T0.md'})
+                 call_id='before-context', tool_input={'path':'T0.md'},
+                 transcript_path=str(transcript))
     with pytest.raises(w.Refusal, match='consume'): flow.hook(event)
     consume(c, s, item['grant'], 'native-0')
     flow.hook({**event, 'call_id':'own-write'})
@@ -51,7 +155,7 @@ def test_desktop_child_actor_guards_scope_and_records_actual_binding(tmp_path, m
     assert all(r['binding_observation']['principal'] == 'native-0' for r in rows)
     assert next(r for r in rows if r['call_id'] == 'sibling-write')['outcome'] == 'denied'
     assert next(r for r in rows if r['call_id'] == 'parent-progress')['outcome'] == 'admitted'
-    root_event = {k:v for k,v in event.items() if k not in {'agent_id','agent_type'}}
+    root_event = {k:v for k,v in event.items() if k not in {'agent_id','agent_type','transcript_path'}}
     flow.hook({**root_event, 'call_id':'root-write', 'tool_input':{'path':'T1.md'}})
     assert flow.read_events(workspace)[-1]['binding_observation']['principal'] == 'root'
 

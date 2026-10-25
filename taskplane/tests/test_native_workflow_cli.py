@@ -20,6 +20,16 @@ from taskplane.tests.test_workflow_local import decision, check_historical_finis
 ROOT=Path(__file__).resolve().parents[2]
 
 
+def native_root(env):
+    """Publish real fixture lineage for first use, outside the source tree."""
+    from taskplane.tests.test_flow_integration import native
+    transcript = Path(env['CODEX_HOME']) / 'sessions/root.jsonl'
+    if not transcript.exists():
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        native(transcript, 'root', None)
+    return transcript
+
+
 def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
     if args[0] == 'submit' and code == 0:
         # A legitimate fixture producer refreshes its receipt after corrections.
@@ -39,6 +49,10 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
     env.update(CODEX_HOME=str(host_data/'codex'),CLAUDE_CONFIG_DIR=str(host_data/'claude'))
     env.update(environment or {})  # Explicit fixture observations only; no ambient session identity.
     env['CODEX_THREAD_ID' if host=='codex' else 'TASKPLANE_CLAUDE_SESSION_ID']='root'
+    if host == 'codex' and args[0] == 'start':
+        # A real native root has indexed lineage; an environment label alone
+        # cannot authorize first initialization. Keep fixture data outside source.
+        native_root(env)
     env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),
                PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
     # Match the declared Windows hook launcher; py -3 may select a different
@@ -623,7 +637,7 @@ def test_optional_graph_failure_preserves_committed_decision(tmp_path, monkeypat
 def exercise_counter_freshness(workspace, host, root=ROOT):
     """EV-F01: real CLI readers retain saved data time after a transcript disappears."""
     from unittest.mock import patch
-    from taskplane.tests.test_native_session_meter import _write_segment
+    from taskplane.tests.test_flow_integration import native
     from taskplane.tests.test_claude_flow import message, write
     create(workspace)
     logs=workspace.parent/(workspace.name+'-logs');logs.mkdir()
@@ -631,10 +645,11 @@ def exercise_counter_freshness(workspace, host, root=ROOT):
     path.parent.mkdir(parents=True)
     environment={'CODEX_HOME':str(logs)} if host=='codex' else {'TASKPLANE_CLAUDE_TRANSCRIPT':str(path)}
     with patch.dict(os.environ,environment):
-        if host=='codex':_write_segment(path,session_id='root',total=100)
+        if host=='codex':
+            native(path, 'root', 100)
         else:write(path,[message()])
         initial=cli(workspace,host,'start','--scope','.taskplane/scope.json','--request-reference','test/EV-F01',root=root,environment=environment)
-        if host=='codex':_write_segment(path,session_id='root',total=130)
+        if host=='codex':native(path, 'root', 130)
         else:write(path,[message(),message('m2')])
         measured=cli(workspace,host,'progress','--phase','product','--note','Observed fixture interval',root=root,environment=environment)
         measured_at=measured['sessions'][0]['measured_at']
@@ -706,9 +721,10 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
                    if (parent/'bin/bash.exe').is_file()),None)
     if host=='claude':env.update(CLAUDE_PLUGIN_ROOT=str(root),CLAUDE_ENV_FILE=str(workspace/'.taskplane/fixture-env'))
     else:env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),CODEX_THREAD_ID='root')
+    transcript = native_root(env) if host == 'codex' else workspace/'fixture-log.jsonl'
     identity={'session_id':'root'} if host=='claude' else {'thread_id':'root'}
     def hook(event,**payload):
-        data={'hook_event_name':event,'cwd':str(workspace),'transcript_path':str(workspace/'fixture-log.jsonl'),**identity,**payload}
+        data={'hook_event_name':event,'cwd':str(workspace),'transcript_path':str(transcript),**identity,**payload}
         proc=subprocess.run(hooks[event][0]['hooks'][0]['commandWindows' if os.name == 'nt' else 'command'],shell=True,cwd=workspace,env=env,
                             input=json.dumps(data),capture_output=True,text=True)
         assert proc.returncode==0,(proc.stdout,proc.stderr)
