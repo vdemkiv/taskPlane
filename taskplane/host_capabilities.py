@@ -205,6 +205,7 @@ def runtime_identity() -> dict[str, Any]:
                  'taskplane/workflow_local.py', 'taskplane/worker_runtime.py',
                  'taskplane/host_capabilities.py', 'taskplane/host_native.py',
                  'taskplane/claude_worker_observations.py',
+                 'taskplane/claude_invocation.py',
                  'taskplane/context_handoff.py', 'taskplane/workspace_binding.py', 'hooks/hooks.json'):
         target = root/name
         members[name] = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
@@ -294,14 +295,11 @@ def worker_identity_observation(host: str, parent: str, attempt: dict[str, Any],
 
 def native_invocation_identity(host: str, workspace: str | Path,
                                argv: Sequence[str]) -> dict[str, Any] | None:
-    """The installed CLI has no supported per-invocation Claude identity channel.
-
-    Inherited session environment, an echoed grant and matching command text are
-    not enough to distinguish concurrent parent/child invocations. Host-owned
-    integrations may use NativeSession.verify_invocation; the local CLI must
-    report unavailable rather than choose a principal from those signals.
-    """
-    return None
+    """Consume an exact hook-issued reference, never inherited actor metadata."""
+    if host != 'claude':
+        return None
+    from .claude_invocation import consume
+    return consume(Path(workspace).resolve(), list(argv))
 
 
 def unavailable_worker_observation(parent: str, worker: dict[str, Any], call_id: str) -> dict[str, Any]:

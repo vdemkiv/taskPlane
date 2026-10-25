@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable, TypeGuard
 
 from . import flow_usage, primitives
-from .snapshot_retention import _directory, _read, _write, _locked, _root
+from .snapshot_retention import _directory, _read, _write, _locked, _root, _pin_names, classify_snapshot_references
 
 SCHEMA = "taskplane.usage-closure/v1"
 
@@ -95,6 +95,7 @@ def commit_boundary(workspace: str | Path, before_state: dict[str, Any], after_s
         try:
             prior = json.loads(_read(fd, name))
         except FileNotFoundError:
+            _pin_names(fd, root, classify_snapshot_references(workspace, value), "closure-reference")
             _write(fd, name, primitives.canonical_bytes(value, trailing_newline=True), exclusive=True)
             return value
         if (not _valid(prior, str(root.parent)) or prior.get("id") != key

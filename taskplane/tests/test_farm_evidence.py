@@ -461,6 +461,129 @@ def runtime_finding(tmp_path, *, kind="integration", environment="local"):
     return state, plan, check, declaration, update
 
 
+def downstream_closure(tmp_path, monkeypatch, phase="engineering", status="pass"):
+    state, plan, check, _, update = runtime_finding(tmp_path)
+    (tmp_path / "app.py").write_text("value = 1\n" if status == "fail" else "value = 2\n")
+    if status == "unknown":
+        check["command"] = [str(tmp_path / "missing-python")]
+    out, _, _ = attempt(tmp_path, monkeypatch, state, check, "check-1.log")
+    capture(state, out, e.validate_verification(tmp_path, state, out))
+    state["index"] = w.PHASES.index(phase)
+    output = {"schema": "taskplane.phase-output/v1", "run": state["run"],
+              "phase": phase, "visit": w.current(state)["id"], "criteria": ["AC1"],
+              **{field: "Reviewed current runtime evidence" for field in w.OUTPUT_FIELDS[phase]},
+              "finding_updates": [update]}
+    if phase == "engineering":
+        output.update(findings=[], lens_coverage=[{"lens": "validation", "reviewer": "fixture-reviewer",
+                      "rationale": "Exercise the real verification-to-closure handoff"}],
+                      requirements_comparison={"AC1": "Current assertion passed"})
+    (tmp_path / "tasks.json").write_text(json.dumps({"tasks": plan["task_dag"]}))
+    (tmp_path / ".taskplane/dashboard.html").write_text("<html>Fixture dashboard</html>")
+    return state, output
+
+
+def prevalidate_closure(tmp_path, state, output):
+    from taskplane import depgraph
+
+    name = output["phase"] + ".json"
+    (tmp_path / name).write_text(json.dumps(output))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    return e.prevalidate(tmp_path, state, name, "tasks.json")
+
+
+@pytest.mark.parametrize("phase", ["engineering", "retro"])
+def test_downstream_prevalidate_resolves_current_build_without_mutating_history(tmp_path, monkeypatch, phase):
+    state, output = downstream_closure(tmp_path, monkeypatch, phase)
+    before = deepcopy(state)
+    history = (tmp_path / "history.json").read_bytes()
+    packet = prevalidate_closure(tmp_path, state, output)
+    assert packet["verification"]["status"] == "validated"
+    assert packet["verification"]["effective_checks"][0]["status"] == "pass"
+    assert {"history.json", "check-1.log"} <= packet["manifest"].keys()
+    assert state == before and (tmp_path / "history.json").read_bytes() == history
+    state = accept_finding_update(state, output["finding_updates"][0], index=state["index"])
+    assert e.finding_register(state)[0]["disposition"] == "resolved"
+
+
+@pytest.mark.parametrize("status", ["fail", "unknown"])
+def test_downstream_closure_rejects_unsuccessful_runtime_attempt(tmp_path, monkeypatch, status):
+    state, output = downstream_closure(tmp_path, monkeypatch, status=status)
+    with pytest.raises(w.Refusal, match="runtime checks matching"):
+        prevalidate_closure(tmp_path, state, output)
+
+
+@pytest.mark.parametrize("defect", ["missing", "unvalidated", "not_requested", "stale", "rejected",
+    "changes_requested", "cancelled", "superseded", "new_build", "source", "test", "runtime",
+    "foreign_run", "foreign_visit", "edited_log", "history_override", "missing_history",
+    "new_attempt", "environment", "criterion"])
+def test_downstream_prevalidate_refuses_invalid_build_proof(tmp_path, monkeypatch, defect):
+    state, output = downstream_closure(tmp_path, monkeypatch)
+    build = state["visits"][3]
+    if defect == "missing":
+        build["packet"] = None
+    elif defect == "unvalidated":
+        build["packet"]["verification"]["status"] = "legacy_untyped"
+    elif defect in {"not_requested", "stale", "rejected", "changes_requested", "cancelled"}:
+        build["decision"] = defect
+    elif defect == "superseded":
+        build["superseded"] = True
+    elif defect == "new_build":
+        state["visits"].insert(4, {**build, "id": "replacement-build", "packet": None, "decision": "not_requested"})
+        state["index"] += 1
+    elif defect in {"source", "test"}:
+        (tmp_path / ("app.py" if defect == "source" else "test_app.py")).write_text("changed = True\n")
+    elif defect == "runtime":
+        monkeypatch.setattr(reuse, "key", lambda *a, **k: {**fake_key(*a, **k), "runtime": "changed"})
+    elif defect in {"foreign_run", "foreign_visit"}:
+        history = json.loads((tmp_path / "history.json").read_text())
+        history["run" if defect == "foreign_run" else "visit"] = "foreign"
+        (tmp_path / "history.json").write_text(json.dumps(history))
+    elif defect == "edited_log":
+        (tmp_path / "check-1.log").write_text("Edited after validation")
+    elif defect == "history_override":
+        output["verification_history"] = "other-history.json"
+    elif defect == "missing_history":
+        (tmp_path / "history.json").unlink()
+    elif defect == "new_attempt":
+        state["index"] = 3
+        check = state["visits"][2]["packet"]["output"]["verification_strategy"]["checks"][0]
+        attempt(tmp_path, monkeypatch, state, check, "check-2.log")
+        state["index"] = 5
+    else:
+        declaration = state["visits"][0]["packet"]["output"]["finding_references"][0]
+        obligation = declaration["required_evidence"][0]
+        obligation["environment" if defect == "environment" else "criteria"] = "deployed" if defect == "environment" else ["OTHER"]
+    before = deepcopy(state)
+    with pytest.raises(w.Refusal):
+        prevalidate_closure(tmp_path, state, output)
+    assert state == before
+
+
+def test_downstream_without_closure_does_not_require_build_history(tmp_path, monkeypatch):
+    state, output = downstream_closure(tmp_path, monkeypatch)
+    output.pop("finding_updates")
+    state["visits"][3]["packet"] = None
+    (tmp_path / "history.json").unlink()
+    assert prevalidate_closure(tmp_path, state, output)["verification"]["status"] == "legacy_untyped"
+
+
+@pytest.mark.parametrize("updates", [None, 1, {}, "resolved"])
+def test_downstream_malformed_updates_keep_structured_refusal(tmp_path, monkeypatch, updates):
+    state, output = downstream_closure(tmp_path, monkeypatch)
+    output["finding_updates"] = updates
+    with pytest.raises(w.Refusal, match="Finding updates must be a list"):
+        prevalidate_closure(tmp_path, state, output)
+
+
+def test_downstream_legacy_plan_cannot_resolve_runtime_finding(tmp_path, monkeypatch):
+    state, output = downstream_closure(tmp_path, monkeypatch)
+    legacy = state["visits"][2]["packet"]["output"]
+    legacy.pop("verification_strategy")
+    legacy.pop("build_outputs")
+    with pytest.raises(w.Refusal, match="runtime checks matching"):
+        prevalidate_closure(tmp_path, state, output)
+
+
 @pytest.mark.parametrize("kind", ["static", "independent"])
 def test_static_or_generic_independent_pass_cannot_resolve_runtime_finding(tmp_path, kind):
     state, _, check, _, update = runtime_finding(tmp_path, kind=kind)

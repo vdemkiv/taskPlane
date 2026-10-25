@@ -8,6 +8,26 @@ import sys
 from typing import Any
 
 
+def single_option(words: list[str], option: str) -> str | None:
+    """Extract one exact split/equal option; malformed or duplicate uses refuse."""
+    selected = None
+    for index, word in enumerate(words):
+        name = word.split('=', 1)[0]
+        if word == '--':
+            raise ValueError('A positional terminator cannot introduce runtime controls.')
+        if name.startswith('--') and name != option and option.startswith(name):
+            raise ValueError(f'Use the exact {option} option; abbreviations are refused.')
+        if name != option:
+            continue
+        if selected is not None:
+            raise ValueError(f'Supply {option} exactly once; duplicate options are refused.')
+        selected = (word.split('=', 1)[1] if '=' in word else
+                    words[index + 1] if index + 1 < len(words) else '')
+        if not selected or selected.startswith('-') or '\0' in selected:
+            raise ValueError(f'{option} requires one explicit value.')
+    return selected
+
+
 def workspace_selector(words: list[str]) -> str | None:
     """Accept one exact selector; never let argparse abbreviate or choose the last."""
     selected = None

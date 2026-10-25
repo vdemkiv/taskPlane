@@ -6,6 +6,7 @@ No policy executes commands, approves missing evidence, or extends a route.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime
 import json
 from pathlib import Path
@@ -65,28 +66,24 @@ def decision_text(excerpt: str) -> str:
     return ' '.join(line.strip() for line in text.splitlines() if not line.lstrip().startswith('>'))
 
 
+@dataclass(frozen=True)
+class DecisionInterpretation:
+    choice: str | None
+    named_phases: frozenset[str] = frozenset()
+
+
 def decision_phase(excerpt: str) -> str | None:
-    phases = '|'.join(w.PHASES)
-    text = decision_text(excerpt)
-    match = re.search(r'\b(' + phases + r')\s+(?:phase\s+)?(?:is\s+)?(?:approved|accepted)\b', text)
-    if not match:
-        match = re.search(r'\b(?:approve|accept)\s+(?:the\s+)?(?:(?:this|current)\s+)?(' + phases + r')\b', text)
-    return match[1] if match else None
+    """Compatibility projection; authorization must check the whole interpretation."""
+    phases = interpret_decision(excerpt).named_phases
+    return next(iter(phases)) if len(phases) == 1 else None
 
 
-def _complete_approval_response(excerpt: str) -> bool:
-    """Positively classify every clause, including quoted and unknown content.
-
-    A recognized opening is only a candidate: every remaining clause must be a
-    complete current grant, supported work statement, or supported explanation.
-    This finite English grammar intentionally requires clarification for other
-    prose. No negative keyword or request detector activates this boundary.
-    Quoted grants cannot establish assent; the caller checks the unquoted lead.
-    """
-    phase = r'(?:' + '|'.join(w.PHASES) + r')'
+def _approval_patterns() -> tuple[str, str, str]:
+    """One grant grammar supplies assent recognition and phase-object captures."""
+    phase = r'(' + '|'.join(w.PHASES) + r')'
     target = r'(?:' + phase + r'(?:\s+phase)?|phase|checkpoint|output|proposal|changes?|work)'
-    obj = (r'(?:it|this|that|(?:(?:the|this|that)\s+)?(?:current\s+)?' + target
-           + r'|(?:checkpoint\s+)?[0-9a-f]{32})')
+    obj = (r'(?:(?:checkpoint\s+)?[0-9a-f]{32}|(?:(?:the|this|that)\s+)?(?:current\s+)?' + target
+           + r'|it|this|that)')
     actor = r'(?:(?:i|we)\s+(?:have\s+)?)?'
     adverb = r'(?:(?:hereby|explicitly|now)\s+)?'
     grant_verb = (r'(?:approv(?:e|ed)|accept(?:ed)?|confirm(?:ed)?|authori[sz](?:e|ed)|'
@@ -131,21 +128,38 @@ def _complete_approval_response(excerpt: str) -> bool:
         r'(?:the\s+)?results\s+(?:clearly\s+)?show\s+(?:over\s+)?[0-9]+%\s+reduction',
     )
     complete = '(?:' + '|'.join((grant, work_time, work, *explanation)) + ')'
+    return grant, item, complete
+
+
+def _approval_clauses(excerpt: str) -> list[str]:
     # Retain quoted contents, remove only presentation delimiters. Unrecognized
     # symbols/words remain in the clause and fail the complete match. Apostrophes
     # within words are retained, so unsupported contractions cannot be erased.
     text = excerpt.casefold().replace("’", "'")
     text = re.sub(r'["“”`]|(?<!\w)\'|\'(?!\w)|(?m:^\s*>\s?)', ' ', text)
     text = re.sub(r'(?<=\w)[-\u2010\u2011](?=\w)', ' ', text)
-    clauses = re.split(r'[.!;\n:—–]+', text)
-    for part in clauses:
-        words = re.sub(r'\s+', ' ', part.replace(',', ' ')).strip()
-        if words and not re.fullmatch(complete, words):
-            return False
-    return True
+    return [words for part in re.split(r'[.!;\n:—–]+', text)
+            if (words := re.sub(r'\s+', ' ', part.replace(',', ' ')).strip())]
 
 
-def conversational_choice(excerpt: str) -> str | None:
+def _approval_response(excerpt: str) -> tuple[bool, frozenset[str]]:
+    grant, item, complete = _approval_patterns()
+    phases: set[str] = set()
+    for words in _approval_clauses(excerpt):
+        if not re.fullmatch(complete, words):
+            return False, frozenset(phases)
+        if re.fullmatch(grant, words):
+            for match in re.finditer(r'(?<!\S)' + item + r'(?=\s|$)', words):
+                phases.update(value for value in match.groups() if value is not None)
+    return True, frozenset(phases)
+
+
+def _complete_approval_response(excerpt: str) -> bool:
+    """Classify every clause, including quoted content and unknown tails."""
+    return _approval_response(excerpt)[0]
+
+
+def interpret_decision(excerpt: str) -> DecisionInterpretation:
     """Recognize explicit everyday decisions; ambiguity requires clarification.
 
     This only classifies an observed response. The adapter still verifies its
@@ -157,10 +171,10 @@ def conversational_choice(excerpt: str) -> str | None:
     if not text or '?' in qualifiers or re.search(
         r"\b(?:if|unless|until|when|after|before|once|provided|assuming|hypothetically|example|would|might|maybe|perhaps|subject to|as long as)\b", qualifiers
     ):
-        return None
+        return DecisionInterpretation(None)
     # A later qualification/negation must not be hidden by an affirmative prefix.
     if re.search(r"\b(?:but|however|except|yet|no|not|never|don't|cannot|can't|shouldn't|without)\b", qualifiers):
-        return None
+        return DecisionInterpretation(None)
     lead = re.sub(r'^(?:please\s+)?(?:i\s+)?', '', text).rstrip('.! ')
     dissent = {
         'cancelled': r'(?:cancel(?:led)?|stop|abort)',
@@ -169,24 +183,29 @@ def conversational_choice(excerpt: str) -> str | None:
     }
     choices = {choice for choice, pattern in dissent.items()
                if re.match(r'^' + pattern + r'\b', lead)}
-    phase = r'(?:' + '|'.join(w.PHASES) + r')'
-    approval = (r'^(?:(?:' + phase + r'\s+(?:phase\s+)?(?:is\s+)?)?'
-                r'(?:approv(?:e|ed)|accept(?:ed)?|apparoved|apprvoed)|'
-                r'(?:looks?|sounds?) (?:good|great)|lgtm|go ahead|proceed|continue|'
-                r'yes|yep|yeah|ok(?:ay)?|ship it)\b')
-    if re.match(approval, lead) and _complete_approval_response(excerpt):
+    _, item, _ = _approval_patterns()
+    unquoted = _approval_clauses(text)
+    complete, phases = _approval_response(excerpt)
+    if unquoted and re.match(r'(?:please\s+)?' + item + r'(?=\s|$)', unquoted[0]) and complete:
         choices.add('approved')
     # Every recognized dissent form also qualifies an affirmative prefix.
     # Quoting that qualification cannot hide it from the mixed-decision check.
     conflict = any(re.search(r'\b' + pattern + r'\b', qualifiers) for pattern in dissent.values())
     if 'approved' in choices and conflict:
-        return None
+        return DecisionInterpretation(None, phases)
     # "Yes, explain ..." or "continue reviewing" is not acceptance of an output.
     if 'approved' in choices and re.search(
         r'\b(?:explain|review(?:ing)?|investigat\w*|research|discuss|consider|approved by|implement an? option|add an? (?:option|feature))\b', text
     ):
-        return None
-    return next(iter(choices)) if len(choices) == 1 else None
+        return DecisionInterpretation(None, phases)
+    selected = next(iter(choices)) if len(choices) == 1 else None
+    if selected == 'approved' and len(phases) > 1:
+        selected = None
+    return DecisionInterpretation(selected, phases)
+
+
+def conversational_choice(excerpt: str) -> str | None:
+    return interpret_decision(excerpt).choice
 
 
 def _unnecessary_decision(predicate: str) -> bool:

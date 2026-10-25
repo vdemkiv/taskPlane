@@ -244,7 +244,8 @@ def test_display_tasks_on_start_retry_do_not_replace_empty_snapshot(tmp_path):
     first = c.start(request)
     (tmp_path/'tasks.json').write_text(json.dumps(tasks))
     refreshed = c.start({**request, 'tasks': 'tasks.json'})
-    assert refreshed == first
+    assert first['start_created'] is True and refreshed['start_created'] is False
+    assert {k:v for k,v in refreshed.items() if k != 'start_created'} == {k:v for k,v in first.items() if k != 'start_created'}
     assert refreshed['initial_context_tasks'] == []
     assert Session(tmp_path, refreshed).view['task_ids']['items'] == []
     tasks['tasks'][0]['paths'] = ['outside.py']

@@ -17,7 +17,7 @@ export type Snapshot = {
   unresolved_count: number | null; workers: { live: number | null; pending?: number; status?: string } | null;
   run_usage: { tokens: Record<string, number | null> | null; coverage: unknown; measurement: unknown };
   confirmed_at: string; snapshot_id: string;
-  capabilities: { snapshot: boolean; evidence: boolean; intent: boolean; direct_decision: boolean; native_confirmation: boolean; preview: boolean; reasons: string[] };
+  capabilities: { snapshot: boolean; evidence: boolean; intent: boolean; direct_decision: boolean; native_confirmation: boolean; preview: boolean; reasons: string[]; choices?: Partial<Record<Choice, { intent: boolean; direct_decision: boolean; reasons: string[] }>> };
   fallback: { dashboard: string; decision: string };
 };
 type Choice = 'approved' | 'changes_requested';
@@ -33,7 +33,15 @@ const bindingKey = (binding: Binding | null | undefined): string => binding ? JS
 const findingKey = (finding: Finding): string => JSON.stringify([finding.origin_run ?? null, finding.id]);
 const percent = (value: number | undefined) => value === undefined ? 'Unknown' : `${value}%`;
 const runTokens = (s?: Snapshot) => display(s?.run_usage.tokens?.total_tokens);
-const coverage = (s?: Snapshot) => { const c = s?.run_usage.coverage; if (!c || typeof c !== 'object') return display(c); const v = c as RecordData; return Number(v.unmeasured_sessions) > 0 || Number(v.partial_sessions) > 0 ? 'Partial coverage' : typeof v.measured_sessions === 'number' && v.measured_sessions > 0 ? `${v.measured_sessions} measured sessions` : 'Unknown coverage'; };
+const coverage = (s?: Snapshot) => {
+  const c = s?.run_usage.coverage, measurement = s?.run_usage.measurement;
+  const v = c && typeof c === 'object' && !Array.isArray(c) ? c as RecordData : undefined;
+  const status = measurement && typeof measurement === 'object' ? (measurement as RecordData).status : undefined;
+  if (status === 'partial' || v?.journal_status === 'partial' || v?.journal_detail_status === 'partial'
+    || Number(v?.unmeasured_sessions) > 0 || Number(v?.partial_sessions) > 0) return 'Partial coverage';
+  if (!v || status === 'unknown' || status === 'unavailable') return 'Unknown coverage';
+  return typeof v.measured_sessions === 'number' && Number.isFinite(v.measured_sessions) && v.measured_sessions > 0 ? `${v.measured_sessions} measured sessions` : 'Unknown coverage';
+};
 const equalBinding = (a: Binding | null | undefined, b: Binding | null | undefined): boolean => !!a && !!b && Object.keys(a).length === Object.keys(b).length && Object.entries(a).every(([k,v]) => (b as unknown as RecordData)[k] === v);
 const freeze = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
@@ -137,7 +145,7 @@ export class Coordinator {
     if (!binding) return;
     this.drafts[bindingKey(binding)] = value; await this.persist(); this.io.changed();
   }
-  eligibility(binding = this.snapshot?.identity): string | undefined {
+  eligibility(binding = this.snapshot?.identity, choice: Choice = 'approved'): string | undefined {
     if (this.preview || this.snapshot?.capabilities.preview) return 'Preview — decisions unavailable';
     if (!this.io.decide) return 'Decision transport unavailable; use the conversation';
     if (this.stale || !this.snapshot || this.now - this.confirmed >= 5000) return 'Refresh and review the current checkpoint before deciding';
@@ -147,13 +155,16 @@ export class Coordinator {
     if (this.snapshot.historical) return 'Historical run — read only';
     if (!this.snapshot.identity) return 'No pending checkpoint';
     if (!binding || !equalBinding(binding, this.snapshot.identity)) return 'Checkpoint changed — review current evidence';
-    if (!this.snapshot.capabilities.direct_decision || !this.snapshot.capabilities.intent || !this.snapshot.capabilities.native_confirmation) return this.snapshot.capabilities.reasons.join('; ') || 'Direct decisions unavailable; use the conversation';
+    const capabilities = this.snapshot.capabilities;
+    const branch = Object.prototype.hasOwnProperty.call(capabilities, 'choices') ? capabilities.choices?.[choice] : capabilities;
+    if (!branch || !Array.isArray(branch.reasons) || !branch.reasons.every(reason => typeof reason === 'string')) return 'Direct decisions unavailable; use the conversation';
+    if (branch.direct_decision !== true || branch.intent !== true || !capabilities.native_confirmation || branch.reasons.length) return branch.reasons.join('; ') || 'Direct decisions unavailable; use the conversation';
     if (this.busy) return 'Recording decision…';
     return undefined;
   }
   async prepare(choice: Choice, binding: Binding, comment: string) {
     await this.age();
-    const reason = this.eligibility(binding); if (reason) { this.message = reason; this.io.changed(); return; }
+    const reason = this.eligibility(binding, choice); if (reason) { this.message = reason; this.io.changed(); return; }
     if (this.pending && this.pending.outcome !== 'recorded' && this.pending.outcome !== 'not_recorded') { this.message = 'Reconcile or cancel the outstanding attempt before starting another'; this.io.changed(); return; }
     const pending: Pending = { id: this.io.id(), binding: freeze(binding), choice, comment, outcome: 'preparing' };
     const request = { schema: REQUEST, operation: 'prepare', intent_id: pending.id, binding: pending.binding, choice, comment };
@@ -170,7 +181,7 @@ export class Coordinator {
   }
   async confirm(attempt: Pending, control: UiPressArgument, session: string) {
     await this.age();
-    const reason = this.eligibility(attempt.binding);
+    const reason = this.eligibility(attempt.binding, attempt.choice);
     if (reason) { this.message = reason; this.io.changed(); return; }
     if (this.pending !== attempt || attempt.outcome !== 'prepared' || !attempt.intent || control.plugin !== 'taskplane' || control.component !== 'Pane' || control.requestId !== PANE || !['terminal','desktop'].includes(control.surface) || control.element !== (attempt.choice === 'approved' ? 'confirm-accept' : 'confirm-changes') || !session || session !== attempt.binding.root) {
       this.message = 'Not recorded — confirmation no longer matches this pane or owning session'; this.io.changed(); return;
@@ -307,6 +318,7 @@ export const register: Register = (on, options) => {
     if (!c) return <Text>Taskplane is loading. Use .taskplane/dashboard.html if host startup is unavailable.</Text>;
     const attempt = c.pending;
     const reason = c.eligibility(binding);
+    const changesReason = c.eligibility(binding, 'changes_requested');
     const finding = s?.findings?.find(x => findingKey(x) === c.finding);
     const index = s?.findings?.findIndex(x => findingKey(x) === c.finding) ?? -1;
     const content = finding ? c.view === 'finding' ? lines(Object.fromEntries(Object.entries(finding).filter(([key]) => key !== 'sources' && key !== 'checks'))) : c.view === 'source' ? (finding.sources?.length ? finding.sources.map(source => `${lines(Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'text')))}\n${source.status === 'available' ? display(source.text ?? 'Evidence body unavailable') : 'Evidence unavailable'}${source.truncated ? '\n[Controller excerpt truncated]' : ''}`).join('\n\n') : 'Source evidence unavailable') : `Current checks\n${lines(s?.current_checks)}\nFinding verification / historical records\n${lines(finding.checks ?? finding.verification)}` : '';
@@ -333,13 +345,13 @@ export const register: Register = (on, options) => {
       <Text wrap="wrap">{`Dashboard (read only): ${s?.fallback.dashboard ?? '.taskplane/dashboard.html'}`}</Text>
       <Text wrap="wrap">{reason ?? 'Choose an action, then review its exact confirmation. Evidence validation does not resolve findings.'}</Text>
       {binding ? <Input key="revision-comment" label="Revision comment" value={c.draft(binding)} onInput={value => c.edit(value, binding)} onSubmit={value => c.edit(value, binding)} submitLabel="keep draft" /> : null}
-      {!reason && binding && (!attempt || ['recorded','not_recorded'].includes(attempt.outcome)) ? <Box flexDirection="column">
-        <Button key="prepare-accept" label="Accept" onPress={() => c.prepare('approved', binding, c.draft(binding))} />
-        <Button key="prepare-changes" label="Request changes" onPress={() => c.prepare('changes_requested', binding, c.draft(binding))} />
+      {binding && (!attempt || ['recorded','not_recorded'].includes(attempt.outcome)) ? <Box flexDirection="column">
+        {!reason ? <Button key="prepare-accept" label="Accept" onPress={() => c.prepare('approved', binding, c.draft(binding))} /> : null}
+        {!changesReason ? <Button key="prepare-changes" label="Request changes" onPress={() => c.prepare('changes_requested', binding, c.draft(binding))} /> : null}
       </Box> : null}
       {attempt ? <Box flexDirection="column">
         <Text wrap="wrap">{`Attempt ${attempt.id} · ${attempt.outcome}\n${attempt.text ?? lines({ binding: attempt.binding, choice: attempt.choice, comment: attempt.comment })}`}</Text>
-        {attempt.outcome === 'prepared' && !reason ? <Button key={attempt.choice === 'approved' ? 'confirm-accept' : 'confirm-changes'} label={attempt.choice === 'approved' ? 'Confirm Accept' : 'Confirm Request changes'} onPress={() => { const event = observed; if (event) return c.confirm(attempt, event, session); }} /> : null}
+        {attempt.outcome === 'prepared' && !c.eligibility(attempt.binding, attempt.choice) ? <Button key={attempt.choice === 'approved' ? 'confirm-accept' : 'confirm-changes'} label={attempt.choice === 'approved' ? 'Confirm Accept' : 'Confirm Request changes'} onPress={() => { const event = observed; if (event) return c.confirm(attempt, event, session); }} /> : null}
         <Button key="receipt" label="Check decision receipt" onPress={() => c.reconcile()} />
         <Button key="cancel-confirmation" label="Cancel confirmation (retain draft)" onPress={() => c.cancel()} />
       </Box> : null}

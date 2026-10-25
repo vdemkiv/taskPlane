@@ -20,6 +20,30 @@ MAX_BYTES = 4 * 1024 * 1024
 MAX_LINE_BYTES = 256 * 1024
 MAX_RECORDS = 16384
 _ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
+ARGUMENT_SCHEMA = 'taskplane.claude-async-arguments/v1'
+
+
+def async_arguments(arguments: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Only the host transport's supported async representations are equivalent."""
+    if ('run_in_background' in arguments and arguments['run_in_background'] is not True
+            and arguments['run_in_background'] != 'true'):
+        return None
+    return {key: value for key, value in arguments.items() if key != 'run_in_background'}
+
+
+def arguments_match(attempt: Mapping[str, Any], arguments: Mapping[str, Any], *, asynchronous: bool) -> bool:
+    normalized = async_arguments(arguments)
+    if not asynchronous or normalized is None:
+        return False
+    schema = attempt.get('dispatch_argument_schema')
+    if schema is not None:
+        return (schema == ARGUMENT_SCHEMA
+                and attempt.get('dispatch_semantic_digest') == digest(normalized))
+    # Legacy attempts retain their original digest and history. Compute only
+    # the three supported representations; never rewrite old attempt records.
+    return attempt.get('dispatch_digest') in {digest(normalized),
+        digest({**normalized, 'run_in_background': True}),
+        digest({**normalized, 'run_in_background': 'true'})}
 
 
 def _stamp(value: Any) -> datetime:
@@ -80,7 +104,6 @@ def correlate_records(parent: str, attempt: Mapping[str, Any],
     structured = returned.get("toolUseResult")
     if (use["item"].get("name") not in {"Agent", "Task"}
             or not isinstance(use["item"].get("input"), Mapping)
-            or digest(use["item"]["input"]) != attempt["dispatch_digest"]
             or result["item"].get("is_error") is True
             or any(row.get("sessionId") != parent or row.get("cwd") != workspace
                    or row.get("isSidechain") is True for row in (call, returned))):
@@ -90,6 +113,8 @@ def correlate_records(parent: str, attempt: Mapping[str, Any],
     child = structured.get("agentId")
     if (structured.get("isAsync") is not True or structured.get("status") != "async_launched"):
         return _answer("unsupported", "Native launch status is not supported")
+    if not arguments_match(attempt, use['item']['input'], asynchronous=True):
+        return _answer('conflict', 'Native launch arguments differ from admitted async arguments')
     if not isinstance(child, str) or not _ID.fullmatch(child) or child == parent:
         return _answer("conflict", "Native result has an invalid child identity")
     if attempt.get("worker_id") not in (None, child):

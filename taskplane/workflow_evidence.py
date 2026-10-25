@@ -748,7 +748,11 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     """Bind declared requirements, immutable attempts, current provenance and logs."""
     plan = _plan(state)
     phase = w.current(state)["phase"]
-    if phase not in {"build", "evaluate"} or not typed_plan(plan):
+    updates = output.get("finding_updates", [])
+    resolving = phase in {"engineering", "retro"} and isinstance(updates, list) and any(
+        isinstance(update, dict) and update.get("disposition") == "resolved"
+        for update in updates)
+    if (phase not in {"build", "evaluate"} and not resolving) or not typed_plan(plan):
         return {"status": "legacy_untyped", "files": []}
     from .context import Store
     from . import context_reuse
@@ -756,6 +760,18 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     store = Store(root)
     requirements = {check["id"]: check for check in plan["verification_strategy"]["checks"]}
     history_path = output.get("verification_history")
+    if resolving:
+        # A new, unsubmitted Build must not fall back to an older accepted one.
+        builds = [stage for stage in state["visits"][:state["index"] + 1]
+                  if stage["phase"] == "build" and not stage.get("superseded")]
+        predecessor = builds[-1] if builds else {}
+        accepted = (predecessor.get("packet") or {}).get("verification", {})
+        w.require(predecessor.get("decision") == "approved" and accepted.get("status") == "validated"
+                  and accepted.get("history"), "invalid_evidence",
+                  "Finding closure needs a current accepted typed Build verification history.")
+        w.require(history_path is None or history_path == accepted.get("history_path"),
+                  "invalid_evidence", "Finding closure cannot substitute Build verification history.")
+        history_path = accepted.get("history_path")
     if phase == "evaluate" and history_path is None:
         predecessor = _verification_packet(state)
         packet = predecessor.get("packet", {})
@@ -767,6 +783,9 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
               "invalid_evidence", "Verification history must name a planned output.")
     assert isinstance(history_path, str)
     history = object_file(root, history_path)
+    if resolving:
+        w.require(history == accepted["history"], "invalid_evidence",
+                  "Finding closure requires the exact accepted Build verification history.")
     w.require(history.get("schema") == VERIFICATION_HISTORY and history.get("run") == state["run"]
               and history.get("coverage") == "declared_producer" and isinstance(history.get("attempts"), list),
               "invalid_evidence", "Verification history has foreign binding, schema or coverage.")
@@ -1080,7 +1099,13 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
     if receipt and (receipt.get("workspace") != str(root.resolve())
                     or receipt.get("graph_digest") != content_fingerprint(graph)):
         receipt = None
-    return {"phase": phase, "visit": stage["id"],
+    from .snapshot_retention import classify_snapshot_references
+    snapshot_references = set()
+    for relative in files:
+        if Path(relative).suffix.lower() in {".json", ".md", ".txt", ".html", ".jsonl", ".log"}:
+            snapshot_references.update(classify_snapshot_references(root, read(root, relative),
+                format="json" if relative.endswith(".json") else "text"))
+    return {"phase": phase, "visit": stage["id"], "snapshot_references": sorted(snapshot_references),
             "output": output, "manifest": manifest(root, files, task_path=tasks_path),
             "execution_evidence": "native-results/v1" if any("execution" in row for row in tasks) else None,
             "source_manifest": manifest(root, state["scope"]["paths"]["build"] +
@@ -1094,6 +1119,12 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
 
 def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -> dict[str, Any]:
     packet = prevalidate(root, state, output_path, tasks_path)
+    from .snapshot_retention import register_references
+    # Complete artifact bodies, before any immutable finding/context publication.
+    for relative in packet["manifest"]:
+        if Path(relative).suffix.lower() in {".json", ".md", ".txt", ".html", ".jsonl", ".log"}:
+            raw = read(root, relative)
+            register_references(root, raw, "sealed-evidence", format="json" if relative.endswith(".json") else "text")
     # Only sealing persists immutable finding bodies. Previewing the identical
     # validation path neither allocates a checkpoint nor touches the store.
     from .context import Store

@@ -293,3 +293,118 @@ def test_exact_thread_record_copy_does_not_require_fictional_restart(tmp_path):
     _write_thread_segment(copy, total=150, ordinal=15)
     with pytest.raises(ValueError, match='restart evidence'):
         native_session_meter.read_logical_snapshot([copy, first], 'root')
+
+
+def _usage_record(value, ordinal, *, at='2026-09-01T00:00:15Z', response=None):
+    counts = dict(input_tokens=value, cached_input_tokens=0, output_tokens=0,
+                  reasoning_output_tokens=0, total_tokens=value)
+    payload = {'thread_id': 'child', 'thread_token_usage': counts}
+    if response:
+        payload.update(response_id=response, usage=counts)
+    return {'type': 'token_usage_record', 'timestamp': at, 'ordinal': ordinal, 'payload': payload}
+
+
+def _usage_file(path, records, *, parent='root', resumed=False):
+    payload = {'id': 'child', 'parent_thread_id': parent, 'timestamp': '2026-09-01T00:00:00Z'}
+    if resumed:
+        payload['history_base'] = {'thread_id': 'child', 'end_ordinal_exclusive': 2, 'end_byte_offset': 100}
+    rows = [{'type': 'session_meta', 'payload': payload}, *records]
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    return path
+
+
+@pytest.mark.parametrize('records,expected,error', [
+    ([_usage_record(10, 1), _usage_record(20, 2)], 20, None),
+    ([_usage_record(10, 1), _usage_record(10, 1)], 10, None),
+    ([_usage_record(10, 1), _usage_record(20, 1)], None, 'conflicting_counter'),
+    ([_usage_record(20, 1), _usage_record(10, 2)], None, 'counter_reset'),
+])
+def test_replay_native_ordinals_share_snapshot_chronology(tmp_path, records, expected, error):
+    path = _usage_file(tmp_path / 'native.jsonl', records)
+    result = native_session_meter.read_owned_interval([path], 'child', start=0)
+    if error:
+        assert result['usage'] is None and error in result['errors']
+        assert result['attribution_unknown']
+    else:
+        assert result['usage']['total_tokens'] == expected
+        counters = [native_session_meter._latest_counter(json.dumps(row).encode(), session_id='child')[0]
+                    for row in records]
+        assert native_session_meter._chronological_counter(counters, 'fixture')['usage'] == result['usage']
+
+
+@pytest.mark.parametrize('parent,resumed', [('root', False), ('other', True)])
+def test_replay_rejects_unproven_segment_replacement_and_lineage(tmp_path, parent, resumed):
+    first = _usage_file(tmp_path / 'a.jsonl', [_usage_record(10, 1)])
+    second = _usage_file(tmp_path / 'b.jsonl', [_usage_record(20, 2)], parent=parent, resumed=resumed)
+    result = native_session_meter.read_owned_interval([first, second], 'child', start=0)
+    assert result['usage'] is None and result['attribution_unknown']
+    assert any('lineage' in e or 'restart evidence' in e for e in result['errors'])
+    with pytest.raises(native_session_meter.CounterChronologyError):
+        native_session_meter.read_logical_snapshot([first, second], 'child')
+
+
+def test_late_intermediate_counter_rechecks_both_neighbors(tmp_path):
+    path = _usage_file(tmp_path / 'late.jsonl', [_usage_record(10, 1), _usage_record(30, 3)])
+    assert native_session_meter.read_owned_interval([path], 'child', start=0)['usage']['total_tokens'] == 30
+    with path.open('a') as stream:
+        stream.write(json.dumps(_usage_record(40, 2)) + '\n')
+    result = native_session_meter.read_owned_interval([path], 'child', start=0)
+    assert result['usage'] is None and 'counter_reset' in result['errors']
+
+
+def test_same_response_conflict_nulls_previously_measured_usage(tmp_path):
+    path = _usage_file(tmp_path / 'responses.jsonl', [_usage_record(10, 1, response='same')])
+    assert native_session_meter.read_owned_interval([path], 'child', start=0)['usage']['total_tokens'] == 10
+    with path.open('a') as stream:
+        stream.write(json.dumps(_usage_record(20, 2, response='same')) + '\n')
+    result = native_session_meter.read_owned_interval([path], 'child', start=0)
+    assert result['usage'] is None and 'conflicting_response' in result['errors']
+
+
+def test_incomplete_owned_usage_survives_cache_reuse_and_recovers_when_observed(tmp_path):
+    from taskplane.tests.test_harness_review_regressions import native
+    path = tmp_path / 'incomplete.jsonl'
+    rows = native(path, 'child', [(5, 100), (10, 150), (15, 170)], 'root', owned=True)
+    missing = json.loads(json.dumps(rows[2]))
+    del rows[2]['payload']['usage']
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    start = datetime.fromisoformat('2026-09-01T00:00:10+00:00').timestamp()
+    for _ in range(2):
+        result = native_session_meter.read_owned_interval([path], 'child', start=start)
+        assert result['usage']['total_tokens'] == 20
+        assert result['native_usage']['total_tokens'] == 170
+        assert result['baseline']['total_tokens'] == 100
+        assert result['responses'] == 1 and result['status'] == 'partial'
+        assert 'owned_counter_mismatch' in result['errors']
+        assert not result['attribution_unknown']
+    with path.open('a') as stream:
+        stream.write(json.dumps(missing) + '\n')
+    result = native_session_meter.read_owned_interval([path], 'child', start=start)
+    assert result['usage']['total_tokens'] == 70 and result['responses'] == 2
+    assert result['status'] == 'measured' and not result['errors']
+
+
+@pytest.mark.parametrize('next_record,error', [
+    (_usage_record(20, 1), 'conflicting_counter'),
+    (_usage_record(5, 2), 'counter_reset'),
+    (_usage_record(20, 2, response='recorded'), 'conflicting_response'),
+])
+def test_owned_subtotal_remains_unavailable_after_fatal_conflict(tmp_path, next_record, error):
+    path = _usage_file(tmp_path / 'fatal.jsonl', [
+        _usage_record(10, 1, response='recorded'), next_record])
+    result = native_session_meter.read_owned_interval([path], 'child', start=0)
+    assert result['usage'] is None and result['status'] == 'partial'
+    assert result['attribution_unknown'] and error in result['errors']
+
+
+def test_owned_replay_preserves_half_open_cutoff_and_duplicate_aliases(tmp_path):
+    import os
+    path = _usage_file(tmp_path / 'cutoff.jsonl', [
+        _usage_record(10, 1, at='2026-09-01T00:00:05Z'),
+        _usage_record(30, 2, at='2026-09-01T00:00:10Z')])
+    alias = tmp_path / 'alias.jsonl'
+    os.link(path, alias)
+    end = datetime.fromisoformat('2026-09-01T00:00:10+00:00').timestamp()
+    result = native_session_meter.read_owned_interval([path, alias], 'child', start=0, end=end)
+    assert result['usage']['total_tokens'] == 10
+    assert result['status'] == 'measured'

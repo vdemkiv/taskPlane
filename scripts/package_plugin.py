@@ -6,12 +6,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import stat
 import subprocess
+import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from taskplane.version_contract import MANIFEST_PATHS, inspect_versions
 
 
 def package_input(path: Path) -> bool:
@@ -101,18 +104,19 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
     if host not in {"openai", "claude"}:
         raise ValueError("unknown plugin host")
     manifest_dir = ".codex-plugin" if host == "openai" else ".claude-plugin"
-    manifest = json.loads(read_member(ROOT / manifest_dir / "plugin.json"))
-    version = manifest["version"]
-    if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
-        raise ValueError("Package version must be a safe semantic version")
-    for other in (".codex-plugin", ".claude-plugin"):
-        target_manifest = ROOT / other / "plugin.json"
-        if target_manifest.exists() and json.loads(read_member(target_manifest)).get("version") != version:
-            raise ValueError("Codex and Claude package versions disagree")
+    manifest_bytes = {name: read_member(ROOT / name) for name in MANIFEST_PATHS if (ROOT / name).exists()}
+    # The selected host is required; the other host may be absent in an extraction.
+    if manifest_dir + "/plugin.json" not in manifest_bytes:
+        raise ValueError("Selected host plugin manifest is missing")
+    inspected = inspect_versions(manifest_bytes)
+    if not inspected["ok"]:
+        raise ValueError("Plugin and marketplace versions disagree")
+    version = inspected["version"]
     suffix = extension or ("zip" if host == "openai" else "plugin")
     if suffix not in {"zip", "plugin"}:
         raise ValueError("package extension must be zip or plugin")
     files = {ROOT / name for name in ("README.md", "CHANGELOG.md", "LICENSE", "PRIVACY.md", "TERMS.md")}
+    files.update(ROOT / name for name in manifest_bytes if name.startswith(manifest_dir + "/"))
     for directory in (manifest_dir, "hooks", "assets", "skills", "agents"):
         if (ROOT / directory).is_symlink():
             raise ValueError(f"Package directory cannot be a symlink: {directory}")
@@ -133,7 +137,12 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
     for path in files:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"Package member must be a regular file: {path}")
-    members = {path.relative_to(ROOT).as_posix(): read_member(path) for path in sorted(files)}
+        if path.relative_to(ROOT).as_posix() in MANIFEST_PATHS and path.relative_to(ROOT).as_posix() not in manifest_bytes:
+            raise ValueError("Package manifest inventory changed during validation")
+    members = {}
+    for path in sorted(files):
+        name = path.relative_to(ROOT).as_posix()
+        members[name] = manifest_bytes[name] if name in manifest_bytes else read_member(path)
     members = {name: host_member(name, data, host) for name, data in members.items()}
     identity = source_identity(members, host)
     output_dir.mkdir(parents=True, exist_ok=True)

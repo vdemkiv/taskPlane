@@ -47,7 +47,10 @@ def publish(workspace, value=1, **kwargs):
 
 
 def catalog(workspace):
-    return json.loads((workspace / ".taskplane" / snapshots.CATALOG).read_text())
+    root = snapshots._root(workspace)
+    with snapshots._directory(root) as fd, snapshots._managed(fd, root) as db:
+        return {"pairs": {row["name"]: snapshots._item(row, root)
+                          for row in db.execute("SELECT * FROM pairs")}}
 
 
 @pytest.mark.parametrize("exclusive", [False, True])
@@ -148,6 +151,7 @@ def test_context_reference_becomes_a_permanent_pin(tmp_path):
     context = tmp_path / ".taskplane" / "context-v1" / "objects"
     context.mkdir(parents=True)
     ref = context / "evidence.json"
+    snapshots.register_references(tmp_path, {"artifact": str(target)}, "durable-reference")
     ref.write_text(json.dumps({"artifact": str(target)}))
     assert snapshots.collect(tmp_path, max_pairs=0, max_bytes=0, now=time.time() + 1000)["status"] == "complete"
     ref.unlink()
@@ -155,25 +159,25 @@ def test_context_reference_becomes_a_permanent_pin(tmp_path):
     assert target.exists() and "durable-reference" in catalog(tmp_path)["pairs"][target.stem]["pins"]
 
 
-def test_missing_reference_and_corrupt_reference_skip_collection(tmp_path):
+def test_missing_reference_and_corrupt_reference_refuse_before_publication(tmp_path):
     target = publish(tmp_path, detached=True)
     ref = tmp_path / ".taskplane" / "report.json"
-    ref.write_text(json.dumps({"snapshot": "snapshot-" + "c" * 16 + "-" + "d" * 64 + ".html"}))
-    result = snapshots.collect(tmp_path, max_pairs=0, max_bytes=0, now=time.time() + 1000)
-    assert result["status"] == "skipped" and target.exists()
-    ref.write_text("{broken")
-    result = snapshots.collect(tmp_path, max_pairs=0, max_bytes=0, now=time.time() + 1000)
-    assert result["status"] == "skipped" and target.exists()
+    for raw in (json.dumps({"snapshot": "snapshot-" + "c" * 16 + "-" + "d" * 64 + ".html"}), "{broken"):
+        with pytest.raises((ValueError, OSError)):
+            snapshots.register_references(tmp_path, raw, "report", format="json")
+            ref.write_text(raw)
+        assert not ref.exists() and target.exists()
 
 
-def test_corrupt_catalog_and_failed_catalog_commit_never_delete(tmp_path, monkeypatch):
+def test_corrupt_generation_and_failed_open_never_delete(tmp_path, monkeypatch):
     target = publish(tmp_path, detached=True)
-    original = (tmp_path / ".taskplane" / snapshots.CATALOG).read_bytes()
-    (tmp_path / ".taskplane" / snapshots.CATALOG).write_text("{}")
+    marker = tmp_path / ".taskplane" / snapshots.MARKER
+    original = marker.read_bytes()
+    marker.write_text("{}")
     assert snapshots.collect(tmp_path, max_pairs=0, now=time.time() + 1000)["status"] == "skipped"
     assert target.exists()
-    (tmp_path / ".taskplane" / snapshots.CATALOG).write_bytes(original)
-    monkeypatch.setattr(snapshots, "_save", lambda *_: (_ for _ in ()).throw(OSError("disk full")))
+    marker.write_bytes(original)
+    monkeypatch.setattr(snapshots, "_managed", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
     assert snapshots.collect(tmp_path, max_pairs=0, now=time.time() + 1000)["status"] == "skipped"
     assert target.exists()
 
@@ -208,19 +212,16 @@ def test_linked_pair_and_linked_directory_are_never_followed(tmp_path):
         snapshots.pin(tmp_path, target, "decision")
 
 
-def test_unknown_inventory_and_reference_fingerprint_change_are_conservative(tmp_path, monkeypatch):
+@pytest.mark.parametrize("force_fallback", [False, True])
+def test_collection_uses_registered_ownership_without_global_scan(tmp_path, monkeypatch, force_fallback):
+    if force_fallback:
+        monkeypatch.setattr(snapshots, "supports_collection", lambda: False)
     target = publish(tmp_path, detached=True)
-    scan = snapshots._scan
-    calls = 0
-    def changed(*args, **kwargs):
-        nonlocal calls
-        value = scan(*args, **kwargs)
-        calls += 1
-        value["fingerprint"] = str(calls)
-        return value
-    monkeypatch.setattr(snapshots, "_scan", changed)
-    assert snapshots.collect(tmp_path, max_pairs=0, now=time.time() + 1000)["status"] == "skipped"
-    assert target.exists()
+    monkeypatch.setattr(snapshots, "_scan", lambda *a, **k: pytest.fail("global scan"))
+    supported = snapshots.supports_collection()
+    assert snapshots.collect(tmp_path, max_pairs=0, now=time.time() + 1000)["status"] == (
+        "complete" if supported else "skipped")
+    assert target.exists() is (not supported)
 
 
 def test_detached_same_run_never_replaces_selection(tmp_path):
@@ -552,12 +553,12 @@ def test_frozen_snapshot_links_bind_original_artifact_and_survive_collection(tmp
     workspace.mkdir()
     current, artifact, closure = frozen_snapshot_index(workspace, transition)
     before = artifact.read_bytes(), artifact.with_suffix(".json").read_bytes()
-    catalog_before = (workspace / ".taskplane" / snapshots.CATALOG).read_bytes()
+    catalog_before = (workspace / ".taskplane" / snapshots.MANAGED).read_bytes()
     html = dashboard.telemetry_sections(current)
     assert 'href="' + artifact.as_uri() + '"' in html
     assert closure["label"] in html and closure["cutoff"] in html
     assert "journal label" not in html and "journal cutoff" not in html
-    assert (workspace / ".taskplane" / snapshots.CATALOG).read_bytes() == catalog_before
+    assert (workspace / ".taskplane" / snapshots.MANAGED).read_bytes() == catalog_before
     publish(workspace, 99)
     snapshots.collect(workspace, max_pairs=0, max_bytes=0, now=time.time() + 1000)
     assert artifact.as_uri() in dashboard.telemetry_sections(current)
@@ -608,7 +609,7 @@ def test_frozen_snapshot_links_reject_unverified_or_unsafe_targets(tmp_path, inv
     elif invalid == "context_schema":
         current["snapshot"]["schema"] = "foreign"
     elif invalid == "catalog_changed":
-        (tmp_path / ".taskplane" / snapshots.CATALOG).write_text("{}")
+        (tmp_path / ".taskplane" / snapshots.MARKER).write_text("{}")
     html = dashboard.telemetry_sections(current)
     assert "href=" not in html
     assert "Snapshot artifacts unavailable or unverified" in html

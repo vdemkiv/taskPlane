@@ -922,3 +922,77 @@ the immutable choice and comment against the exact displayed binding. Preview
 (`--mods-preview`) cannot submit a decision. Existing 2.31.7 owner/session and
 host permission restrictions remain authoritative; foreign-session CLI reads
 are refused. Unsupported hosts use the existing dashboard and conversation flow.
+
+### Bounded history collection
+
+Claude token collection and the flow journal use derived SQLite indexes. Public
+startup, hook, CLI and report actions share nested budgets; they do not load the
+complete transcript or journal. Persisted source offsets and per-message or
+per-run aggregates let subsequent processes resume ingestion and reduce only
+changed observations.
+
+A cold or missing index catches up over repeated calls. Until both ingestion and
+reduction finish, coverage remains partial and reports include the remaining
+bytes or updates. Missing original run baselines stay unknown; later discovery
+does not invent a zero baseline. Detailed evidence pages can be partial while a
+separately complete compact token total remains available.
+
+Only creation of a new run captures its original usage baseline. Retrying
+`flow start` cannot reconstruct a lost baseline from a later counter, even for
+a legacy run without a start marker. Explicit retry attachments are recorded
+separately and remain available while historical usage is unknown.
+
+The source logs remain unchanged. Truncation, replacement, invalid records and
+continuity failures invalidate derived generations or disclose gaps. Torn final
+records wait for completion. Cache contention, unavailable locking or excessive
+SQLite recovery work returns unavailable/partial coverage instead of performing
+an unrestricted fallback. Fixed continuity anchors assume append-only native
+logs; they cannot prove that an arbitrary old middle section was never edited.
+
+Discovery is bounded too. Known participants advance through persisted pages;
+an oversized inventory of previously unknown sessions remains explicitly
+incomplete. Neither incomplete discovery nor reconciled measured counters
+proves complete usage coverage. Derived indexes have no approval authority.
+
+Journal source presence, indexing progress, and observation of the selected run
+are separate coverage facts. An absent or empty source, or one containing only
+other runs, cannot establish zero tool or outcome counts for an existing run.
+An indexed run start with no calls can establish an observed zero. Cached
+measurements remain partial when their source disappears.
+
+Detail queries track their own completion independently of other queries in the
+same action. A deferred first item retains its incoming position, and pagination
+advances only after the whole item is delivered. Consumers paging across actions
+must compare source coverage because concurrent appends do not create a pinned
+snapshot.
+
+`fields_page`, `page`, and `counter_page` expose a bound `continuation` that can
+be serialized as JSON and supplied to the next call. It binds the source
+generation, run, family, and filter. Legacy primitive cursor arguments remain
+available; serialized primitive values do not retain that binding, so their
+callers must compare query identity and source coverage themselves.
+
+Record and detail allowances bound work per call, not retained journal history.
+A logical child can combine several admitted records. Its fresh query allowance
+must cover the fixed child schema and overhead, so individually supported parts
+cannot produce a child that is permanently too large to deliver.
+
+### Claude worker invocation identity
+
+Claude worker CLI calls require an observed native child launch and a separate,
+single-use invocation reference from the PreToolUse hook. The hook returns an
+exact updated command after ordinary admission; it never grants host permission.
+The reference binds the actual command, interpreter, launcher, workspace, child,
+grant and current workflow revision and expires after 120 seconds. Each claim or
+scoped context operation needs its own reference. Missing identity is a
+nonretryable capability refusal; inherited parent environment is insufficient.
+
+Async launch correlation treats omitted, boolean true and string "true"
+run_in_background values equivalently only after an independently observed async
+result. Other values and substantive argument differences remain mismatches.
+Existing raw argument digests and saved launch history are retained.
+
+Codex's native `errored` worker status closes the correlated attempt as failed
+and retains the original error-status observation. It does not produce an
+acceptable worker result. A retry uses a new grant; stale, foreign or ambiguous
+observations cannot close a different attempt.

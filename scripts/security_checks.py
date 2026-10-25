@@ -12,6 +12,31 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def scanner_probe(tool: str, directory: Path) -> dict[str, object]:
+    """Require the native scanner to reject both existing unsafe-code rules."""
+    cases = [
+        ('safe.py', 'import subprocess\nsubprocess.run(["echo", "safe"], shell=False)\n', set()),
+        ('unsafe.py', 'import subprocess\nsubprocess.run("echo unsafe", shell=True)\neval("1")\nexec("x=1")\n',
+         {'taskplane-no-shell-execution', 'taskplane-no-eval'}),
+    ]
+    for name, source, expected in cases:
+        target = directory / name
+        target.write_text(source, encoding='utf-8')
+        result = subprocess.run([tool, 'scan', '--config', str(ROOT / '.semgrep.yml'),
+                                 '--error', '--json', str(target)], cwd=directory,
+                                capture_output=True, text=True, timeout=60)
+        try:
+            report = json.loads(result.stdout)
+            found = {item['check_id'].split('.')[-1] for item in report['results']}
+            passed = (result.returncode == int(bool(expected)) and found == expected and not report.get('errors'))
+        except (ValueError, KeyError, TypeError):
+            passed = False
+        if not passed:
+            return {'name': 'opengrep rule probe', 'status': 'fail',
+                    'details': (result.stdout + result.stderr)[-2000:]}
+    return {'name': 'opengrep rule probe', 'status': 'pass', 'details': 'Safe code accepted; both unsafe-code rules rejected'}
+
+
 def offline(root: Path) -> list[str]:
     errors = []
     lines = (root/'.github/workflows/ci.yml').read_text().splitlines()
@@ -37,11 +62,11 @@ def main() -> int:
     parser.add_argument('--scanners', action='store_true', help='Also require all external scanners; never silently skip missing tools')
     args = parser.parse_args()
     errors = offline(ROOT)
-    checks = [{'name':'offline boundaries and CI credentials','status':'fail' if errors else 'pass','details':errors}]
+    checks: list[dict[str, object]] = [{'name':'offline boundaries and CI credentials','status':'fail' if errors else 'pass','details':errors}]
     if args.scanners:
         commands = [
             ['gitleaks', 'git', '--redact', '--config', '.gitleaks.toml', '.'],
-            ['semgrep', 'scan', '--config', '.semgrep.yml', '--metrics', 'off', '--error', 'taskplane', 'scripts', 'hooks'],
+            ['opengrep', 'scan', '--config', '.semgrep.yml', '--error', 'taskplane', 'scripts', 'hooks'],
             ['zizmor', '--offline', '.github/workflows'],
             ['pip-audit', '--disable-pip', '--no-deps', '-r', 'requirements-dev.lock'],
             ['pip-audit', '--disable-pip', '--no-deps', '-r', 'requirements-ci.txt'],
@@ -58,7 +83,10 @@ def main() -> int:
                     continue
                 result = subprocess.run([tool, *command[1:]], cwd=ROOT, capture_output=True, text=True, timeout=600)
                 checks.append({'name':command[0], 'status':'pass' if result.returncode == 0 else 'fail',
-                               'exit_code':result.returncode,'details':result.stderr[-2000:]})
+                               'exit_code':result.returncode, 'command':command,
+                               'details':(result.stdout + result.stderr)[-4000:]})
+                if command[0] == 'opengrep':
+                    checks.append(scanner_probe(tool, Path(temp)))
     print(json.dumps({'checks':checks,'external_scanners':'requested' if args.scanners else 'not run'},indent=2))
     return 0 if all(check['status'] == 'pass' for check in checks) else 1
 

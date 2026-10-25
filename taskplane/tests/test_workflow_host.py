@@ -240,4 +240,5 @@ def test_protected_historical_finish_preserves_new_active_run(tmp_path):
     assert c.report()['status'] == 'no_workflow'
     assert c.apply('finish', a['run'], expected_revision=a['revision']) == a
     b = c.start({})
+    assert b.pop('start_created') is True  # Start outcome is response-only, not persisted state.
     check_historical_finish_preserves_active(c, a, b)

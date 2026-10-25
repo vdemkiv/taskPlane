@@ -316,8 +316,11 @@ class LocalWorkflow:
         event_id, excerpt, recorder = value.get("event_id"), value.get("excerpt"), value.get("recorder")
         w.require(isinstance(event_id, str) and 0 < len(event_id) <= 512
                   and isinstance(excerpt, str) and 0 < len(excerpt) <= 512
-                  and recorder in {"root_orchestrator", "native_prompt_hook"}
-                  and value.get("choice") == choice(excerpt) and choice(excerpt) is not None,
+                  and recorder in {"root_orchestrator", "native_prompt_hook"},
+                  "invalid_evidence", "The response or its human provenance is unclear.")
+        from .workflow_approval import interpret_decision
+        interpretation = interpret_decision(excerpt)
+        w.require(value.get("choice") == interpretation.choice and interpretation.choice is not None,
                   "invalid_evidence", "The response or its human provenance is unclear. Ask what the user wants to do with this checkpoint; no exact wording is required.")
         observed = timestamp(source.get("observed_at"))
         if event_id in prior:
@@ -332,8 +335,6 @@ class LocalWorkflow:
         named_checkpoints = re.findall(r"\b[0-9a-f]{32}\b", excerpt.casefold())
         w.require(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
                   "invalid_evidence", "The response names a different checkpoint.")
-        from .workflow_approval import decision_phase
-        named_phase = decision_phase(excerpt)
         supplied = value.get("binding") or {}
         db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
         run = db.get("runs", {}).get(supplied.get("run"), {})
@@ -343,10 +344,10 @@ class LocalWorkflow:
             w.require(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
                       <= timestamp(recorded_at), "invalid_evidence",
                       "Decision must follow run and checkpoint submission and cannot be in the future.")
-        if named_phase:
+        if interpretation.named_phases:
             # Resolve the named visit under the Controller's existing store lock.
             # A correct binding cannot turn 'Build approved' into Product consent.
-            w.require(stage.get("phase") == named_phase, "invalid_evidence",
+            w.require(all(stage.get("phase") == phase for phase in interpretation.named_phases), "invalid_evidence",
                       "The response names a different phase. Clarify which checkpoint the user intends to accept.")
         if value.get("checkpoint_explicit") is not True:
             presentation = value.get("presentation")

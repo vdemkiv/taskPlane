@@ -380,6 +380,10 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
                   'stale_checkpoint', 'Native input requires a current unsealed phase.')
     if tool in SPAWN | FOLLOW:
         claude = tool in {"Agent", "Task"}
+        if claude:
+            from .claude_worker_observations import ARGUMENT_SCHEMA, async_arguments
+            w.require(async_arguments(args) is not None, 'scope_violation',
+                      'Claude worker launch requires an omitted or true async background field.')
         fields = ({"prompt", "description", "subagent_type", "model", "run_in_background", "resume"} if claude else
                   {"target", "message"} if tool in FOLLOW else
                   {"task_name", "message", "fork_turns", "model", "reasoning_effort"})
@@ -428,6 +432,9 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
         w.require(sum(r["state"] in LIVE for r in records(state).values()) <=
                   state["worker_capacity"]["effective_limit"], "worker_capacity", "Observed capacity reduced before launch.")
         row.update(call_id=call, dispatch_digest=digest(args), state="launch_pending", launch_requested_at=now(), host="claude" if claude else "codex")
+        if claude:
+            row.update(dispatch_argument_schema=ARGUMENT_SCHEMA,
+                       dispatch_semantic_digest=digest(async_arguments(args)))
         return True
     w.require(set(args) <= ({"target", "message"} if tool in MESSAGE else {"target"})
               and isinstance(args.get("target"), str), "scope_violation", "Unsupported native worker control schema.")
@@ -696,6 +703,12 @@ def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
                 status = agent.get('status', agent.get('agent_status'))
                 if isinstance(status, dict):
                     status = next(iter(status)) if len(status) == 1 else None
+                if row and row.get('worker_id') and status == 'errored':
+                    # Codex reports terminal execution errors with this exact alias.
+                    # Preserve failure provenance; this never makes a result successful.
+                    _audit(row, 'native_terminal_error', {'status': 'errored',
+                           'reference': str(call or "status") + "/" + row['grant_id']})
+                    status = 'failed'
                 if row and status in {"completed", "idle", "failed", "interrupted"}:
                     if row.get('worker_id'):
                         terminal(row, status, str(call or "status") + "/" + row["grant_id"])

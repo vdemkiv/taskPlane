@@ -361,14 +361,17 @@ def test_replacement_is_available_at_every_delivery_checkpoint(tmp_path, phase):
 
 def exercise_declared_recovery(workspace, root, entry="product"):
     """Use the shipped hook commands and CLI, including in an extracted package."""
-    from taskplane.tests.test_native_workflow_cli import create, output
+    from taskplane.tests.test_native_workflow_cli import create, output, native_root
     workspace.mkdir(parents=True)
     create(workspace)
     hooks = json.loads((root / "hooks/hooks.json").read_text())["hooks"]
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CODEX_", "CLAUDE_", "TASKPLANE_", "PLUGIN_ROOT"))}
     env.update(PLUGIN_ROOT=str(root), CLAUDE_PLUGIN_ROOT=str(root), CODEX_THREAD_ID="root",
+               CODEX_HOME=str(workspace.parent / (workspace.name + "-host-data") / "codex"),
                PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"])
+
+    native_root(env)
 
     def hook(name, **payload):
         event = {"hook_event_name": name, "cwd": str(workspace), "thread_id": "root", **payload}

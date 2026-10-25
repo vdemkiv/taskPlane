@@ -6,12 +6,112 @@ import shutil
 import subprocess
 import sys
 import hashlib
+import io
 import shlex
 import pytest
 
 from taskplane import claude_flow_usage as claude, flow
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize('entry', ['direct', 'malformed'])
+def test_hook_observation_releases_projection_before_next_report(tmp_path, monkeypatch, capsys, entry):
+    from taskplane.tests.test_flow_integration import setup_run, native
+    ws, sessions, _ = setup_run(tmp_path, monkeypatch)
+    monkeypatch.chdir(ws)
+    monkeypatch.setenv('CLAUDE_PLUGIN_ROOT', '/installed/taskplane')
+    for total in (140, 180):
+        native(sessions / 'root.jsonl', 'root', total)
+        if entry == 'direct':
+            assert flow._observe_hook({'hook_event_name': 'PostToolUse', 'session_id': 'root',
+                'cwd': str(ws), 'transcript_path': str(sessions / 'root.jsonl'),
+                'tool_name': 'Bash', 'tool_input': {'command': 'cat app.py'}}) == {}
+        else:
+            monkeypatch.setattr(sys, 'stdin', io.StringIO('{'))
+            assert flow.run_hook('screen') == 0
+            assert json.loads(capsys.readouterr().out)['hookSpecificOutput']['permissionDecision'] == 'deny'
+            assert flow.read_events(ws)[-1]['reason_category'] == 'malformed_hook_input'
+        result = flow.report(ws)
+        assert result['tokens']['total_tokens'] == total - 100
+        assert result['journal_coverage']['caught_up']
+        assert not result['journal_coverage']['errors']
+
+
+@pytest.mark.parametrize('source', ['missing', 'stale-owner', 'other-owner'])
+def test_report_keeps_current_owner_state_with_incomplete_start_history(tmp_path, monkeypatch, source):
+    from taskplane.tests.test_workflow_local import setup
+    controller, state = setup(tmp_path)
+    monkeypatch.setenv('CODEX_THREAD_ID', 'root')
+    if source != 'missing':
+        flow.append(tmp_path, {'kind': 'start', 'run': 'older',
+                              'session': 'root' if source == 'stale-owner' else 'other'})
+    result = flow.report(tmp_path)
+    assert result['run'] == state['run']
+    assert result['workflow']['root'] == controller.root
+    assert result['tokens'] is None and result['tool_calls'] is None
+
+
+@pytest.mark.parametrize('native_start', [True, False])
+def test_unbound_report_does_not_fall_back_to_mixed_legacy_history(tmp_path, monkeypatch, native_start):
+    from taskplane.tests.test_workflow_local import setup
+    _, state = setup(tmp_path)
+    if native_start:
+        flow.append(tmp_path, {'kind': 'start', 'run': state['run'], 'session': 'root'})
+    flow.append(tmp_path, {'kind': 'start', 'run': 'legacy', 'session': 'legacy-owner'})
+    monkeypatch.setenv('CODEX_THREAD_ID', 'unbound')
+    assert flow.report(tmp_path) is None
+    assert flow.report(tmp_path, 'legacy')['run'] == 'legacy'
+
+
+@pytest.mark.parametrize('names, consumed, allowed', [
+    (['workflow-other.json'] + ['unrelated'] * 200, 1, False),
+    (['unrelated'] * 128 + ['workflow-other.json'], 129, False),
+    (['unrelated'] * 200, 129, False),
+    (['unrelated'] * 128, 128, True),
+])
+def test_global_legacy_report_fallback_bounds_directory_inventory(tmp_path, monkeypatch, names, consumed, allowed):
+    from types import SimpleNamespace
+    flow.append(tmp_path, {'kind': 'start', 'run': 'legacy', 'session': 'legacy-owner'})
+    monkeypatch.setenv('CODEX_THREAD_ID', 'unbound')
+    original = os.scandir
+    observed = {'count': 0, 'closed': False}
+    class Directory:
+        def __enter__(self):
+            return self.entries()
+        def __exit__(self, *args):
+            observed['closed'] = True
+        def entries(self):
+            for name in names:
+                observed['count'] += 1
+                yield SimpleNamespace(name=name)  # No stat/read API is available.
+    def scandir(path):
+        return Directory() if Path(path) == tmp_path / '.taskplane' else original(path)
+    monkeypatch.setattr(os, 'scandir', scandir)
+    result = flow.report(tmp_path)
+    assert (result is not None) == allowed
+    assert observed == {'count': consumed, 'closed': True}
+    observed['count'] = 0
+    assert flow.report(tmp_path, 'legacy')['run'] == 'legacy'
+    assert observed['count'] == 0
+    monkeypatch.setenv('CODEX_THREAD_ID', 'legacy-owner')
+    assert flow.report(tmp_path)['run'] == 'legacy'
+    assert observed['count'] == consumed  # Unverified legacy owners retain their view if fallback is unavailable.
+
+
+def test_known_native_report_skips_legacy_fallback_inventory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from taskplane.tests.test_workflow_local import setup
+    _, state = setup(tmp_path)
+    monkeypatch.setenv('CODEX_THREAD_ID', 'root')
+    original = os.scandir
+    def scandir(path):
+        assert isinstance(path, int) or Path(path) != tmp_path / '.taskplane'
+        return original(path)
+    # Observe only the legacy lookup, not the independent bounded storage scan.
+    monkeypatch.setattr(flow, 'os', SimpleNamespace(**{**vars(os), 'scandir': scandir}))
+    assert flow.report(tmp_path)['run'] == state['run']
+    assert flow.report(tmp_path, state['run'])['run'] == state['run']
 
 
 def bound_workspace(tmp_path, monkeypatch, policy='any'):
@@ -428,3 +528,182 @@ def test_claude_cli_start_does_not_install_codex_launcher(tmp_path):
     assert json.loads(result.stdout)['status'] == 'blocked'
     assert json.loads(result.stdout)['reason'] == 'invalid_evidence'  # An exact scope is required.
     assert not (tmp_path / '.taskplane/codex-hook.py').exists()
+
+
+def test_cold_journal_denied_hook_uses_exact_current_controller_binding(tmp_path, monkeypatch):
+    from taskplane import flow_journal, workflow as w
+    from taskplane.tests.test_worker_runtime import setup as worker_setup
+    controller, state = worker_setup(tmp_path)
+    monkeypatch.setenv('CODEX_THREAD_ID', 'root')
+    monkeypatch.setattr(flow_journal, 'RECORDS', 2)
+    # Foreign history occupies the bounded prefix; current start is not indexed.
+    for index in range(8):
+        flow.append(tmp_path, dict(kind='start', run='foreign-'+str(index), session='foreign'))
+    flow.append(tmp_path, dict(kind='start', run=state['run'], session='root'))
+    before = flow.read_events(tmp_path)
+    event = dict(host='codex', session_id='root', cwd=str(tmp_path), hook_event_name='PreToolUse',
+                 tool_name='Write', call_id='denied-cold', tool_input={'path':'outside.md'},
+                 taskplane_observed_binding={'root':'forged', 'run':'forged'})
+    with pytest.raises(w.Refusal): flow.hook(event)
+    after = flow.read_events(tmp_path)
+    assert after[:-1] == before
+    row = after[-1]
+    assert row['run'] == state['run'] and row['root'] == 'root'
+    assert row['outcome'] == 'denied' and row['attribution'] == 'unpaired'
+    assert row['binding_observation']['run'] == state['run']
+
+
+def test_cold_journal_new_start_records_baseline_once_across_restarts(tmp_path, monkeypatch, capsys):
+    from taskplane import flow_journal, workflow_host
+    from taskplane.tests.test_native_workflow_cli import create
+    create(tmp_path)
+    monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID', 'root')
+    monkeypatch.setattr(flow_journal, 'RECORDS', 2)
+    for index in range(20):
+        flow.append(tmp_path, dict(kind='start', run='old-'+str(index), session='foreign'))
+    calls = []
+    def counter(*args, **kwargs):
+        calls.append(1)
+        return {'usage':{'total_tokens':len(calls)*100}, 'usage_status':'observed'}
+    monkeypatch.setattr(flow, 'counter', counter)
+    arguments = ['start','--workspace',str(tmp_path),'--standalone','--phase','product',
+                 '--scope','.taskplane/scope.json','--request-reference','fixture/cold-start']
+    assert flow.main(arguments) == 0
+    capsys.readouterr()
+    controller = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('claude'))
+    run = controller.report()['run']
+    initial = [row for row in flow.read_events(tmp_path) if row.get('run') == run and row['kind'] in {'start','usage_boundary'}]
+    assert [row['kind'] for row in initial] == ['start', 'usage_boundary']
+    assert initial[0]['usage']['total_tokens'] == 100
+    # Fresh controller and fresh action budget; unavailable historical indexing
+    # cannot turn the retry into a second start/baseline at the later counter.
+    assert flow.main(arguments) == 0
+    capsys.readouterr()
+    assert [row for row in flow.read_events(tmp_path) if row.get('run') == run and row['kind'] in {'start','usage_boundary'}] == initial
+
+
+def test_failed_initial_append_never_recaptures_a_later_baseline(tmp_path, monkeypatch, capsys):
+    from taskplane import workflow_host
+    from taskplane.tests.test_native_workflow_cli import create
+    create(tmp_path)
+    monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID', 'root')
+    calls = []
+    def counter(*args, **kwargs):
+        calls.append(1)
+        return {'usage':{'total_tokens':len(calls)*100}, 'usage_status':'observed'}
+    monkeypatch.setattr(flow, 'counter', counter)
+    append = flow.append
+    def broken_start(workspace, row):
+        if row['kind'] == 'start':
+            raise OSError('fixture lost initial append')
+        return append(workspace, row)
+    monkeypatch.setattr(flow, 'append', broken_start)
+    arguments = ['start','--workspace',str(tmp_path),'--standalone','--phase','product',
+                 '--scope','.taskplane/scope.json','--request-reference','fixture/failed-start']
+    assert flow.main(arguments) == 0
+    capsys.readouterr()
+    controller = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('claude'))
+    state = controller.report()
+    assert state['initial_journal_observation'] == 'cli-start/v1'
+    monkeypatch.setattr(flow, 'append', append)
+    assert flow.main(arguments) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert any('cannot recapture' in item for item in result['evidence_errors'])
+    assert result['tokens'] is None
+    rows = [row for row in flow.read_events(tmp_path) if row.get('run') == state['run']]
+    assert not any(row['kind'] in {'start','usage_boundary'} for row in rows)
+
+
+@pytest.mark.parametrize('source', ['missing', 'empty', 'other-run'])
+def test_legacy_start_without_baseline_keeps_unknown_usage_and_retry_attachments(
+        tmp_path, monkeypatch, capsys, source):
+    from taskplane import workflow_host
+    from taskplane.tests.test_native_workflow_cli import create
+    scope = create(tmp_path)
+    monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID', 'root')
+    controller = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('claude'))
+    state = controller.start({'entry': 'product', 'standalone': True, 'scope': scope,
+                              'request_reference': 'fixture/legacy-start'})
+    assert 'initial_journal_observation' not in state
+    if source == 'empty':
+        (tmp_path / flow.JOURNAL).touch()
+    elif source == 'other-run':
+        flow.append(tmp_path, {'kind': 'start', 'run': 'other', 'session': 'foreign'})
+    original = flow.read_events(tmp_path)
+    monkeypatch.setattr(flow, 'counter', lambda *args: {'usage': {'total_tokens': 900},
+                                                     'usage_status': 'observed'})
+    (tmp_path / 'finding.md').write_text('Current evidence remains available.')
+    assert flow.main(['start', '--workspace', str(tmp_path), '--evidence', 'finding.md']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['run'] == state['run'] and result['tokens'] is None
+    assert any('cannot recapture' in error for error in result['evidence_errors'])
+    assert result['artifacts']['evidence'] == ['finding.md']
+    rows = flow.read_events(tmp_path)
+    assert rows[:len(original)] == original
+    attached = [row for row in rows[len(original):] if row['kind'] == 'attach']
+    assert len(attached) == 1 and attached[0]['run'] == state['run']
+    assert 'usage' not in attached[0]
+    assert not any(row['kind'] in {'start', 'usage_boundary'} for row in rows[len(original):])
+    # A new public invocation/controller must not reinterpret that attachment
+    # as permission to create a historical start at its newer counter.
+    assert flow.main(['start', '--workspace', str(tmp_path)]) == 0
+    resumed = json.loads(capsys.readouterr().out)
+    assert resumed['tokens'] is None
+    assert not any(row['kind'] in {'start', 'usage_boundary'}
+                   for row in flow.read_events(tmp_path)[len(original):])
+
+
+@pytest.mark.parametrize('loss', ['source', 'source-and-cache', 'empty-source',
+                                  'other-run-source', 'cache', 'corrupt-cache'])
+def test_public_start_restart_preserves_original_or_unknown_baseline(
+        tmp_path, monkeypatch, capsys, loss):
+    from taskplane import flow_journal
+    from taskplane.tests.test_native_workflow_cli import create
+    create(tmp_path)
+    monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID', 'root')
+    monkeypatch.setattr(flow, 'counter', lambda *args: {'usage': {'total_tokens': 100},
+                                                     'usage_status': 'observed'})
+    assert flow.main(['start', '--workspace', str(tmp_path), '--standalone', '--phase', 'product',
+                      '--scope', '.taskplane/scope.json', '--request-reference', 'fixture/restart']) == 0
+    started = json.loads(capsys.readouterr().out)
+    run = started['run']
+    journal = tmp_path / flow.JOURNAL
+    initial = journal.read_bytes()
+    cache = tmp_path / '.taskplane' / flow_journal.CACHE
+    assert cache.exists()
+    if loss in {'source', 'source-and-cache'}:
+        journal.unlink()
+    elif loss == 'empty-source':
+        journal.write_bytes(b'')
+    elif loss == 'other-run-source':
+        journal.write_text(json.dumps({'kind': 'start', 'run': 'other', 'session': 'foreign'}) + '\n')
+    if loss in {'cache', 'source-and-cache'}:
+        cache.unlink()
+    elif loss == 'corrupt-cache':
+        cache.write_bytes(b'not a SQLite checkpoint')
+    expected = journal.read_bytes() if journal.exists() else None
+    # Real process restarts discard all in-memory projection/controller state.
+    # Two retries also cover the unavailable-then-rebuild corruption sequence.
+    for _ in range(2):
+        process = subprocess.run([sys.executable, str(ROOT / 'taskplane/tp.py'), 'flow', 'start', '--full',
+                                  '--workspace', str(tmp_path)], capture_output=True, text=True)
+        assert process.returncode == 0, process.stdout + process.stderr
+        result = json.loads(process.stdout)
+        assert result['run'] == run
+        current = journal.read_bytes() if journal.exists() else b''
+        assert current.startswith(expected or b'')
+        additions = [json.loads(line) for line in current[len(expected or b''):].splitlines()]
+        assert not any(row['kind'] in {'start', 'usage_boundary'} for row in additions)
+        if loss in {'source-and-cache', 'empty-source', 'other-run-source'}:
+            assert result['tokens'] is None
+            assert any('cannot recapture' in error for error in result['evidence_errors'])
+        elif loss == 'source':
+            assert not result['journal_coverage']['caught_up']
+            assert 'source_missing' in result['journal_coverage']['errors']
+    if loss in {'cache', 'corrupt-cache'}:
+        assert journal.read_bytes().startswith(initial)
+        rows = [row for row in flow.read_events(tmp_path) if row.get('run') == run
+                and row['kind'] in {'start', 'usage_boundary'}]
+        assert [row['kind'] for row in rows] == ['start', 'usage_boundary']
+        assert rows[0]['usage']['total_tokens'] == 100
+        assert not any('cannot recapture' in error for error in result['evidence_errors'])

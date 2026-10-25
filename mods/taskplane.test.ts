@@ -39,6 +39,46 @@ function fixture(preview = false) {
 }
 const press = (element = 'confirm-changes') => ({ plugin: 'taskplane', component: 'Pane' as const, element, requestId: 'taskplane-checkpoint', surface: 'terminal' as const });
 
+function drift(s: Snapshot) {
+  s.decision = 'stale'; s.evidence = { status: 'stale', invalidation_pending: true };
+  s.capabilities.intent = false; s.capabilities.direct_decision = false;
+  s.capabilities.reasons = ['Evidence changed'];
+  s.capabilities.choices = {
+    approved: { intent: false, direct_decision: false, reasons: ['Evidence changed'] },
+    changes_requested: { intent: true, direct_decision: true, reasons: [] }
+  };
+  return s;
+}
+
+test('per-choice advice keeps negative confirmation after drift but retains binding checks', async () => {
+  for (const choice of ['approved', 'changes_requested'] as const) {
+    const f = fixture(); await f.c.restore(undefined);
+    await f.c.prepare(choice, binding, '  Fix café\n');
+    const attempt = f.c.pending!;
+    drift(f.c.snapshot!);
+    await f.c.confirm(attempt, press(choice === 'approved' ? 'confirm-accept' : 'confirm-changes'), 'session-1');
+    expect(f.calls.filter(x => x.operation === 'record_ui')).toHaveLength(choice === 'approved' ? 0 : 1);
+    expect(attempt.comment).toBe('  Fix café\n');
+  }
+  const f = fixture(); await f.c.restore(undefined); drift(f.c.snapshot!);
+  await f.c.prepare('changes_requested', binding, 'after drift');
+  expect(f.calls).toHaveLength(1);
+  f.c.snapshot!.identity = { ...binding, revision: 8 };
+  await f.c.confirm(f.c.pending!, press(), 'session-1');
+  expect(f.calls).toHaveLength(1);
+});
+
+test('legacy capability fallback is conservative and malformed per-choice branches refuse', async () => {
+  const f = fixture(); await f.c.restore(undefined);
+  expect(f.c.eligibility(binding, 'changes_requested')).toBeUndefined();
+  f.c.snapshot!.capabilities.direct_decision = false;
+  expect(f.c.eligibility(binding, 'changes_requested')).toBeDefined();
+  for (const choices of [null, {}, { changes_requested: {} }, { changes_requested: { intent: 'yes', direct_decision: true, reasons: [] } }, { changes_requested: { intent: true, direct_decision: true, reasons: null } }]) {
+    f.c.snapshot!.capabilities.choices = choices as unknown as Snapshot['capabilities']['choices'];
+    expect(f.c.eligibility(binding, 'changes_requested')).toBeDefined();
+  }
+});
+
 test('exact Unicode and multiline intent survives lost acknowledgement and reload without replay', async () => {
   const f = fixture(); await f.c.restore(undefined);
   const text = '  Repair café 🛠️\n\nKeep the final newline.\n';
@@ -217,6 +257,57 @@ function hostFixtures(on: On, initial = snapshot(), session = 'session-1') {
   return { clock, calls, processes, state };
 }
 const pane = (width: number): RenderPropsOf['Pane'] => ({ title: 'Taskplane', isFocused: true, bodyColumns: width, placement: width >= 110 ? 'dock' : 'inline', scroll: { offset: 0, bodyRows: 6 }, view: {} });
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  for (const choice of ['approved', 'changes_requested'] as const) {
+    test(`${surface}: drift checks saved ${choice} confirmation`, async ($, on) => {
+      const f = hostFixtures(on);
+      await $.session.start({ cwd: '/fixture', surface, isInteractive: true });
+      const ui = await $.ui.mount({ plugin: 'taskplane', surface, component: 'Pane', requestId: 'taskplane-checkpoint', props: pane(80) });
+      await ui.press({ key: choice === 'approved' ? 'prepare-accept' : 'prepare-changes' });
+      drift(f.state.value); await ui.press({ key: 'refresh' });
+      expect(await ui.find({ key: 'confirm-accept' })).toBeUndefined();
+      expect(await ui.find({ type: 'Text', text: 'Evidence changed' })).toBeDefined();
+      if (choice === 'changes_requested') {
+        expect(await ui.find({ key: 'confirm-changes' })).toBeDefined();
+        f.state.value.identity = { ...binding, revision: 8 };
+        await ui.press({ key: 'refresh' });
+        expect(await ui.find({ key: 'confirm-changes' })).toBeUndefined();
+      }
+      expect(f.calls.filter(x => x.operation === 'record_ui')).toHaveLength(0);
+      await ui.unmount();
+    });
+  }
+  test(`${surface}: Request changes remains available to prepare after evidence drift`, async ($, on) => {
+    const f = hostFixtures(on, drift(snapshot()));
+    await $.session.start({ cwd: '/fixture', surface, isInteractive: true });
+    const ui = await $.ui.mount({ plugin: 'taskplane', surface, component: 'Pane', requestId: 'taskplane-checkpoint', props: pane(80) });
+    expect(await ui.find({ key: 'prepare-accept' })).toBeUndefined();
+    expect(await ui.find({ key: 'prepare-changes' })).toBeDefined();
+    await ui.press({ key: 'prepare-changes' }); await ui.press({ key: 'confirm-changes' });
+    expect(f.calls.filter(x => x.operation === 'record_ui')).toHaveLength(1);
+    await ui.unmount();
+  });
+  for (const source of ['journal_status', 'journal_detail_status', 'measurement', 'sessions', 'complete', 'unknown', 'missing', 'malformed']) {
+    test(`${surface}: usage band preserves ${source} accounting coverage`, async ($, on) => {
+      const s = snapshot();
+      const counts: Record<string, unknown> = { measured_sessions: 2, unmeasured_sessions: 0, partial_sessions: 0 };
+      s.run_usage.coverage = counts; s.run_usage.measurement = { status: 'measured' };
+      if (source === 'journal_status' || source === 'journal_detail_status') counts[source] = 'partial';
+      if (source === 'measurement') s.run_usage.measurement = { status: 'partial' };
+      if (source === 'sessions') counts.partial_sessions = 1;
+      if (source === 'unknown') { s.run_usage.measurement = { status: 'unavailable' }; s.run_usage.tokens = null; }
+      if (source === 'missing') s.run_usage.coverage = null;
+      if (source === 'malformed') s.run_usage.coverage = 'partial';
+      hostFixtures(on, s);
+      await $.session.start({ cwd: '/fixture', surface, isInteractive: true });
+      const ui = await $.ui.mount({ plugin: 'taskplane', surface, component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} } });
+      const label = ['unknown', 'missing', 'malformed'].includes(source) ? 'Unknown coverage' : source === 'complete' ? '2 measured sessions' : 'Partial coverage';
+      expect(await ui.find({ type: 'Text', text: `Run tokens: ${source === 'unknown' ? 'Unknown' : '0'} (${label})` })).toBeDefined();
+      await ui.unmount();
+    });
+  }
+}
 
 for (const surface of ['terminal','desktop'] as const) {
   for (const width of [40,80,160]) {

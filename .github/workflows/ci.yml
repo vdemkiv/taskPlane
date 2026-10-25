@@ -159,7 +159,31 @@ jobs:
         with: {persist-credentials: false, fetch-depth: 0}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "3.13", cache: pip, cache-dependency-path: requirements-ci.txt}
-      - run: python -m pip install --require-hashes --no-deps -r requirements-ci.txt
+      - run: python -m pip install --require-hashes -r requirements-ci.txt
+      - run: python -m pip check
+      - name: Install verified native OpenGrep release
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location https://github.com/opengrep/opengrep/releases/download/v1.32.0/opengrep-core_linux_x86.tar.gz --output "$RUNNER_TEMP/opengrep.tar.gz"
+          python - <<'PY_VERIFY'
+          import hashlib, os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          archive = root / "opengrep.tar.gz"
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != "939b341900249a03ea559148cfd023cd4d4bb4654deec770f65c344aad63e6d1":
+              raise SystemExit("OpenGrep checksum mismatch")
+          with tarfile.open(archive) as bundle:
+              member = bundle.getmember("opengrep-core")
+              if not member.isfile():
+                  raise SystemExit("OpenGrep archive member is not a regular file")
+              bundle.extract(member, path=root, filter="data")
+          # The upstream native entry point selects its CLI by this executable name.
+          binary = root / "opengrep"
+          (root / "opengrep-core").rename(binary)
+          binary.chmod(0o755)
+          with open(os.environ["GITHUB_PATH"], "a") as paths:
+              paths.write(str(root) + "\n")
+          PY_VERIFY
+      - run: opengrep --version
       - name: Install verified Gitleaks release
         shell: bash
         run: |

@@ -232,9 +232,10 @@ def selected_adapter(controller: host.Controller) -> host.Controller:
     return host.Controller(controller.workspace, controller.root, ModsLocalAdapter("claude"), principal=controller.principal)
 
 
-def _eligible(controller: host.Controller, binding: dict[str, Any], choice: str) -> dict[str, Any]:
-    state = controller.report(binding["run"])
-    stage = w.current(state)
+def _require_eligible_state(state: dict[str, Any], binding: dict[str, Any] | None, choice: str) -> None:
+    """Pure advisory state checks shared by snapshots and decision preparation."""
+    w.require(choice in {"approved", "changes_requested"}, "invalid_evidence", "Unsupported decision choice.")
+    stage = w.current(state) if state.get("visits") else {}
     w.require(stage.get("packet") and binding == w.binding(state, stage["packet"]),
               "stale_checkpoint", "Displayed checkpoint binding changed; refresh before a new attempt.")
     w.require(not any(state.get(k) for k in ("finished", "retired", "superseded_by", "archived"))
@@ -242,6 +243,11 @@ def _eligible(controller: host.Controller, binding: dict[str, Any], choice: str)
               "stale_checkpoint", "Checkpoint is no longer awaiting a decision.")
     w.require(choice == "changes_requested" or not state.get("invalidation_pending")
               and stage["decision"] != "stale", "stale_checkpoint", "Evidence changed; refresh the checkpoint.")
+
+
+def _eligible(controller: host.Controller, binding: dict[str, Any], choice: str) -> dict[str, Any]:
+    state = controller.report(binding["run"])
+    _require_eligible_state(state, binding, choice)
     # Preparation is not consent, but it must retain installed runtime permissions.
     if choice == "approved":
         controller.adapter.before_action(state, "decide")
@@ -397,12 +403,21 @@ def snapshot(workspace: Path, run_id: str | None, controller: host.Controller, *
     if controller.principal != controller.root: reasons.append("foreign_owner")
     if preview: reasons.append("preview")
     if historical: reasons.append("historical")
-    if not packet or stage.get("decision") != "awaiting_human_approval": reasons.append("no_pending_checkpoint")
-    if state.get("invalidation_pending"): reasons.append("evidence_changed")
+    identity = w.binding(state, packet) if packet else None
+    choices = {}
+    for choice in ("approved", "changes_requested"):
+        choice_reasons = list(reasons)
+        try:
+            _require_eligible_state(state, identity, choice)
+        except w.Refusal as exc:
+            choice_reasons.append(exc.detail)
+        choices[choice] = {"intent": not choice_reasons, "direct_decision": not choice_reasons,
+                           "reasons": choice_reasons}
+    approval = choices["approved"]
     result = {"schema": SNAPSHOT, "status": status,
         "selection": {"workspace": str(controller.workspace), "root": state.get("root", controller.root),
                       "run": state.get("run", run_id), "generation": generation},
-        "identity": w.binding(state, packet) if packet else None,
+        "identity": identity,
         "phase": stage.get("phase"), "work": stage.get("work"), "decision": stage.get("decision"),
         "revision": state.get("revision"), "packet_revision": stage.get("packet_revision"),
         "historical": historical, "superseded_by": state.get("superseded_by"),
@@ -415,8 +430,8 @@ def snapshot(workspace: Path, run_id: str | None, controller: host.Controller, *
         "run_usage": {"tokens": (report or {}).get("tokens"), "coverage": (report or {}).get("token_coverage"),
                       "measurement": (report or {}).get("usage_measurement")},
         "context_usage": None, "confirmed_at": (report or {}).get("snapshot", {}).get("captured_at") or authority_started,
-        "capabilities": {"snapshot": True, "evidence": bool(stage), "intent": not reasons,
-                         "direct_decision": not reasons, "native_confirmation": supported, "preview": preview, "reasons": reasons},
+        "capabilities": {"snapshot": True, "evidence": bool(stage), **approval, "choices": choices,
+                         "native_confirmation": supported, "preview": preview},
         "fallback": {"dashboard": str(controller.workspace / ".taskplane/dashboard.html"), "decision": "conversation"}}
     result["snapshot_id"] = _hash(result)
     return result

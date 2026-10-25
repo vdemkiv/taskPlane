@@ -1084,3 +1084,133 @@ def test_existing_unbound_local_history_retains_legacy_resolution(tmp_path):
     before = tree(tmp_path)
     assert b.resolve_workspace(tmp_path) == tmp_path.resolve()
     assert tree(tmp_path) == before
+
+
+@pytest.mark.usefixtures("onboarding_environment")
+@pytest.mark.parametrize('lookup', ['exact', 'indexed'])
+@pytest.mark.parametrize('parent', [None, 'parent-session'])
+def test_native_lineage_separates_roots_and_children(tmp_path, monkeypatch, lookup, parent):
+    from taskplane.tests.test_native_session_meter import _write_segment
+    from taskplane.tests.test_flow_integration import index_native
+    home = tmp_path / 'native'
+    path = home / 'sessions' / 'actor.jsonl'
+    path.parent.mkdir(parents=True)
+    _write_segment(path, session_id='actor', total=None, parent=parent)
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    event = {'host': 'codex', 'thread_id': 'actor'}
+    if lookup == 'exact':
+        event['transcript_path'] = str(path)
+    else:
+        index_native(path, 'actor')
+    monkeypatch.setattr(Path, 'glob', lambda *a, **k: pytest.fail('no recursive discovery'))
+    assert flow.observed_lineage(event, 'actor') == (True, parent)
+    assert flow.root_session(event, 'actor') is (parent is None)
+    assert not flow.root_session({**event, 'parent_session_id': 'explicit-parent'}, 'actor')
+
+
+@pytest.mark.usefixtures("onboarding_environment")
+@pytest.mark.parametrize('failure', ['missing', 'empty', 'corrupt', 'foreign', 'malformed', 'conflicting'])
+def test_unknown_native_lineage_is_not_root(tmp_path, monkeypatch, failure):
+    from taskplane.tests.test_native_session_meter import _write_segment
+    from taskplane.tests.test_flow_integration import index_native
+    home = tmp_path / 'native'
+    path = home / 'sessions' / 'actor.jsonl'
+    path.parent.mkdir(parents=True)
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    event = {'host': 'codex', 'thread_id': 'actor'}
+    if failure == 'corrupt':
+        (home / 'state_5.sqlite').write_text('corrupt')
+    elif failure == 'empty':
+        import sqlite3
+        with sqlite3.connect(home / 'state_5.sqlite') as db:
+            db.execute('CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL)')
+    elif failure in ('foreign', 'malformed'):
+        _write_segment(path, session_id='foreign', total=None)
+        if failure == 'malformed':
+            path.write_text('{invalid')
+        event['transcript_path'] = str(path)
+    elif failure == 'conflicting':
+        _write_segment(path, session_id='actor', total=None)
+        index_native(path, 'actor')
+        assert flow.root_session(event, 'actor')
+        other = path.with_name('continued.jsonl')
+        _write_segment(other, session_id='actor', total=None, parent='parent-session')
+        index_native(other, 'actor')
+    monkeypatch.setattr(Path, 'glob', lambda *a, **k: pytest.fail('no recursive discovery'))
+    assert not flow.observed_lineage(event, 'actor')[0]
+    assert not flow.root_session(event, 'actor')
+
+
+@pytest.mark.usefixtures("onboarding_environment")
+def test_unknown_lineage_cannot_restore_state(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('CODEX_THREAD_ID', 'unknown')
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path / 'absent'))
+    target = flow._controller(tmp_path, 'unknown')._path()
+    assert flow.main(['recover', '--workspace', str(tmp_path), '--request-reference', 'test',
+                      '--recover-from', target.stem + ' 1.json', '--expected-sha256', '0' * 64,
+                      '--run', 'missing-run', '--expected-revision', '0']) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result['reason'] == 'state_unavailable'
+    assert 'matching initialization marker' in result['detail']
+    assert not list((tmp_path / '.taskplane').glob('workflow-*.json'))
+
+
+@requires_binding_runtime
+@pytest.mark.usefixtures('onboarding_environment')
+@pytest.mark.parametrize('lineage', ['unknown', 'root', 'child'])
+def test_fresh_native_start_requires_root_identity(tmp_path, monkeypatch, capsys, lineage):
+    from taskplane.tests.test_flow_integration import native
+    b.bind(tmp_path, request(tmp_path))
+    home = tmp_path / 'native'
+    (home / 'sessions').mkdir(parents=True)
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    monkeypatch.setenv('CODEX_THREAD_ID', 'actor')
+    if lineage != 'unknown':
+        native(home / 'sessions/actor.jsonl', 'actor', None,
+               parent='parent' if lineage == 'child' else None)
+    scope = tmp_path / 'scope.json'
+    scope.write_text(json.dumps({'criteria': ['A'], 'paths': {p: [] for p in w.PHASES}}))
+    command = [sys.executable, str(Path(flow.__file__).with_name('tp.py')), 'flow', 'start',
+               '--workspace', str(tmp_path), '--standalone', '--phase', 'product',
+               '--scope', scope.name, '--request-reference', 'test/fresh-start']
+    event = {'host': 'codex', 'thread_id': 'actor', 'hook_event_name': 'PreToolUse',
+             'cwd': str(tmp_path), 'tool_name': 'exec_command', 'tool_input': {'cmd': shlex.join(command)}}
+    before = tree(tmp_path / '.taskplane')
+    if lineage == 'unknown':
+        with pytest.raises(w.Refusal, match='root identity'):
+            flow._hook(event)
+        assert not list((tmp_path / '.taskplane').glob('workflow-*.initialized.json'))
+    assert flow.main(command[3:]) == (0 if lineage == 'root' else 2)
+    result = json.loads(capsys.readouterr().out)
+    if lineage == 'root':
+        assert result['status'] != 'blocked'
+        assert list((tmp_path / '.taskplane').glob('workflow-*.initialized.json'))
+    else:
+        assert result['reason'] in {'unsupported_authority', 'scope_violation'}
+        assert not list((tmp_path / '.taskplane').glob('workflow-*.initialized.json'))
+        assert all((tmp_path / '.taskplane' / name).read_bytes() == raw for name, raw in before.items())
+
+
+@pytest.mark.usefixtures('onboarding_environment')
+def test_established_controller_survives_missing_lineage(tmp_path, monkeypatch):
+    monkeypatch.setenv('CODEX_THREAD_ID', 'original-session')
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path / 'absent'))
+    controller(tmp_path, active=False)
+    before = tree(tmp_path)
+    selected, _ = flow.select_controller(tmp_path, 'original-session', None, pending_start=True)
+    assert selected.root == selected.principal == 'original-session'
+    assert all((tmp_path / name).read_bytes() == raw for name, raw in before.items())
+
+
+@pytest.mark.usefixtures('onboarding_environment')
+def test_matching_recovery_proof_does_not_require_native_lineage(tmp_path, monkeypatch, capsys):
+    from taskplane.tests.test_workflow_local import displaced_database
+    c, state, target, candidate, raw, checksum = displaced_database(tmp_path, approved=True)
+    monkeypatch.setenv('CODEX_THREAD_ID', c.root)
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path / 'absent'))
+    assert flow.main(['recover', '--workspace', str(tmp_path), '--request-reference', 'test/recovery',
+                      '--recover-from', candidate.name, '--expected-sha256', checksum,
+                      '--run', state['run'], '--expected-revision', str(state['revision'])]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'restored' and not result['approvals_changed']
+    assert target.read_bytes() == candidate.read_bytes() == raw

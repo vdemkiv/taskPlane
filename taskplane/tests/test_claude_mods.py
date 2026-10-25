@@ -257,6 +257,8 @@ def test_evidence_drift_between_prepare_and_callback(tmp_path, choice):
     assert projection["revision"] == state["revision"]
     assert projection["evidence"]["status"] == "stale"
     assert not projection["capabilities"]["direct_decision"]
+    assert projection["capabilities"]["choices"]["approved"]["direct_decision"] is False
+    assert projection["capabilities"]["choices"]["changes_requested"]["direct_decision"] is True
     if choice == "approved":
         with pytest.raises(w.Refusal): mods.decide(c, record_request(prepared))
         assert not c.report()["decisions"]
@@ -306,6 +308,74 @@ def test_installed_permission_denial_remains_denial(tmp_path, monkeypatch):
     monkeypatch.setattr(c.adapter, "before_action", denied)
     with pytest.raises(w.Refusal, match="denial"): mods.decide(c, request)
     assert c._path().read_bytes() == before
+
+
+def test_prepare_negative_after_drift_preserves_exact_comment(tmp_path):
+    c, state, request = fixture(tmp_path)
+    target = tmp_path / (w.current(state)["phase"] + ".json")
+    target.write_text(target.read_text() + "\n")
+    request.update(choice="changes_requested", comment="  Fix café 🛠️\n\nKeep newline.\n")
+    prepared = mods.decide(c, request)
+    result = mods.decide(c, record_request(prepared))
+    assert result["receipt"]["decision"]["provenance"]["comment"] == request["comment"]
+
+
+@pytest.mark.parametrize("case", ["fresh", "stale", "drift", "missing", "decided", "finished", "retired", "superseded_by", "archived"])
+def test_snapshot_and_preparation_share_pure_state_eligibility(tmp_path, monkeypatch, case):
+    c, state, request = fixture(tmp_path)
+    state = c.report(state["run"])
+    stage = state["visits"][state["index"]]
+    if case == "stale": stage["decision"] = "stale"
+    elif case == "drift": state["invalidation_pending"] = True
+    elif case == "missing": stage["packet"] = None
+    elif case == "decided": stage["decision"] = "approved"
+    elif case != "fresh": state[case] = True
+    calls = []
+    monkeypatch.setattr(c, "report", lambda *_: calls.append("report") or state)
+    monkeypatch.setattr(flow, "report", lambda *a, **kw: {"workflow": state})
+    monkeypatch.setattr(c.adapter, "before_action", lambda *a: calls.append("permission"))
+    projected = mods.snapshot(c.workspace, state["run"], c)
+    assert calls == ["report"]  # No additional report or source audit per choice.
+    for choice in ("approved", "changes_requested"):
+        allowed = case == "fresh" or case in {"stale", "drift"} and choice == "changes_requested"
+        assert projected["capabilities"]["choices"][choice]["intent"] is allowed
+        if allowed:
+            mods._eligible(c, request["binding"], choice)
+        else:
+            with pytest.raises(w.Refusal): mods._eligible(c, request["binding"], choice)
+
+
+@pytest.mark.parametrize("case", ["preview", "foreign", "unsupported"])
+def test_snapshot_refuses_both_choices_outside_owning_host(tmp_path, monkeypatch, case):
+    c, state, _ = fixture(tmp_path)
+    state = c.report(state["run"])
+    if case == "foreign": c.principal = "other"
+    if case == "unsupported": c.adapter.name = "codex"
+    monkeypatch.setattr(c, "report", lambda *_: state)
+    monkeypatch.setattr(flow, "report", lambda *a, **kw: {"workflow": state})
+    result = mods.snapshot(c.workspace, state["run"], c, preview=case == "preview")
+    assert all(not item["direct_decision"] for item in result["capabilities"]["choices"].values())
+
+
+def test_snapshot_advice_does_not_bypass_later_permission_denial(tmp_path, monkeypatch):
+    c, state, request = fixture(tmp_path)
+    monkeypatch.setattr(flow, "report", lambda *a, **kw: {"workflow": c.report()})
+    def denied(*args): raise w.Refusal("scope_violation", "fixture host denial")
+    monkeypatch.setattr(c.adapter, "before_action", denied)
+    assert mods.snapshot(c.workspace, state["run"], c)["capabilities"]["choices"]["approved"]["intent"]
+    with pytest.raises(w.Refusal, match="host denial"): mods.decide(c, request)
+    assert not mods.ledger_path(c.workspace, c.root).exists()
+
+
+def test_snapshot_preserves_partial_journal_and_zero_tokens(tmp_path, monkeypatch):
+    c, state, _ = fixture(tmp_path)
+    usage = {"tokens": {"total_tokens": 0}, "token_coverage": {"measured_sessions": 2,
+        "unmeasured_sessions": 0, "partial_sessions": 0, "journal_status": "partial",
+        "journal_detail_status": "partial"}, "usage_measurement": {"status": "partial"}}
+    monkeypatch.setattr(flow, "report", lambda *a, **kw: {"workflow": c.report(), **usage})
+    result = mods.snapshot(c.workspace, state["run"], c)
+    assert result["run_usage"] == {"tokens": usage["tokens"], "coverage": usage["token_coverage"],
+                                   "measurement": usage["usage_measurement"]}
 
 
 def test_cli_run_cannot_override_attempt_binding(tmp_path):

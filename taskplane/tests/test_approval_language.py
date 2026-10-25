@@ -8,6 +8,81 @@ from taskplane.tests.test_workflow_local import setup, submit, decision, decide
 from taskplane.tests.test_workflow_autonomy import authorization, set_policy
 
 
+PHASE_GRANTS = [
+    '{phase} approved', '{phase} is confirmed', '{phase} is signed off',
+    'We have signed the {phase} phase off', 'We approve the {phase} phase',
+    'The current {phase} phase is authorized', 'I confirm this {phase} phase',
+    'I explicitly accept the current {phase}', 'I hereby authorize the {phase}',
+    'We have consented the {phase} phase', 'I assent the {phase}',
+    'I sign off on the {phase} phase', 'I signed this {phase} off now',
+    'The {phase} phase is accepted', 'This {phase} is authorised today',
+    'I have approved this {phase}', 'We accepted that {phase} phase',
+    'Confirmed the {phase}', 'Authorized the {phase} phase',
+]
+
+
+@pytest.mark.parametrize('phase', w.PHASES)
+@pytest.mark.parametrize('template', PHASE_GRANTS)
+@pytest.mark.parametrize('prefix', ['', 'Okay. '])
+def test_every_supported_phase_grant_has_one_interpretation(phase, template, prefix):
+    text = prefix + template.format(phase=phase) + '.'
+    interpretation = approval.interpret_decision(text)
+    assert interpretation.choice == approval.conversational_choice(text) == 'approved'
+    assert interpretation.named_phases == {phase}
+    assert approval.decision_phase(text) == phase
+
+
+@pytest.mark.parametrize('text, phases, choice', [
+    ('Product approved. Build confirmed.', {'product', 'build'}, None),
+    ('Approve product and confirm build.', {'product', 'build'}, None),
+    ('Okay. "Build is signed off".', {'build'}, 'approved'),
+    ('Product approved. "Build confirmed".', {'product', 'build'}, None),
+    ('Approve build and build confirmed.', {'build'}, 'approved'),
+    ('Build confirmed. We will implement the plan.', {'build'}, 'approved'),
+    ('I confirm this checkpoint.', set(), 'approved'),
+    ('I sign off on this checkpoint.', set(), 'approved'),
+    ('"I confirm this checkpoint"', set(), None),
+    ('Approved. We will build the plan.', set(), 'approved'),
+    ('Okay. Hold for my approval.', set(), None),
+])
+def test_phase_objects_and_ambiguity_share_the_consent_grammar(text, phases, choice):
+    result = approval.interpret_decision(text)
+    assert result.choice == choice
+    assert result.named_phases == phases
+
+
+@pytest.mark.parametrize('template', PHASE_GRANTS)
+@pytest.mark.parametrize('phase', w.PHASES)
+def test_named_grants_are_checked_against_every_bound_phase(tmp_path, monkeypatch, template, phase):
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    adapter = local.LocalWorkflow()
+    adapter.bind(tmp_path, 'root')
+    stamp = lambda seconds: (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+    binding = dict(workspace=str(tmp_path), root='root', run='run', visit='visit',
+                   checkpoint='c' * 32, revision=2, manifest_digest='manifest', scope_digest='scope')
+    text = 'Okay. ' + template.format(phase=phase) + '.'
+    response = dict(schema='taskplane.observed-decision/v1', event_id='event', excerpt=text,
+                    recorder='root_orchestrator', choice='approved', binding=binding,
+                    source=dict(kind='conversation', conversation='root', actor='user', automatic=False,
+                                reference='user/actual', observed_at=stamp(10)),
+                    presentation=dict(checkpoint=binding['checkpoint'], reference='shown/checkpoint', at=stamp(20)))
+    for bound_phase in w.PHASES:
+        db = {'runs': {'run': dict(started_at=stamp(60), visits=[dict(id='visit', phase=bound_phase,
+                                                                  submitted_at=stamp(50))])}}
+        before = deepcopy(db)
+        monkeypatch.setattr(local.evidence, 'object_file', lambda *_: db)
+        if phase == bound_phase:
+            verified = adapter.verify_decision_context(json.dumps(response), binding, {})
+            assert verified['choice'] == 'approved'
+            assert verified['provenance']['excerpt'] == text
+        else:
+            with pytest.raises(w.Refusal, match='different phase'):
+                adapter.verify_decision_context(json.dumps(response), binding, {})
+        assert db == before
+
+
 @pytest.mark.parametrize('text', [
     'Approved.', 'approve', 'Looks good, proceed.', 'LGTM', 'Go ahead', 'Proceed',
     'Please continue', 'Yes, go ahead', 'okay', 'I approve this phase',
@@ -266,12 +341,13 @@ def test_conversational_decision_preserves_provenance_and_is_replay_safe(tmp_pat
 
 def test_named_phase_must_match_the_bound_visit(tmp_path):
     c, s = setup(tmp_path); s = submit(c, s)
-    with pytest.raises(w.Refusal, match='different phase'):
-        decide(c, s, decision(s, text='Build approved'))
-    with pytest.raises(w.Refusal, match='different phase'):
-        decide(c, s, decision(s, text='I approve this Build'))
-    with pytest.raises(w.Refusal, match='different phase'):
-        decide(c, s, decision(s, text='Accept the current plan'))
+    for text in ['Build approved', 'I approve this Build', 'Accept the current plan',
+                 'Okay. Build is confirmed.', 'Okay. Build is signed off.',
+                 'Okay. We have signed the Build phase off.', 'Okay. "Build confirmed".']:
+        before = c._path().read_bytes()
+        with pytest.raises(w.Refusal, match='different phase'):
+            decide(c, s, decision(s, text=text))
+        assert c._path().read_bytes() == before
     accepted = decide(c, s, decision(s, text='Product approved'))
     assert w.current(accepted)['decision'] == 'approved'
 

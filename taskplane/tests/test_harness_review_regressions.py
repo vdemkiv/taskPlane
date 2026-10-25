@@ -100,38 +100,42 @@ def exercise_child_lineage(root):
     for lineage in ('transcript', 'metadata-only', 'metadata-no-journal', 'subagent-start', 'parent-field'):
         workspace = root/lineage
         workspace.mkdir(parents=True)
-        c, s = setup(workspace)
-        if lineage != 'metadata-no-journal':
-            flow.append(workspace, {'kind': 'start', 'run': s['run'], 'session': 'root', 'phase': 'product'})
-        child = {'cwd': str(workspace), 'thread_id': 'review-child', 'hook_event_name': 'PreToolUse',
-                 'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}
-        if lineage == 'transcript' or lineage.startswith('metadata'):
-            transcript = workspace/'.taskplane/child.jsonl'
-            transcript.write_text(json.dumps({'type': 'session_meta', 'payload': {
-                'id': 'review-child', 'parent_thread_id': 'root', 'thread_source': 'subagent',
-                'source': {'subagent': {'thread_spawn': {'parent_thread_id': 'root'}}}}})+'\n'+
-                json.dumps({'type': 'event_msg', 'ordinal': 7, 'timestamp': '2026-09-01T00:00:01Z', 'payload': {
-                    'type': 'token_count', 'info': {'total_token_usage': {
-                        'input_tokens': 9, 'cached_input_tokens': 0, 'output_tokens': 1, 'total_tokens': 10}}}})+'\n')
-            child['transcript_path'] = str(transcript)
-            assert flow.counter(child, 'review-child')['parent'] == 'root'
-            if lineage.startswith('metadata'):
-                transcript.write_text(transcript.read_text().splitlines()[0]+'\n')
-                assert flow.counter(child, 'review-child')['usage_status'] == 'unavailable'
-            assert flow.observed_parent(child, 'review-child') == 'root'
-            assert flow.observed_parent(child, 'unrelated') is None
-        elif lineage == 'subagent-start':
-            flow.hook({'cwd': str(workspace), 'thread_id': 'root', 'hook_event_name': 'SubagentStart', 'agent_id': 'review-child'})
-        else:
-            child['parent_session_id'] = 'root'
-        refused(lambda: flow.hook(child), 'scope_violation')
-        refused(lambda: flow.hook(child | {'tool_input': {'path': 'product.json'}}), 'scope_violation')
-        s = submit(c, s)
-        refused(lambda: flow.hook(child), 'scope_violation')
-        assert local.Harness(workspace, 'review-child').read() == {}
-        unrelated = {k: v for k, v in child.items() if k not in ('transcript_path', 'parent_session_id')}
-        unrelated['thread_id'] = 'unrelated'
-        assert flow.hook(unrelated).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
+        # Identical IDs in these cases represent separate native installations.
+        from unittest.mock import patch
+        with patch.dict('os.environ', {'CODEX_HOME': str(workspace/'codex'),
+                                      'CLAUDE_CONFIG_DIR': str(workspace/'claude')}):
+            c, s = setup(workspace)
+            if lineage != 'metadata-no-journal':
+                flow.append(workspace, {'kind': 'start', 'run': s['run'], 'session': 'root', 'phase': 'product'})
+            child = {'cwd': str(workspace), 'thread_id': 'review-child', 'hook_event_name': 'PreToolUse',
+                     'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}
+            if lineage == 'transcript' or lineage.startswith('metadata'):
+                transcript = workspace/'.taskplane/child.jsonl'
+                transcript.write_text(json.dumps({'type': 'session_meta', 'payload': {
+                    'id': 'review-child', 'parent_thread_id': 'root', 'thread_source': 'subagent',
+                    'source': {'subagent': {'thread_spawn': {'parent_thread_id': 'root'}}}}})+'\n'+
+                    json.dumps({'type': 'event_msg', 'ordinal': 7, 'timestamp': '2026-09-01T00:00:01Z', 'payload': {
+                        'type': 'token_count', 'info': {'total_token_usage': {
+                            'input_tokens': 9, 'cached_input_tokens': 0, 'output_tokens': 1, 'total_tokens': 10}}}})+'\n')
+                child['transcript_path'] = str(transcript)
+                assert flow.counter(child, 'review-child')['parent'] == 'root'
+                if lineage.startswith('metadata'):
+                    transcript.write_text(transcript.read_text().splitlines()[0]+'\n')
+                    assert flow.counter(child, 'review-child')['usage_status'] == 'unavailable'
+                assert flow.observed_parent(child, 'review-child') == 'root'
+                assert flow.observed_parent(child, 'unrelated') is None
+            elif lineage == 'subagent-start':
+                flow.hook({'cwd': str(workspace), 'thread_id': 'root', 'hook_event_name': 'SubagentStart', 'agent_id': 'review-child'})
+            else:
+                child['parent_session_id'] = 'root'
+            refused(lambda: flow.hook(child), 'scope_violation')
+            refused(lambda: flow.hook(child | {'tool_input': {'path': 'product.json'}}), 'scope_violation')
+            s = submit(c, s)
+            refused(lambda: flow.hook(child), 'scope_violation')
+            assert local.Harness(workspace, 'review-child').read() == {}
+            unrelated = {k: v for k, v in child.items() if k not in ('transcript_path', 'parent_session_id')}
+            unrelated['thread_id'] = 'unrelated'
+            assert flow.hook(unrelated).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
     # A child-start event without an ID must not attach a finished root to an
     # unrelated open run through a missing root/child value in older journal rows.
     rows = [{'kind': 'start', 'run': 'foreign-run', 'session': 'foreign'},
@@ -188,6 +192,8 @@ def native(path, sid, points, parent=None, guardian=False, owned=False):
         rows.append(dict(type='token_usage_record',ordinal=ordinal,timestamp=f'2026-09-01T00:00:{second:02d}Z',payload=payload))
         before = total
     path.write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
+    from taskplane.tests.test_flow_integration import index_native
+    index_native(path, sid)
     return rows
 
 
@@ -219,14 +225,20 @@ def test_new_child_boundary_response_is_owned_once(tmp_path,monkeypatch):
 
 
 def test_saved_legacy_guardian_is_not_run_usage(tmp_path,monkeypatch):
-    monkeypatch.setattr(flow_usage,'_codex_sessions',lambda *_:([],0))
+    import os
+    from taskplane.tests.test_history_bounds import _codex_catalog_fixture
+    home = Path(os.environ['CODEX_HOME']); home.mkdir(parents=True, exist_ok=True)
+    _codex_catalog_fixture(home, [])
     run=dict(run='r',session='root',at='2026-09-01T00:00:10Z')
-    prior=dict(session='guardian',agent='guardian',role='host_approval_review',usage={'total_tokens':150},
-               native_usage={'total_tokens':150},basis='child created during flow')
+    usage = dict.fromkeys(flow_usage.meter.USAGE_KEYS, 0)
+    usage.update(input_tokens=150, uncached_input_tokens=150, total_tokens=150)
+    prior=dict(session='guardian',agent='guardian',role='host_approval_review',usage=usage,
+               native_usage=dict(usage),status='measured',basis='child created during flow')
     saved=dict(kind='usage',run='r',measurement={'sessions':[prior]})
     result=flow_usage.reconcile(run,[saved])
     assert result['host_approval_tokens'] is None
-    assert result['sessions'][0]['usage'] is None and result['sessions'][0]['status']=='unavailable'
+    guardian = next(s for s in result['sessions'] if s['session'] == 'guardian')
+    assert guardian['usage'] is None and guardian['status']=='unavailable'
     prior.update(attribution_schema='taskplane.owned-interval/v1',interval={'start':datetime.fromisoformat(run['at']).timestamp(),'end_exclusive':None})
     assert flow_usage.reconcile(run,[saved])['host_approval_tokens']['total_tokens']==150
     prior['interval']['start']-=1
@@ -372,3 +384,77 @@ def test_resumed_owned_history_without_prior_baseline_stays_partial(tmp_path):
     result=read_owned_interval([source],'worker',start=start)
     assert result['usage']['total_tokens']==20 and result['status']=='partial'
     assert 'resumed_baseline_unavailable' in result['errors']
+
+
+def test_production_journal_readers_never_use_offline_oracle(tmp_path,monkeypatch,capsys):
+    c,s=setup(tmp_path)
+    flow.append(tmp_path,dict(kind='start',run=s['run'],session='root',phase='product'))
+    before=c.report()
+    def forbidden(*args,**kwargs):
+        raise AssertionError('Production replayed the offline journal oracle')
+    monkeypatch.setattr(flow,'read_events',forbidden)
+    event=dict(cwd=str(tmp_path),thread_id='root',hook_event_name='PreToolUse',
+               tool_name='Write',tool_input={'path':'app.py'},call_id='denial')
+    with pytest.raises(w.Refusal):
+        flow.hook(event,governor=c)
+    model=flow.report(tmp_path,s['run'],governor=c)
+    assert model['workflow']['revision']==before['revision']
+    assert model['hook_outcomes']['denied']==1
+    assert flow.main(['report','--workspace',str(tmp_path),'--run',s['run']],governor=c)==0
+    capsys.readouterr()
+    assert c.report()['revision']==before['revision']
+
+
+def test_cold_journal_cannot_redirect_current_native_report(tmp_path,monkeypatch):
+    from taskplane import flow_journal as journal
+    c,s=setup(tmp_path)
+    flow.append(tmp_path,dict(kind='start',run='old',session='root',phase='product'))
+    flow.append(tmp_path,dict(kind='finish',run='old',session='root'))
+    flow.append(tmp_path,dict(kind='start',run=s['run'],session='root',phase='product'))
+    monkeypatch.setattr(journal,'RECORDS',1)
+    model=flow.report(tmp_path,governor=c)
+    assert model['run']==s['run'] and model['workflow']['run']==s['run']
+    assert model['journal_coverage']['status']=='partial'
+    assert model['tool_calls'] is None
+    assert model['usage_measurement']['status'] != 'fresh'
+    assert c.report()['revision']==s['revision']
+
+
+def test_paged_milestones_do_not_suppress_complete_native_usage(tmp_path,monkeypatch):
+    c,s=setup(tmp_path)
+    flow.append(tmp_path,dict(kind='start',run=s['run'],session='root',phase='product'))
+    path=tmp_path/flow.JOURNAL
+    with path.open('a') as stream:
+        for i in range(300):
+            stream.write(json.dumps(dict(kind='progress',run=s['run'],session='root',phase='product',note=str(i)))+'\n')
+    called=[]
+    def measured(run,rows,state,expected=(),**kwargs):
+        called.append(rows)
+        return dict(tokens={'total_tokens':12345},sessions=[],token_coverage={'status':'complete'})
+    monkeypatch.setattr(flow,'reconcile_usage',measured)
+    flow.report(tmp_path,s['run'],governor=c)
+    result=flow.report(tmp_path,s['run'],governor=c)
+    assert called and result['tokens']=={'total_tokens':12345}
+    assert len(result['milestones'])==256 and result['journal_detail']['partial']
+    assert result['token_coverage']['journal_detail_status']=='partial'
+    assert 'journal_status' not in result['token_coverage']
+
+
+def test_large_report_keeps_native_total_equal_to_small_report(tmp_path,monkeypatch):
+    c,s=setup(tmp_path)
+    home=tmp_path/'native-home'; sessions=home/'sessions'; sessions.mkdir(parents=True)
+    monkeypatch.setenv('CODEX_HOME',str(home))
+    native(sessions/'root.jsonl','root',[(5,100)])
+    baseline=flow.counter(dict(transcript_path=str(sessions/'root.jsonl'),host='codex'),'root')
+    native(sessions/'root.jsonl','root',[(5,100),(15,200),(25,300)])
+    flow.append(tmp_path,dict(kind='start',run=s['run'],session='root',phase='product',
+        at='2026-09-01T00:00:10Z',**baseline))
+    before=flow.report(tmp_path,s['run'],governor=c)
+    assert before['tokens'] and before['tokens']['total_tokens']==200, (before.get('sessions'),before['token_coverage'],before['evidence_errors'])
+    with (tmp_path/flow.JOURNAL).open('a') as stream:
+        for i in range(300):
+            stream.write(json.dumps(dict(kind='progress',run=s['run'],session='root',phase='product',note=str(i)))+'\n')
+    flow.report(tmp_path,s['run'],governor=c)
+    after=flow.report(tmp_path,s['run'],governor=c)
+    assert after['journal_detail']['partial'] and len(after['milestones'])==256
+    assert after['tokens']==before['tokens'] and after['sessions'][0]['usage']==before['sessions'][0]['usage']

@@ -1,5 +1,23 @@
 # taskplane changelog
 
+## v2.35.2 — review fixes and release validation
+
+- Include the complete 2.35.1 bounded-history and worker-identity release below.
+- Correct usage accounting, workspace lineage handling, snapshot retention and checkpoint interaction issues identified by the subsequent engineering review, preserving existing approvals and historical evidence.
+- Validate finding closure against the exact accepted Build evidence in downstream Engineering and Retro checkpoints.
+- Align version reporting and package manifests, and exclude generated host declarations and local tooling from release archives.
+- Correct browser initialization and Windows test fixtures without relaxing recovery, bounded-processing or dashboard assertions; update the CI filelock dependency to 4.2.4.
+- Run the existing source-security rules with checksum-pinned native OpenGrep, removing Semgrep's vulnerable Python dependency chain; verify rule rejection and Python dependency compatibility in CI.
+
+## v2.35.1 — bounded history and reliable worker identity
+
+- Replace full-history Claude transcript and flow-journal processing on startup, hooks and reports with disposable incremental SQLite indexes, persisted offsets and exact contribution accounting.
+- Bound cold-start, recovery and detail work per call; keep missing baselines and incomplete accounting explicit. Handle rotation, truncation, duplicate observations and restarts without silently losing or duplicating totals.
+- Normalize journal storage and derive detail allowances from supported logical items so accepted records remain readable and paginated queries make progress. Preserve the original journal, approvals and run history.
+- Give observed Claude workers single-use, exact-invocation claim/context references while retaining host permissions; correlate only supported asynchronous background-flag representations.
+- Close correlated Codex `errored` workers as failed, and preserve fresh/resumed CLI baselines, optional retry attachments, selected-run ownership and hook cleanup.
+- Verify the frozen implementation with 754 regression tests and three independent source reviews. No new live-host certification is claimed.
+
 ## v2.35.0 — Claude Mods on the restored 2.31.7 baseline
 
 - Build directly from restored main 2.31.7. The abandoned 2.32–2.34 runtime and workflow changes remain archived; the new version avoids reusing historical package identities.

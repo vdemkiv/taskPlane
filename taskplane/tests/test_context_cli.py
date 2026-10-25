@@ -12,9 +12,16 @@ from taskplane.context import Store
 ROOT = Path(__file__).resolve().parents[2]
 
 def command(workspace, *args, code=0):
+    env = {**os.environ, 'CODEX_THREAD_ID': 'context-cli-root'}
+    if args[0] == 'start':
+        from taskplane.tests.test_flow_integration import native
+        transcript = Path(env['CODEX_HOME']) / 'sessions/context-cli-root.jsonl'
+        if not transcript.exists():
+            transcript.parent.mkdir(parents=True, exist_ok=True)
+            native(transcript, 'context-cli-root', None)
     p = subprocess.run([sys.executable, str(ROOT/'taskplane/tp.py'), 'flow', *args,
                         '--workspace', str(workspace)], capture_output=True, text=True,
-                       env={**os.environ, 'CODEX_THREAD_ID': 'context-cli-root'})
+                       env=env)
     assert p.returncode == code, p.stdout+p.stderr
     return json.loads(p.stdout), len(p.stdout.encode())
 
@@ -110,6 +117,8 @@ def test_emitted_context_actions_execute_verbatim_outside_workspace(tmp_path, mo
     s = c.update_tasks(s['run'], s['revision'], '.taskplane/large-tasks.json')
     item = reserve(c, s); launch(c, s, item)
     metadata(logs/'native-0.jsonl', s, item['grant'], 'native-0')
+    from taskplane.tests.test_flow_integration import index_native
+    index_native(logs/'native-0.jsonl', 'native-0')
     worker = h.Controller(workspace, 'root', h.installed_adapter('codex'), principal='native-0')
     claim = worker.worker(s['run'], 'claim', grant=item['grant']['grant_id'])
     action = claim['context']['next_action']

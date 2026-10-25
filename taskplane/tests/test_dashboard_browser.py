@@ -481,10 +481,18 @@ class _DocumentCounter(HTMLParser):
 
 def test_shared_delivery_dashboard_and_graph_work_in_a_real_browser(tmp_path, monkeypatch):
     from taskplane import depgraph, flow, workflow as w
-    from taskplane.tests.test_workflow_host import controller, native
+    from taskplane.tests.test_workflow_host import FixtureHost, native
     from taskplane.tests.test_workflow_delivery import output
-    c, host, initial = controller(tmp_path)
-    workspace = c.workspace
+    from taskplane.tests.test_workflow_evidence import prepare
+    from taskplane.workflow_host import Controller
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    prepared, _, _ = prepare(workspace)
+    target = tmp_path / "protected.json"
+    target.write_text(json.dumps({"schema": "taskplane.control/v1", "workspace": str(workspace),
+                                 "root": "root", "active": None, "runs": {}}))
+    host = FixtureHost(target, prepared["scope"])
+    c = Controller(workspace, "root", host)
     def command(*args):
         import contextlib
         import io
@@ -497,6 +505,7 @@ def test_shared_delivery_dashboard_and_graph_work_in_a_real_browser(tmp_path, mo
         path.write_text(content)
     monkeypatch.setenv("CODEX_THREAD_ID", "root")
     assert command("start", "--goal", "Ship a small product") == 0
+    initial = c.report()
     depgraph.scan(str(workspace), decompose=True)
     (workspace / "tasks.json").write_text(json.dumps({"tasks": [
         {"id": "T1", "title": "Build product", "dependencies": [],
