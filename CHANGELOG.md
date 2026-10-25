@@ -7,6 +7,7 @@
 - Validate finding closure against the exact accepted Build evidence in downstream Engineering and Retro checkpoints.
 - Align version reporting and package manifests, and exclude generated host declarations and local tooling from release archives.
 - Correct browser initialization and Windows test fixtures without relaxing recovery, bounded-processing or dashboard assertions; update the CI filelock dependency to 4.2.4.
+- Run the existing source-security rules with checksum-pinned native OpenGrep, removing Semgrep's vulnerable Python dependency chain; verify rule rejection and Python dependency compatibility in CI.
 
 ## v2.35.1 — bounded history and reliable worker identity
 
