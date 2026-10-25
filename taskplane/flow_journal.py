@@ -7,7 +7,7 @@ an arbitrary undetected rewrite in the middle of a growing file.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import hashlib
@@ -883,36 +883,36 @@ class Projection:
             sql = sql.replace('SELECT name,body ', f'SELECT substr(CAST(name AS BLOB),1,65),substr(CAST(body AS BLOB),1,{RECORD_BYTES+1}) ').replace('SELECT category,name,body ', f'SELECT substr(CAST(category AS BLOB),1,65),substr(CAST(name AS BLOB),1,{RECORD_BYTES+1}),substr(CAST(body AS BLOB),1,{RECORD_BYTES+1}) ')
             sql = sql.replace('SELECT body ', f'SELECT substr(CAST(body AS BLOB),1,{RECORD_BYTES+1}) ').replace('SELECT pos,body ', f'SELECT pos,substr(CAST(body AS BLOB),1,{RECORD_BYTES+1}) ').replace('SELECT pos,key,body,rank ', f'SELECT pos,substr(CAST(key AS BLOB),1,{RECORD_BYTES+1}),substr(CAST(body AS BLOB),1,{RECORD_BYTES+1}),rank ')
             sql = sql.replace('SELECT pos,root ', 'SELECT pos,substr(CAST(root AS BLOB),1,65) ')
-            cursor = self.db.execute(sql, args)
-            for _ in range(limit):
-                # Every query projects at most two full-sized cells plus
-                # bounded scalar/index columns. Reserve before SQLite returns
-                # a row, including one rejected by the output allowance.
-                if self.budget.query_rows >= QUERY_ROWS:
-                    return self._query_result(result, 'row_budget')
-                if QUERY_BYTES - self.budget.query_bytes < QUERY_RESERVATION_BYTES:
-                    return self._query_result(result, 'query_budget')
-                if self.budget.output_bytes >= OUTPUT_BYTES:
-                    return self._query_result(result, 'output_budget')
-                row = cursor.fetchone()
-                if row is None:
-                    return self._query_result(result, 'complete')
-                self.budget.query_rows += 1
-                size = sum(len(v) if isinstance(v, bytes) else len(v.encode())
-                           if isinstance(v, str) else 8 for v in row)
-                self.budget.query_bytes += size
-                try:
-                    row = tuple(v.decode('utf-8') if isinstance(v, bytes) else v for v in row)
-                except UnicodeError as exc:
-                    raise CacheCorrupt('invalid_cache_encoding') from exc
-                if shape is not None:
-                    body_shape = 'captured:reviews' if shape == 'captured' and row[1] == 'reviews' else shape
-                    _decode(row[body_index], body_shape)
-                if size + self.budget.output_bytes > OUTPUT_BYTES:
-                    return self._query_result(result, 'output_budget')
-                self.budget.output_bytes += size
-                result.append(row)
-            return self._query_result(result, 'limit')
+            with closing(self.db.execute(sql, args)) as cursor:
+                for _ in range(limit):
+                    # Every query projects at most two full-sized cells plus
+                    # bounded scalar/index columns. Reserve before SQLite returns
+                    # a row, including one rejected by the output allowance.
+                    if self.budget.query_rows >= QUERY_ROWS:
+                        return self._query_result(result, 'row_budget')
+                    if QUERY_BYTES - self.budget.query_bytes < QUERY_RESERVATION_BYTES:
+                        return self._query_result(result, 'query_budget')
+                    if self.budget.output_bytes >= OUTPUT_BYTES:
+                        return self._query_result(result, 'output_budget')
+                    row = cursor.fetchone()
+                    if row is None:
+                        return self._query_result(result, 'complete')
+                    self.budget.query_rows += 1
+                    size = sum(len(v) if isinstance(v, bytes) else len(v.encode())
+                               if isinstance(v, str) else 8 for v in row)
+                    self.budget.query_bytes += size
+                    try:
+                        row = tuple(v.decode('utf-8') if isinstance(v, bytes) else v for v in row)
+                    except UnicodeError as exc:
+                        raise CacheCorrupt('invalid_cache_encoding') from exc
+                    if shape is not None:
+                        body_shape = 'captured:reviews' if shape == 'captured' and row[1] == 'reviews' else shape
+                        _decode(row[body_index], body_shape)
+                    if size + self.budget.output_bytes > OUTPUT_BYTES:
+                        return self._query_result(result, 'output_budget')
+                    self.budget.output_bytes += size
+                    result.append(row)
+                return self._query_result(result, 'limit')
         except CacheCorrupt as exc:
             self._cache_failure(exc)
             return QueryResult([], 'corrupt')

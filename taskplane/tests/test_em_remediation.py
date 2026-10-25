@@ -850,6 +850,49 @@ def test_journal_cached_detail_bodies_are_validated_before_return(tmp_path, acce
     assert path.read_bytes() == original
 
 
+def test_journal_closes_paged_cursor_before_quarantining_corruption(tmp_path, monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+    from taskplane import flow_journal as journal
+
+    source = journal_fixture(tmp_path, [dict(kind='start', run='r', session='root'),
+                                       dict(kind='progress', run='r', session='root')])
+    original = source.read_bytes()
+    journal_read(tmp_path)
+    with closing(sqlite3.connect(tmp_path / '.taskplane' / journal.CACHE)) as db, db:
+        db.execute("UPDATE events SET body='{broken' WHERE kind='start'")
+    closed = []
+    moved = []
+    replace = journal.os.replace
+
+    def quarantine(src, dst):
+        # Windows cannot rename the database while an unfinished query holds it.
+        assert closed == [True]
+        moved.append(src)
+        return replace(src, dst)
+
+    with journal.action_budget():
+        view = journal.projection(tmp_path)
+        connection = view.db
+
+        def execute(sql, args):
+            cursor = connection.execute(sql, args)
+
+            def close():
+                cursor.close()
+                closed.append(True)
+
+            return SimpleNamespace(fetchone=cursor.fetchone, close=close)
+
+        view.db = SimpleNamespace(execute=execute, rollback=connection.rollback, close=connection.close)
+        monkeypatch.setattr(journal.os, 'replace', quarantine)
+        assert view.page('r')['rows'] == []
+        assert view.coverage()['status'] == 'unavailable'
+    assert moved
+    assert journal_read(tmp_path)[1]['status'] == 'complete'
+    assert source.read_bytes() == original
+
+
 @pytest.mark.parametrize('table', ['actions', 'child'])
 def test_journal_other_cached_reducers_rebuild_without_advancing(tmp_path, table):
     import sqlite3
