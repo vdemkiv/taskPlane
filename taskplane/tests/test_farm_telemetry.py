@@ -212,11 +212,16 @@ def test_linked_pair_and_linked_directory_are_never_followed(tmp_path):
         snapshots.pin(tmp_path, target, "decision")
 
 
-def test_collection_uses_registered_ownership_without_global_scan(tmp_path, monkeypatch):
+@pytest.mark.parametrize("force_fallback", [False, True])
+def test_collection_uses_registered_ownership_without_global_scan(tmp_path, monkeypatch, force_fallback):
+    if force_fallback:
+        monkeypatch.setattr(snapshots, "supports_collection", lambda: False)
     target = publish(tmp_path, detached=True)
     monkeypatch.setattr(snapshots, "_scan", lambda *a, **k: pytest.fail("global scan"))
-    assert snapshots.collect(tmp_path, max_pairs=0, now=time.time() + 1000)["status"] == "complete"
-    assert not target.exists()
+    supported = snapshots.supports_collection()
+    assert snapshots.collect(tmp_path, max_pairs=0, now=time.time() + 1000)["status"] == (
+        "complete" if supported else "skipped")
+    assert target.exists() is (not supported)
 
 
 def test_detached_same_run_never_replaces_selection(tmp_path):

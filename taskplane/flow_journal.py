@@ -579,8 +579,11 @@ class Projection:
 
     def _stored(self, table: str, key: tuple[Any, ...], default: Any) -> Any:
         assert self.db is not None
-        row = self._reducer_query(f'SELECT @body@ FROM {table} WHERE g=? AND run=?' +
-                                  (' AND session=?' if table == 'samples' else ''), key, ('body',), charge_row=False)
+        sql = {
+            'totals': 'SELECT @body@ FROM totals WHERE g=? AND run=?',
+            'samples': 'SELECT @body@ FROM samples WHERE g=? AND run=? AND session=?',
+        }[table]
+        row = self._reducer_query(sql, key, ('body',), charge_row=False)
         return _decode(row[0], table) if row else default
 
     def _reducer_query(self, sql: str, args: Any, columns: tuple[str, ...], *, charge_row: bool = True) -> tuple[Any, ...] | None:
@@ -918,8 +921,16 @@ class Projection:
             return QueryResult([], 'unavailable')
 
     def start(self, run: str | None = None, owner: str | None = None) -> dict[str, Any] | None:
-        clause, params = (' AND run=?',[_key(run)]) if run is not None else (' AND owner=?',[_key(owner)]) if owner is not None else ('',[])
-        rows = self._query('SELECT body FROM events WHERE g=? AND kind=\'start\''+clause+' ORDER BY pos DESC LIMIT 1', [self.generation,*params], 2, shape='start')
+        if run is not None:
+            sql = "SELECT body FROM events WHERE g=? AND kind='start' AND run=? ORDER BY pos DESC LIMIT 1"
+            params = [_key(run)]
+        elif owner is not None:
+            sql = "SELECT body FROM events WHERE g=? AND kind='start' AND owner=? ORDER BY pos DESC LIMIT 1"
+            params = [_key(owner)]
+        else:
+            sql = "SELECT body FROM events WHERE g=? AND kind='start' ORDER BY pos DESC LIMIT 1"
+            params = []
+        rows = self._query(sql, [self.generation,*params], 2, shape='start')
         return cast(dict[str, Any], json.loads(rows[0][0])) if rows else None
 
     def active(self, session: str, parent: str | None = None) -> dict[str, Any] | None:
@@ -1112,9 +1123,11 @@ class Projection:
             status = self._page_status(identity, cursor, 'cursor_mismatch')
             return dict(rows=[], next_offset=cursor, complete=False,
                         query=status, query_identity=identity, continuation=status['continuation'], coverage=self.coverage())
-        clause = ' AND kind=?' if kind is not None else ''
+        sql = ('SELECT pos,body FROM events WHERE g=? AND run=? AND pos>? AND kind=? ORDER BY pos LIMIT ?'
+               if kind is not None else
+               'SELECT pos,body FROM events WHERE g=? AND run=? AND pos>? ORDER BY pos LIMIT ?')
         params = [self.generation,_key(run),after] + ([kind] if kind is not None else []) + [limit+1]
-        rows = self._query('SELECT pos,body FROM events WHERE g=? AND run=? AND pos>?'+clause+' ORDER BY pos LIMIT ?',params,limit+1, shape='event')
+        rows = self._query(sql,params,limit+1, shape='event')
         reason = 'limit' if len(rows) > limit else rows.reason
         selected = rows[:limit]
         cursor = (selected[-1][0] if selected else after) if reason != 'complete' else None
@@ -1151,8 +1164,9 @@ class Projection:
     def has_closure(self, closure_id: str, kind: str | None = None) -> bool | None:
         if self.coverage()['status'] != 'complete':
             return None
-        clause = ' AND kind=?' if kind else ''
-        rows = self._query('SELECT pos FROM closure WHERE g=? AND id=?'+clause+' LIMIT 1',
+        sql = ('SELECT pos FROM closure WHERE g=? AND id=? AND kind=? LIMIT 1' if kind else
+               'SELECT pos FROM closure WHERE g=? AND id=? LIMIT 1')
+        rows = self._query(sql,
                            [self.generation,_key(closure_id)]+([kind] if kind else []),2)
         return bool(rows) if rows.complete else None
 
