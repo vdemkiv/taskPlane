@@ -115,6 +115,8 @@ def diagnose(workspace: Path) -> dict[str, Any]:
             if len(issues) < 10:
                 issues.append(str(parent) + ": unreadable directory")
     return {"schema": "taskplane.diagnostics/v1", "workspace": str(workspace),
+            "coverage": {"source_metadata": "bounded walk; completeness reported below",
+                         "workflow_snapshot_references": "not checked"},
             "limits": {"source_files": MAX_SOURCE_FILES, "source_bytes": MAX_SOURCE_BYTES,
                        "diagnostic_entries": MAX_SOURCE_FILES},
             "inspected_entries": entries, "regular_files": files, "regular_bytes": total,

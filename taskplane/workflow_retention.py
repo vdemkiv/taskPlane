@@ -5,7 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from . import workflow as w
+from . import primitives, workflow as w
 from .context import Store, encode, REFERENCE_SCHEMA
 
 WATERMARK = 4 * 1024 * 1024
@@ -29,8 +29,11 @@ def compact(workspace: Path, db: dict[str, Any]) -> dict[str, Any]:
     for key, state in list(result["runs"].items()):
         if key == result["active"] or not terminal(state):
             continue
-        ref = store.put("workflow-history", state)
-        w.require(store.resolve(ref) == state, "state_unavailable", "History archive verification failed.")
+        try:
+            ref = store.put("workflow-history", state)
+            w.require(store.resolve(ref) == state, "state_unavailable", "History archive verification failed.")
+        except (OSError, ValueError, primitives.StateError) as exc:
+            raise w.Refusal("state_unavailable", f"History archive failed for run {str(key)[:128]}: {str(exc)[:1200]}") from exc
         result.setdefault("archives", {})[key] = ref
         del result["runs"][key]
         if len(encode(result)) < WATERMARK:

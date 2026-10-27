@@ -18,6 +18,22 @@ def setup(workspace, *, entry="product", standalone=False):
     return c,s
 
 
+def test_source_diagnosis_discloses_unchecked_reference_integrity(tmp_path, monkeypatch):
+    (tmp_path / 'app.py').write_text('source')
+    (tmp_path / '.taskplane').mkdir()
+    (tmp_path / '.taskplane' / 'workflow.json').write_text('{broken history')
+    result = local.diagnose(tmp_path)
+    assert result['issues'] == [] and result['complete'] and not result['partial']
+    assert result['regular_files'] == 1
+    assert result['coverage'] == {
+        'source_metadata': 'bounded walk; completeness reported below',
+        'workflow_snapshot_references': 'not checked'}
+    monkeypatch.setattr(local, 'MAX_SOURCE_FILES', 0)
+    partial = local.diagnose(tmp_path)
+    assert partial['partial'] and not partial['complete']
+    assert partial['coverage'] == result['coverage']
+
+
 def displaced_database(tmp_path, *, approved=False):
     import hashlib
     c, state = setup(tmp_path)

@@ -73,6 +73,14 @@ its scope and lens count. A standalone engineering review uses `flow start
 Inspect the resulting run before claiming initialization succeeded. Status alone
 stays read-only and explains pending setup; failed inspection leaves history unknown.
 
+If startup fails, stop dependent worker dispatch and report the first failure.
+Use supported diagnosis; an empty source-metadata issues list does not establish
+workflow snapshot-reference integrity. Retry only after an input changes or the
+cause is repaired, identifying that change; do not repeat unchanged failures.
+Harness deactivation does not establish an active parent run and is not recovery.
+Disabling a plugin requires a clear, separate user instruction and never proves
+successful startup or authorizes dependent workers without an active parent.
+
 The harness is mandatory for every execution entry, including standalone work and
 resumed stages. Direct Taskplane execution prompts, named execution skills and
 native reads of installed execution skill files select a session/workspace-bound

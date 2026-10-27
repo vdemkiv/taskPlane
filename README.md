@@ -52,6 +52,8 @@ Use `taskplane help` to explore the routes. TaskPlane selects relevant review le
 
 By default, review each phase’s result and approve it before the next phase. Request changes when something needs correction; the decision and revision remain connected to the run.
 
+### Working autonomously
+
 For a bounded task, you can authorize automatic continuation:
 
 ```text
