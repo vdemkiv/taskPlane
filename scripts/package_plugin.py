@@ -124,9 +124,11 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
                      if p.is_file() and package_input(p))
     files.update((ROOT / "taskplane").glob("*.py"))
     files.update(p for p in (ROOT / "lenses").rglob("*") if p.suffix == ".md" or p.name == "catalog.json")
-    files.update(ROOT / "docs" / name for name in ("cli-reference.md", "lens-catalog.md", "onboarding.md"))
+    files.update(ROOT / "docs" / name for name in ("cli-reference.md", "lens-catalog.md", "onboarding.md", "walkthrough.md"))
     files.update(ROOT / "docs/assets" / name for name in
-                 ("taskplane-cowork-flow.gif", "taskplane-flow-source.html"))
+                 ("taskplane-cowork-flow.gif", "taskplane-flow-source.html",
+                  "taskplane-run-walkthrough.gif", "taskplane-flow-overview.png",
+                  "taskplane-walkthrough/index.html", "taskplane-walkthrough/render.py"))
     if host == "claude":
         # Keep the runtime and reproducible checks explicit; never sweep tooling
         # directories or generated host declarations into the plugin.

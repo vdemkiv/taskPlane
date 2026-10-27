@@ -69,7 +69,7 @@ The dashboard shows the policy and which phases may continue automatically. Say 
 
 The shared dashboard at `.taskplane/dashboard.html` brings together the goal, phase, task graph, source dependencies, findings and verification evidence. It is a snapshot: regenerate it after progress and refresh the view. Check its timestamp, goal and checkout.
 
-In a **supported Claude Mods host**, a status band, checkpoint pane and sequential evidence browser keep that information near the prompt. Inspect a finding’s source and verification, or use **Accept** and **Request changes** for an eligible checkpoint. Other hosts use the conversation and shared dashboard. See [Claude Mods capabilities and host requirements](docs/claude-mods.md).
+In a **supported Claude Mods host**, a status band, checkpoint pane and sequential evidence browser keep that information near the prompt. Inspect a finding’s source and verification, or use **Accept** and **Request changes** for an eligible checkpoint. Other hosts use the conversation and shared dashboard. See [Claude Mods capabilities and host requirements](https://github.com/vdemkiv/taskPlane/blob/main/docs/claude-mods.md).
 
 Run token accounting and context-window usage are separate measurements. Unavailable data stays **Unknown**; partial accounting remains labelled. A token total is not a measure of available account allowance.
 
@@ -144,6 +144,6 @@ python -m pip install --require-hashes --no-deps -r .venv/tests.lock
 python scripts/ci_local.py
 ```
 
-Add `--browser` for the browser suite. Build the Codex upload archive with `python scripts/package_openai.py`; generated packages go to `dist/`. See the [CI workflow](.github/workflows/ci.yml) for platform-specific checks and profiles.
+Add `--browser` for the browser suite. Build the Codex upload archive with `python scripts/package_openai.py`; generated packages go to `dist/`. See the [CI workflow](https://github.com/vdemkiv/taskPlane/blob/main/.github/workflows/ci.yml) for platform-specific checks and profiles.
 
 TaskPlane supplies bounded phase context and command summaries. Use `flow context` to consume current required inputs; new runs require the returned receipt in phase evidence. See [context optimization](docs/cli-reference.md#bounded-context-transport) for receipt semantics and verification reuse.

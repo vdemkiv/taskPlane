@@ -21,7 +21,7 @@ The README animation is a **code-rendered capability example**, not a live run o
 
 The example’s three passes, two workers, source path and finding are illustrative. It shows F-01 remaining open, then being explicitly deferred with an owner; it does not imply that accepting a review fixes an issue. The Build progress bars are illustrative animation elements, not a claimed TaskPlane progress metric. The selected four review lenses are examples, not the entire lens catalog.
 
-The status band and decision-pane treatment represents Claude Mods where supported. The shared HTML dashboard is read-only; conversation decisions and native host permissions remain authoritative. See [Claude Mods](claude-mods.md) for the actual controls, confirmation flow, eligibility and host limitations.
+The status band and decision-pane treatment represents Claude Mods where supported. The shared HTML dashboard is read-only; conversation decisions and native host permissions remain authoritative. See [Claude Mods](https://github.com/vdemkiv/taskPlane/blob/main/docs/claude-mods.md) for the actual controls, confirmation flow, eligibility and host limitations.
 
 ## Playback and accessibility
 
