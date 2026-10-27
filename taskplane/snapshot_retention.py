@@ -502,7 +502,7 @@ def _item(row: sqlite3.Row, root: Path) -> dict[str, Any]:
 
 
 def classify_snapshot_references(workspace: str | Path, value: Any, *, format: str = "structured") -> set[str]:
-    """Bounded structural traversal and complete native tokens; no prose-prefix veto."""
+    """Bounded value traversal; preserve candidate paths until identity is checked."""
     root = _root(workspace)
     if format not in {"structured", "json", "text"}:
         raise ValueError("Unknown snapshot reference format")
@@ -527,21 +527,62 @@ def classify_snapshot_references(workspace: str | Path, value: Any, *, format: s
     found: set[str] = set()
     used = 0
     reference_fields = {"snapshot", "artifact", "path", "href", "src", "evidence"}
-    # Full tokens in prose are conservatively pinned, including encoded JSON and links.
+    # Bare native tokens remain supported, but a directory is never discarded.
     token = re.compile(r"(?<![A-Za-z0-9_-])(snapshot-[a-f0-9]{16}-[a-f0-9]{64}\.(?:html|json))(?![A-Za-z0-9_-]|\.[A-Za-z0-9])")
 
-    def members(body: dict[str, Any]) -> Iterator[tuple[Any, str]]:
+    def members(body: dict[str, Any]) -> Iterator[tuple[Any, str | None]]:
         for key, child in body.items():
             if not isinstance(key, str):
                 raise ValueError("Snapshot reference keys must be strings")
-            yield key, ""
+            yield key, None  # Inventory keys count towards the budget, never pin.
             yield child, key
+
+    def candidates(text: str) -> Iterator[tuple[str, bool]]:
+        whole = text.strip().rstrip('.')
+        match = token.search(whole)
+        # Preserve spaces in whole absolute/local paths and file URIs. Prose is
+        # handled below so its lead-in never becomes part of a relative path.
+        if (match and match.end() == len(whole)
+                and not any(c in whole for c in '\n<>"')
+                and (Path(whole).is_absolute() or whole.startswith(('file:', '.taskplane/', '.taskplane\\', '../', '..\\')))):
+            yield whole, False
+            return
+        links = list(re.finditer(r'''(?:href|src)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'<>`]+))|\]\(\s*<?([^\n()]+?)>?\s*\)''', text))
+        for link in links:
+            yield next(group for group in link.groups() if group is not None).strip(), True
+        link_index = 0
+        for word in re.finditer(r'''[^\s"'<>()[\]{},;`]+''', text):
+            while link_index < len(links) and links[link_index].end() <= word.start():
+                link_index += 1
+            if link_index == len(links) or word.start() < links[link_index].start():
+                yield word.group().rstrip('.!?'), False
+
+    def native_path(candidate: str, declared: bool) -> bool:
+        original = candidate
+        if re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", candidate) and not candidate.startswith('file:'):
+            raise ValueError(f"Foreign snapshot reference: {original[:512]}")
+        if candidate.startswith('file:'):
+            parsed = urlsplit(candidate)
+            if parsed.netloc not in {'', 'localhost'} or parsed.query or parsed.fragment:
+                raise ValueError(f"Foreign snapshot reference: {original[:512]}")
+            # Escapes were decoded once; preserve literal percent characters.
+            candidate = url2pathname(parsed.path.replace('%', '%25'))
+        target = Path(candidate)
+        if target.name == candidate:
+            return True
+        if not target.is_absolute():
+            target = root.parent / target
+        if target.parent == root and '..' not in target.parts:
+            return True
+        if declared or '.taskplane' in target.parts or '..' in target.parts:
+            raise ValueError(f"Foreign or traversing snapshot reference: {original[:512]}")
+        return False  # Ordinary backup paths in untyped data retain their identity.
 
     # One iterator per ancestor, rather than one stack entry per sibling.
     # Each visited value/key costs at least one unit; text costs its UTF-8
     # length. This lower bound on JSON bytes bounds work without rejecting
     # supported byte-sized payloads merely because they contain many nodes.
-    stack: list[tuple[Iterator[tuple[Any, str]], int | None]] = [(iter([(value, "")]), None)]
+    stack: list[tuple[Iterator[tuple[Any, str | None]], int | None]] = [(iter([(value, "")]), None)]
     active: set[int] = set()
     while stack:
         try:
@@ -562,6 +603,8 @@ def classify_snapshot_references(workspace: str | Path, value: Any, *, format: s
             used += 1
         if used > MAX_REFERENCE_BYTES:
             raise ValueError("Snapshot reference byte limit")
+        if field is None:
+            continue
         if isinstance(body, (dict, list, tuple)):
             identity = id(body)
             if identity in active:
@@ -572,38 +615,41 @@ def classify_snapshot_references(workspace: str | Path, value: Any, *, format: s
         elif not isinstance(body, (str, int, float, bool, type(None))):
             raise ValueError("Unsupported snapshot reference value")
         elif isinstance(body, str):
-            decoded = unquote(body)
-            matches = list(token.finditer(decoded))
-            native_declared = field in reference_fields or format == "text"
-            if native_declared:
-                for native in re.findall(r"\.taskplane[/\\](snapshot-[^\s\"'<>()[\]{},;]+)", decoded):
-                    if not re.fullmatch(PAIR.pattern + r"\.(?:html|json)", native.rstrip(".")):
-                        raise ValueError("Malformed native snapshot reference")
-            if field in reference_fields and decoded.startswith("snapshot-") and not matches:
-                # Ordinary fixture basenames remain outside the native namespace.
-                if re.match(r"snapshot-[a-fA-F0-9]{16}-", decoded):
-                    raise ValueError("Malformed native snapshot reference")
-            for match in matches:
-                # Exact whole path/URI values have a local-workspace contract.
-                if decoded.endswith(match.group(1)) and not any(c in decoded for c in '\n<>"'):
-                    candidate = decoded.strip()
-                    # A URI scheme starts the value; prose merely containing
-                    # a URL still contributes a conservatively pinned token.
-                    if re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", candidate) and not candidate.startswith("file:"):
-                        raise ValueError("Foreign snapshot reference")
-                    if candidate.startswith("file:"):
-                        parsed = urlsplit(candidate)
-                        if parsed.netloc not in {"", "localhost"} or parsed.query or parsed.fragment:
-                            raise ValueError("Foreign snapshot reference")
-                        # The token pass already decoded URI escapes once.
-                        candidate = url2pathname(parsed.path.replace("%", "%25"))
-                    target = Path(candidate)
-                    if target.is_absolute() or candidate.startswith(("/", ".taskplane/", "../", ".taskplane\\", "..\\")):
-                        if not target.is_absolute():
-                            target = root.parent / target
-                        if target.parent != root or ".." in target.parts:
-                            raise ValueError("Foreign or traversing snapshot reference")
-                found.add(Path(match.group(1)).stem)
+            # Complete encoded containers obey the same key/value contract.
+            # Their text and parsed children both consume the existing budget.
+            parsed = None
+            # Decode only to recognize a container; ordinary candidates retain
+            # their original path/URI escaping semantics below.
+            for container_text in (body, unquote(body)):
+                if not container_text.lstrip().startswith(('{', '[')):
+                    continue
+                try:
+                    parsed = json.loads(container_text)
+                except RecursionError as exc:
+                    raise ValueError("Snapshot reference traversal limit") from exc
+                except ValueError:
+                    pass  # Ordinary text; declared JSON was validated above.
+                else:
+                    break
+            if isinstance(parsed, (dict, list)):
+                stack.append((iter([(parsed, field)]), None))
+                continue
+            for candidate, linked in candidates(body):
+                # Extract URI boundaries before decoding escaped spaces.
+                # Already-local paths may contain literal percent sequences.
+                if Path(candidate).parent != root:
+                    candidate = unquote(candidate)
+                matches = list(token.finditer(candidate))
+                if field in reference_fields or linked or format == 'text':
+                    for native in re.findall(r"\.taskplane[/\\](snapshot-[^\s\"'<>()[\]{},;]+)", candidate):
+                        if not re.fullmatch(PAIR.pattern + r"\.(?:html|json)", native.rstrip('.')):
+                            raise ValueError(f"Malformed native snapshot reference: {candidate[:512]}")
+                    # Ordinary fixture basenames remain outside the native namespace.
+                    if re.match(r"snapshot-[a-fA-F0-9]{16}-", candidate) and not matches:
+                        raise ValueError(f"Malformed native snapshot reference: {candidate[:512]}")
+                for match in matches:
+                    if native_path(candidate, field in reference_fields or linked):
+                        found.add(Path(match.group(1)).stem)
     return found
 
 
@@ -622,14 +668,17 @@ def _pin_names(fd: int | Path, root: Path, names: set[str], reason: str) -> dict
                 if verified_bytes > MAX_VERIFY_BYTES:
                     raise ValueError("Snapshot reference verification budget")
                 if row["deleting"] or not _verified(fd, item):
-                    raise ValueError("Snapshot pin cannot verify immutable pair")
+                    raise ValueError(f"Snapshot pin cannot verify immutable pair: {str(root / name)[:512]}")
                 if reason not in item["pins"] and len(item["pins"]) < MAX_PIN_REASONS:
                     item["pins"].append(reason)
                 db.execute("UPDATE pairs SET pinned=1,item=? WHERE name=?", (json.dumps(item), name))
             else:
                 # Legacy bytes can be referenced, but never enter deletion ownership.
                 for suffix in (".html", ".json"):
-                    raw = _read(fd, name + suffix, min(MAX_FILE_BYTES, MAX_VERIFY_BYTES - verified_bytes))
+                    try:
+                        raw = _read(fd, name + suffix, min(MAX_FILE_BYTES, MAX_VERIFY_BYTES - verified_bytes))
+                    except (OSError, ValueError) as exc:
+                        raise ValueError(f"Snapshot pin cannot read {str(root / (name + suffix))[:512]}: {str(exc)[:512]}") from exc
                     verified_bytes += len(raw)
         db.commit()
     return {"status": "registered", "pairs": len(names)}

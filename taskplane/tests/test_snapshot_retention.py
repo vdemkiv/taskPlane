@@ -5,6 +5,7 @@ import nturl2path
 import subprocess
 import sys
 import time
+from urllib.parse import quote
 
 import pytest
 
@@ -428,3 +429,151 @@ def test_text_and_json_byte_admission_precede_parsing(tmp_path, monkeypatch):
         s.classify_snapshot_references(tmp_path, " "*33, format="json")
     with pytest.raises(ValueError, match="byte limit"):
         s.classify_snapshot_references(tmp_path, "é"*17)
+
+
+@pytest.mark.parametrize('form', ['key', 'bare-key', 'value', 'nested', 'json', 'encoded',
+                                 'encoded-key', 'prose', 'absolute', 'percent',
+                                 'percent-container', 'percent-container-key', 'percent-key'])
+@pytest.mark.parametrize('collision', [False, True])
+def test_backup_inventory_preserves_path_identity(tmp_path, form, collision):
+    from urllib.parse import quote
+    target = publish(tmp_path, detached=True) if collision else (
+        tmp_path / '.taskplane' / ('snapshot-' + 'a'*16 + '-' + 'b'*64 + '.html'))
+    backup = '.taskplane-backup/' + target.name
+    values = {'key': {backup: 'digest'}, 'bare-key': {target.name: 'digest'},
+              'value': {'note': backup}, 'nested': [{'inventory': {backup: 'digest'}}],
+              'json': json.dumps({backup: 'digest'}),
+              'encoded': json.dumps({'note': backup}),
+              'encoded-key': {'note': json.dumps({backup: 'digest'})},
+              'prose': 'Preserved ' + backup + '.',
+              'absolute': {'note': str(tmp_path / backup)},
+              'percent': {'note': quote(backup, safe='')},
+              'percent-container': quote(json.dumps({'note': backup}), safe=''),
+              'percent-container-key': quote(json.dumps({backup: 'digest'}), safe=''),
+              'percent-key': {quote(json.dumps({'artifact': str(target)}), safe=''): 'digest'}}
+    value = values[form]
+    assert s.classify_snapshot_references(tmp_path, value,
+        format='json' if form == 'json' else 'structured') == set()
+    assert s.register_references(tmp_path, value, 'backup-data')['pairs'] == 0
+    if collision:
+        assert 'backup-data' not in catalog(tmp_path)['pairs'][target.stem]['pins']
+
+
+@pytest.mark.parametrize('form', ['field', 'markdown', 'html', 'html-unquoted', 'encoded',
+                                 'nested-encoded', 'prose', 'percent-container'])
+@pytest.mark.parametrize('location', ['backup', 'foreign', 'traversal', 'remote',
+                                    'malformed', 'uri-authority', 'uri-query', 'uri-fragment'])
+def test_declared_paths_never_fall_back_to_active_basename(tmp_path, form, location):
+    target = publish(tmp_path, detached=True)
+    paths = {'backup': '.taskplane-backup/' + target.name,
+             'foreign': str(tmp_path.parent / '.taskplane' / target.name),
+             'traversal': '.taskplane/../.taskplane/' + target.name,
+             'remote': 'https://example.invalid/' + target.name,
+             'malformed': '.taskplane/snapshot-0123456789abcdef-bad.html',
+             'uri-authority': 'file://foreign.invalid' + target.as_posix(),
+             'uri-query': target.as_uri() + '?download=1',
+             'uri-fragment': target.as_uri() + '#section'}
+    path = paths[location]
+    values = {'field': {'artifact': path}, 'markdown': f'[view]({path})',
+              'html': f'<a href="{path}">view</a>',
+              'html-unquoted': f'<a href={path}>view</a>',
+              'encoded': json.dumps({'artifact': path}),
+              'nested-encoded': json.dumps({'note': json.dumps({'artifact': path})}),
+              'prose': {'evidence': f'See {path}.'},
+              'percent-container': quote(json.dumps({'artifact': path}), safe='')}
+    with pytest.raises(ValueError) as failure:
+        s.register_references(tmp_path, values[form], 'invalid-path')
+    assert path in str(failure.value)
+    assert 'invalid-path' not in catalog(tmp_path)['pairs'][target.stem]['pins']
+
+
+@pytest.mark.parametrize('form', ['path', 'uri', 'markdown', 'html', 'encoded', 'prose', 'bare',
+                                'escaped-path', 'escaped-relative', 'percent-path-container',
+                                'percent-uri-container'])
+def test_local_reference_spaces_and_literal_percent_pin(tmp_path, form):
+    from urllib.parse import quote
+    workspace = tmp_path / 'work %20 space'
+    workspace.mkdir()
+    target = publish(workspace, detached=True)
+    values = {'path': {'artifact': str(target)}, 'uri': {'href': target.as_uri()},
+              'markdown': f'[view]({target.as_uri()})',
+              'html': f'<a href="{target.as_uri()}">view</a>',
+              'encoded': json.dumps({'artifact': target.as_uri()}),
+              'prose': f'See {target.as_uri()}.', 'bare': target.name,
+              'escaped-path': quote(str(target), safe='/'),
+              'escaped-relative': quote('.taskplane/' + target.name, safe=''),
+              'percent-path-container': quote(json.dumps({'artifact': str(target)}), safe=''),
+              'percent-uri-container': quote(json.dumps({'href': target.as_uri()}), safe='')}
+    assert s.register_references(workspace, values[form], 'local-path')['pairs'] == 1
+    assert 'local-path' in catalog(workspace)['pairs'][target.stem]['pins']
+
+
+@pytest.mark.parametrize('percent_encoded', [False, True])
+def test_encoded_containers_keep_depth_and_byte_limits(tmp_path, monkeypatch, percent_encoded):
+    value = json.dumps({'note': json.dumps({'note': ['plain']})})
+    if percent_encoded:
+        value = quote(value, safe='')
+    with monkeypatch.context() as patch:
+        patch.setattr(s, 'MAX_REFERENCE_BYTES', len(value.encode()) - 1)
+        with pytest.raises(ValueError, match='byte limit'):
+            s.classify_snapshot_references(tmp_path, value)
+    monkeypatch.setattr(s, 'MAX_SCAN_DEPTH', 2)
+    with pytest.raises(ValueError, match='traversal limit'):
+        s.classify_snapshot_references(tmp_path, value)
+    monkeypatch.setattr(s, 'MAX_SCAN_DEPTH', 100)
+    monkeypatch.setattr(s, 'MAX_REFERENCE_BYTES', len(value.encode()))
+    with pytest.raises(ValueError, match='byte limit'):
+        s.classify_snapshot_references(tmp_path, value)
+
+
+@pytest.mark.parametrize('shape', ['object', 'array'])
+@pytest.mark.parametrize('form', ['structured', 'text', 'nested'])
+def test_percent_encoded_containers_register_actual_pair(tmp_path, shape, form):
+    target = publish(tmp_path, detached=True)
+    body = {'artifact': str(target)} if shape == 'object' else [str(target)]
+    encoded = quote(json.dumps(body), safe='')
+    value = {'note': encoded} if form == 'nested' else encoded
+    result = s.register_references(tmp_path, value, 'percent-container',
+        format='text' if form == 'text' else 'structured')
+    assert result == {'status': 'registered', 'pairs': 1}
+    assert 'percent-container' in catalog(tmp_path)['pairs'][target.stem]['pins']
+    s.collect(tmp_path, max_pairs=0, now=time.time()+1000)
+    assert target.exists() and target.with_suffix('.json').exists()
+
+
+def test_percent_encoded_missing_pair_and_declared_json_still_refuse(tmp_path):
+    target = publish(tmp_path, detached=True)
+    value = quote(json.dumps({'artifact': str(target)}), safe='')
+    with pytest.raises(ValueError, match='Malformed declared JSON'):
+        s.register_references(tmp_path, value, 'strict-json', format='json')
+    target.with_suffix('.json').unlink()
+    with pytest.raises(ValueError, match='cannot verify immutable pair'):
+        s.register_references(tmp_path, value, 'missing-pair')
+    assert 'missing-pair' not in catalog(tmp_path)['pairs'][target.stem]['pins']
+
+
+@pytest.mark.parametrize('form', ['malformed', 'scalar'])
+def test_speculative_container_fallback_preserves_declared_refusal(tmp_path, form):
+    target = publish(tmp_path, detached=True)
+    foreign = str(tmp_path.parent / '.taskplane' / target.name)
+    containers = {'malformed': '{"artifact":' + json.dumps(foreign),
+                  'scalar': json.dumps(foreign)}
+    value = {'artifact': quote(containers[form], safe='')}
+    with pytest.raises(ValueError):
+        s.register_references(tmp_path, value, 'invalid-container')
+    assert 'invalid-container' not in catalog(tmp_path)['pairs'][target.stem]['pins']
+
+
+def test_container_decoding_stops_after_one_pass(tmp_path, monkeypatch):
+    encoded = quote(json.dumps(['plain']), safe='')
+    monkeypatch.setattr(s, 'MAX_SCAN_DEPTH', 0)
+    with pytest.raises(ValueError, match='traversal limit'):
+        s.classify_snapshot_references(tmp_path, encoded)
+    assert s.classify_snapshot_references(tmp_path, quote(encoded, safe='')) == set()
+
+
+def test_partially_percent_encoded_container_registers_pair(tmp_path):
+    target = publish(tmp_path, detached=True)
+    value = quote(json.dumps({'artifact': str(target)}), safe='{}')
+    assert s.register_references(tmp_path, value, 'partial-container')['pairs'] == 1
+    assert 'partial-container' in catalog(tmp_path)['pairs'][target.stem]['pins']

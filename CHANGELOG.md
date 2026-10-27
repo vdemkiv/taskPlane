@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.35.3 — startup reference repair
+
+- Prevent backup inventory keys and foreign paths from being mistaken for active snapshot references during history compaction; retain full path identity and immutable-pair validation.
+- Recognize percent-encoded JSON containers through the existing bounded traversal, preserving key exclusions, literal-percent paths, URI semantics and invalid-reference refusals.
+- Disclose diagnostic coverage and identify the run and path involved in archive failures; stop dependent worker dispatch after failed startup instead of retrying unchanged failures or deactivating the harness.
+- Preserve existing approvals and history. Verify the repair with 378 affected regressions, static checks and an independent reliability review with five consumer-level checks; no new live-host certification is claimed.
+- Add the labelled full-flow README walkthrough and retain its executable autonomous prompt heading.
+
 ## v2.35.2 — review fixes and release validation
 
 - Include the complete 2.35.1 bounded-history and worker-identity release below.
