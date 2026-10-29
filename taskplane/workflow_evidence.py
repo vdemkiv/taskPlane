@@ -72,6 +72,22 @@ def _review_source(source: Any) -> bool:
 
 
 def accepted_review_inputs(state: dict[str, Any]) -> list[dict[str, Any]]:
+    stage = w.current(state)
+    packet = stage.get("packet") or {}
+    if stage["superseded"] and stage["decision"] == "approved" and packet.get("route_change"):
+        # Route acceptance supersedes its own implementation predecessors before
+        # advance. Preserve the exact reviewed input set, bound to the recorded
+        # approval, rather than interpreting that authorized change as drift.
+        w.require(any(d.get("choice") == "approved" and d.get("binding", {}).get("visit") == stage["id"]
+                      and d["binding"].get("manifest_digest") == content_fingerprint(packet)
+                      for d in state["decisions"].values()),
+                  "stale_checkpoint", "Accepted route packet no longer matches its recorded approval.")
+        inputs = packet["output"]["phase_review"]["inputs"]
+        historical = [{"checkpoint": v["packet"]["checkpoint"], "digest": content_fingerprint(v["packet"])}
+                      for v in state["visits"][:state["index"]] if v.get("packet") and v["decision"] == "approved"]
+        w.require(all(ref in historical for ref in inputs), "stale_checkpoint",
+                  "Accepted route inputs no longer match their approved historical packets.")
+        return deepcopy(inputs)
     return [{"checkpoint": v["packet"]["checkpoint"], "digest": content_fingerprint(v["packet"])}
             for v in state["visits"][:state["index"]]
             if not v["superseded"] and v.get("packet") and v["decision"] == "approved"]
@@ -387,6 +403,7 @@ def require_phase_ready(state: dict[str, Any], *, root: Path | None = None) -> d
     if not w.phase_contract(state):
         return {"contract": "legacy", "ready": True, "blockers": []}
     packet = w.current(state).get("packet") or {}
+    w.require(packet, "approval_required", "Submit the current phase before requesting acceptance or transition.")
     gates = phase_review_gates(state, packet.get("output", {}), root=root)
     w.require(gates["ready"], "phase_not_ready", "; ".join(gates["blockers"]))
     return gates

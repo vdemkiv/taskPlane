@@ -222,6 +222,59 @@ def test_collaborative_repair_controller_preserves_causal_obligations(tmp_path, 
     assert w.current(state)['phase'] == 'design'
 
 
+@pytest.mark.parametrize('phase', ['evaluate', 'engineering'])
+def test_collaborative_accepted_repair_keeps_bound_inputs_and_live_gates(tmp_path, phase):
+    from taskplane import workflow_evidence as evidence
+    from taskplane.tests.test_workflow_local import decide, decision, collaborative_output
+    c, state, _ = collaborative_repair_setup(tmp_path)
+    state, output, _ = collaborative_repair_evaluate(c, state)
+    if phase == 'engineering':
+        state = collaborative_repair_submit(c, state, output)
+        state = decide(c, state, decision(state, event='accept-evaluate'))
+        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=phase)
+        _, output, _ = prepare(tmp_path, phase)
+        output.update(run=state['run'], visit=w.current(state)['id'])
+        collaborative_output(tmp_path, state, output)
+    output['route_change'] = {'kind': 'repair', 'findings': ['fixture'],
+                             'reason': 'Repair the observed defect', 'proposed_paths': ['app.py']}
+    state = collaborative_repair_submit(c, state, output)
+    state = decide(c, state, decision(state, event='accept-repair'))
+    assert w.current(state)['superseded']
+    assert evidence.accepted_review_inputs(state) == output['phase_review']['inputs']
+    before = deepcopy(state)
+    for defect in ('packet', 'predecessor', 'approval', 'hold'):
+        broken = deepcopy(state)
+        stage = broken['visits'][broken['index']]
+        if defect == 'packet':
+            stage['packet']['output']['phase_review']['inputs'] = []
+        elif defect == 'predecessor':
+            broken['visits'][0]['packet']['output']['summary'] = 'changed'
+        elif defect == 'approval':
+            broken['decisions'].pop('accept-repair')
+        else:
+            stage['hold'] = {'active': True}
+        with pytest.raises(w.Refusal):
+            w.advance(broken, 'build')
+    changed = c.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
+    assert w.current(changed)['phase'] == 'build'
+    assert changed['decisions'] == before['decisions']
+    assert changed['visits'] == before['visits']
+
+
+def test_collaborative_unsubmitted_transition_refuses_as_approval_without_mutation(tmp_path):
+    from taskplane.tests.test_workflow_local import collaborative_setup
+    c, state, _ = collaborative_setup(tmp_path)
+    before = c._path().read_bytes()
+    for action in ('advance', 'finish'):
+        with pytest.raises(w.Refusal) as refused:
+            c.apply(action, state['run'], expected_revision=state['revision'], phase='design')
+        assert refused.value.reason == 'approval_required'
+        assert c._path().read_bytes() == before
+    with pytest.raises(w.Refusal) as refused:
+        w.finish(state)
+    assert refused.value.reason == 'approval_required'
+
+
 def test_standalone_repair_refusal_preserves_protected_authorization(tmp_path):
     c, host, s = controller(tmp_path, {"entry": "engineering", "standalone": True})
     s = submit(c, s)

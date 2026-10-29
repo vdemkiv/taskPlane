@@ -7,6 +7,7 @@
 - Require causal evidence for blocked work: observations, competing hypotheses, discriminating checks and affected reruns. Preserve required RCA obligations across revisions and include current and retained Evaluate failures in shared approval/advance gates.
 - Retain explicitly authorized automatic approval through Retro while stopping on holds, unresolved feedback or failed requirements; manual policies remain manual.
 - Include the previously authorized worker-status recovery: reuse validation only within a single status projection, preserving fresh authority checks and invalidation between calls.
+- Keep accepted repair transitions bound to their approved historical input packets after supersession; unsubmitted transitions continue to require approval, and live holds and evidence checks remain enforced.
 - Preserve historical approvals and finding evidence. The completed delivery passed focused collaboration, legacy and Chrome checks plus independent reliability review; release CI verifies the integrated package. No new live-host certification is claimed.
 
 ## v2.35.3 — startup reference repair

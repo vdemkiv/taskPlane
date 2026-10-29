@@ -811,6 +811,9 @@ class Controller:
                       "Draft cannot erase or retarget recorded feedback.")
 
     def _phase_ready(self, state: dict[str, Any]) -> None:
+        if w.phase_contract(state):
+            w.require(w.current(state).get("packet"), "approval_required",
+                      "Submit the current phase before requesting acceptance or transition.")
         gates = phase_readiness(self.workspace, state)
         w.require(gates["ready"], "phase_not_ready", "; ".join(gates["blockers"]))
 
