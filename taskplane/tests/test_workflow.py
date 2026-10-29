@@ -147,3 +147,67 @@ def test_repeated_repairs_reuse_accepted_plan_scope_and_fresh_build_lineage():
         assert w.accepted_plan(s)["id"] == plan_id
         assert s["scope"]["paths"]["build"] == []
         assert not w.current(s)["superseded"]
+
+
+def collaborative_state():
+    return w.new_state("/workspace", "root", "run", scope(), phase_contract=w.PHASE_CONTRACT)
+
+
+@pytest.mark.parametrize("defect", ["unknown", "removed", "downgraded", "frozen_removed", "visit_removed"])
+def test_collaborative_contract_is_frozen_and_legacy_remains_unchanged(defect):
+    legacy = state()
+    original = deepcopy(legacy)
+    assert w.phase_contract(legacy) is None
+    assert legacy == original
+    s = collaborative_state()
+    if defect == "unknown":
+        s["phase_contract"] = "collaborative/v99"
+    elif defect == "removed":
+        s.pop("phase_contract")
+    elif defect == "downgraded":
+        s["phase_contract"] = None
+    elif defect == "frozen_removed":
+        s.pop("run_contract")
+    else:
+        s["visits"][0].pop("phase_contract")
+    before = deepcopy(s)
+    with pytest.raises(w.Refusal, match="contract"):
+        w.phase_contract(s)
+    with pytest.raises(w.Refusal, match="contract"):
+        w.finish(s)
+    assert s == before
+
+
+@pytest.mark.parametrize("phase", w.PHASES)
+def test_collaborative_positive_decision_and_transition_share_gates(phase):
+    from taskplane.tests.test_workflow_evidence import collaborative_review
+    s = collaborative_state()
+    s["index"] = w.PHASES.index(phase)
+    review = collaborative_review(s, {"path": "evidence.txt", "sha256": "a"*64})
+    review["dod"][0]["outcome"] = "unknown"
+    s = ready(s, output={"write_scope": [], "phase_review": review})
+    assert w.current(s)["work"] == "evidence_blocked"
+    with pytest.raises(w.Refusal, match="Required dod"):
+        w.decide(s, answer(s))
+    # Negative review is available for a blocked packet, without inventing success.
+    assert w.decide(s, answer(s, "changes_requested"))["decisions"]
+    s["visits"][s["index"]]["decision"] = "approved"
+    if phase != "retro":
+        with pytest.raises(w.Refusal, match="Required dod"):
+            w.advance(s, w.PHASES[s["index"] + 1])
+    with pytest.raises(w.Refusal, match="Required dod"):
+        w.finish(s)
+
+
+def test_collaborative_hold_blocks_success_without_erasing_approval():
+    from taskplane.tests.test_workflow_evidence import collaborative_review
+    s = collaborative_state()
+    s = ready(s, output={"phase_review": collaborative_review(s, {"path": "evidence.txt", "sha256": "a"*64})})
+    s = w.decide(s, answer(s))
+    decisions = deepcopy(s["decisions"])
+    s["visits"][0]["hold"] = {"active": True, "reason": "Explore alternatives"}
+    with pytest.raises(w.Refusal, match="hold"):
+        w.advance(s, "design")
+    assert s["decisions"] == decisions
+    s["visits"][0]["hold"]["active"] = False
+    assert w.current(w.advance(s, "design"))["phase"] == "design"

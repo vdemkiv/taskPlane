@@ -448,6 +448,142 @@ Reports do not start a workflow. Legacy progress/finish is shown as
 `legacy_unverified`, never accepted or automatically migrated. Missing counters
 are unknown, not zero. Tokens remain advisory and are not billing totals.
 
+## Collaborative refinement
+
+New production `flow start` runs select the frozen `collaborative/v1` phase
+contract. Reusing an existing run preserves its original contract; absent markers
+remain legacy, with no invented DoR/DoD records or migrated approvals. Unknown,
+removed or downgraded contracted markers refuse. There is no CLI downgrade flag.
+The shared [refinement policy](../skills/tp-go/references/shared-flow.md#collaborative-refinement-and-readiness)
+and phase table define how to use this contract.
+
+The root in `native_workflow` can publish drafts, record feedback or persist/release
+a user hold through one operation. Workers author scoped evidence and cannot invoke
+this control. `protected_host` does not admit this observed-provenance operation.
+
+```text
+python3 <installed-plugin>/taskplane/tp.py flow refine --workspace WORKSPACE --run RUN --expected-revision N --request-json JSON
+```
+
+Pass JSON as one shell-quoted argument or subprocess argument, at most 64 KiB.
+The exact admitted command accepts these four options and optional `--full`;
+there is no `--request FILE`, operation subcommand or shell-chain exception.
+Use actual values from the selected run and observed event, never the illustrative
+placeholders below as provenance:
+
+```json
+{
+  "schema": "taskplane.refinement/v1",
+  "event_id": "unique-observed-event-reference",
+  "run": "current-run-id",
+  "visit": "current-visit-id",
+  "expected_revision": 12,
+  "draft_revision": 2,
+  "operation": "hold",
+  "payload": {"reason": "Compare the requested options before advancing"},
+  "recorder": "root_orchestrator",
+  "excerpt": "actual user request to stay in this phase",
+  "source": {
+    "kind": "conversation",
+    "reference": "actual-message-reference",
+    "conversation": "workflow-root-conversation-id",
+    "actor": "user",
+    "automatic": false,
+    "observed_at": "actual timezone-aware ISO observation time"
+  }
+}
+```
+
+`expected_revision` is the workflow revision and must equal the CLI value;
+`draft_revision` is the currently published review revision (zero before any
+publication). Each new event increments the workflow revision once under the
+Controller lock. Replaying the identical envelope with its original expected
+revision is idempotent. A changed envelope under the same event, stale new event,
+foreign run/visit/draft, or event reused from a decision/policy refuses. A persisted
+hold or refinement makes a prior automatic assessment stale.
+
+| Operation | Payload and effect |
+| --- | --- |
+| `draft` | Exactly `{"output":"current-phase-scoped-output.json"}`. Validates the bound `taskplane.phase-output/v1` and publishes its `phase_review`, including honestly blocked drafts. First review revision is 1; each new publication increments it once. No sealing or approval. A sealed checkpoint needs the existing negative-decision correction route before changed output can be published. |
+| `feedback` | A feedback row below, beginning `disposition: "open"`; source must equal the derived observed source. Requires a published draft/checkpoint and an actual published target. Records an immutable feedback reference without changing sealed packet bytes or decisions. |
+| `hold` | Exactly `{"reason":"substantive reason"}` and actual human provenance. Persists the current visit's active hold independently of `flow wait`; even an accepted phase cannot advance while held. Release an existing hold before replacing it. |
+| `release` | Exactly `{"hold_event":"active-hold-event-id"}` and an explicit observed human release. Clears only that hold and preserves release provenance; no approval or policy resumption. Current recognition requires release/lift/continue/resume/proceed/go ahead, without negation, conditional `if` or a question. Clarify ambiguous intent without manufacturing an excerpt. |
+
+Human sources use `conversation`/`root_orchestrator` or
+`native_prompt`/`native_prompt_hook`, the exact root conversation, user actor,
+`automatic: false`, a nonempty reference (at most 512 characters), actual excerpt
+(at most 4096 characters) and timezone-aware observation between run start and now.
+Drafts may omit source when no new human decision is asserted. New uncertainty
+decision resolutions need the current observed source or a previously recorded one.
+
+Automated feedback uses source `{kind: "automated_check", reference: SHA256,
+record_ref: REF, history_path: PATH}`. `REF` must be an existing Store
+`verification-record`; its digest is `reference`. The declared scoped history must
+contain the exact record, status, log reference and id/check_id/run/visit/kind/environment
+binding. Its immutable log must decode to the recorded result. A free-standing
+Store object or assertion that a test ran is insufficient. The resulting feedback
+source is `{kind: "automated_check", reference: SHA256, excerpt: TEXT}`; human
+feedback uses `{kind: "human", reference: REF, excerpt: TEXT}`. These are cooperative
+observations, not host-authenticated origin or a guarantee to intercept undelivered messages.
+
+### Phase review evidence
+
+`phase_review` has schema `taskplane.phase-review/v1`, a positive integer
+`revision`, `inputs` and seven arrays: `dor`, `dod`, `run_dod`, `uncertainties`,
+`feedback`, `artifacts`, `causes`. Array records have unique stable `id` values;
+their `criteria` link only current criterion IDs. `inputs` exactly lists active
+approved predecessors as `{checkpoint,digest}` where digest is the packet content
+fingerprint; standalone entry invents none. Required evidence references are
+`{path,sha256}` with current file bytes and normal scope/path checks.
+
+| Record | Required content |
+| --- | --- |
+| DoR/DoD gate | `id`, `criteria`, boolean `required`, `outcome` (`met`, `unmet`, `unknown`, `not_applicable`), `evidence`, `explanation`. Required built-ins are DoR `phase-entry` and DoD `phase-output`, `criterion:<id>` for every criterion, plus `run-dod:<id>` for each required run-DoD item applicable to this phase. `not_applicable` needs evidence and an exact `applicability` match from accepted Product's same gate. |
+| Run DoD | Nonempty `run_dod`: `id`, `statement`, `criteria`, boolean `required`, and nonempty `phases` of valid phase names. Accepted Product freezes this list. Define future Build/Evaluate/Retro obligations without claiming them done during Product. |
+| Uncertainty | `id`, `question`, `criteria`, `state: unresolved|resolved`. Resolution needs a summary and either `kind: evidence` with file-digest evidence, or `kind: decision` with observed human source and `nature: decision` on the uncertainty. Every Product uncertainty blocks while unresolved, including `required: false`; an owner, plan or factual assumption accepted as risk does not resolve it. |
+| Feedback | `id`, `criteria`, observed `source`, `target: {id,revision,digest}`, optional boolean `material` (default true), `disposition: open|addressed|deferred|declined`. Non-open dispositions need `response` and evidence; addressed needs `resulting_revision` later than the target and no later than current. Original source/target/criteria/material cannot change or disappear. |
+| Artifact | `id`, scoped `path`, `revision`, exact-byte `sha256`, `purpose`, `criteria`, `media_type`, readable `fallback`. Publication/sealing adds immutable `body_ref`; current or accepted predecessor paths only, at most 8 MiB per artifact. |
+| Cause | Inline causal record, or `{id,record_ref}` resolving an existing `phase-review-cause` Store object. Include `state: investigating|contained|verified`, nonempty `criteria`, `failure_id`, `failure`, `expected`, `observations`, `hypotheses`. Verified requirements follow below. |
+
+Feedback targets match actual published artifacts by id/revision/sha256, criteria
+by `criterion:<id>`/review revision/content fingerprint of the criterion row, or
+whole output by `draft`/review revision/content fingerprint of published output.
+New lookup examines at most 50 published drafts across the latest 50 visits plus
+their current packets. Exhaustion reports that limit, not proven absence; it never
+accepts an arbitrary Store ref as publication. Previously validated feedback retains
+its original immutable target during later revisions.
+
+A verified cause additionally needs `supported_cause`, `correction`, current
+`input_fingerprint: {path:sha256}`, file-digest lists `reproduction`, `cause_evidence`
+and `correction_evidence`, nonempty `affected_checks`, and `verification`. Every
+verification row has `id`, the same `failure_id`, covering `criteria`, `status: pass`,
+matching input fingerprint and evidence. Every affected check must appear; at least
+one `kind: regression|counterexample` requires `before_status: fail`, `before_evidence`,
+`expected`, `observed`, and `discriminates`. Non-code counterexamples are supported.
+Optional `attempts` surface repeated failure_id/input_fingerprint/command combinations
+without a new `diagnostic_hypothesis`; keep the prior result rather than claiming a
+retry fixed anything. Validation proves record linkage, not the explanation's truth.
+
+Structural errors refuse; honest incomplete gates return not-ready and remain
+reviewable. Required unknown/unmet evidence, open material feedback, active holds,
+unresolved uncertainties or unverified required causes block positive manual and
+policy decisions, advance and finish. Live Controller readiness also retains typed
+failed-check history obligations until the matching causal correction is verified,
+and includes feedback received after sealing. Negative decisions remain available.
+`workflow_host.phase_readiness(workspace, state, output=None)` is the shared read-only
+projection: default sealed output, or pass the actual published draft for draft status.
+Do not present a caller-supplied `ready` boolean or sealed-only result as live readiness.
+
+Draft state stores a constant-size head and linked history references; the existing
+Store retains full bodies and exact binary artifact bytes. API `review_history_page`
+returns entries and a next cursor with limit 1–50 (default 10); bounded `flow context`
+reads transport referenced bodies. Use pinned `body_ref` for historical previews,
+escaped content or readable fallback, never reread a changed workspace file as the
+old revision. Viewing cannot mutate or accept evidence. Existing required context
+reads, native permissions, checkpoint presentation and approval policy still apply.
+An optional preview creates no wait: a valid eligible policy can continue through
+Retro, while a manual run still requires its explicit checkpoint decisions.
+
 ## Automatic approval policy
 
 Manual is the default. `native_workflow` additionally supports **explicit user-authorized**

@@ -2,12 +2,67 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
+from copy import deepcopy
 
 from .context import Store, digest, encode, signed
 from . import workflow as w
 
 PHASE_BYTES = dict(zip(w.PHASES, (16384, 32768, 16384, 65536, 32768, 32768, 16384)))
 COMMAND_BYTES = 16384
+
+
+def review_projection(workspace: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Bounded, read-only review metadata; immutable refs retain the full records."""
+    from . import workflow_evidence as evidence
+    from .workflow_host import phase_readiness
+    stage = w.current(state)
+    result: dict[str, Any] = {"contract": state.get("phase_contract", "legacy"),
+        "run": state["run"], "visit": stage["id"], "phase": stage["phase"],
+        "approval": stage.get("decision"), "ready": None,
+        "hold": deepcopy(stage.get("hold")), "history_ref": (stage.get("phase_review") or {}).get("history_ref")}
+    if not w.phase_contract(state):
+        return {**result, "status": "legacy", "note": "Legacy contract: DoR/DoD and collaboration records were not required; no outcomes inferred."}
+    store = Store(workspace)
+    packet = stage.get("packet") or {}
+    head = stage.get("phase_review") or {}
+    output = packet.get("output", {})
+    artifacts = packet.get("review_artifacts", [])
+    unsubmitted = bool(head and head.get("revision", 0) > output.get("phase_review", {}).get("revision", 0))
+    if unsubmitted:
+        draft = store.resolve(head["ref"])
+        output, artifacts = draft["output"], draft["artifacts"]
+    result.update(status="draft" if unsubmitted else "sealed" if packet else "unpublished",
+                  draft_ref=head.get("ref"), revision=output.get("phase_review", {}).get("revision"))
+    try:
+        gates = phase_readiness(workspace, state, output if unsubmitted else None)
+    except (w.Refusal, OSError, ValueError) as exc:
+        gates = {"ready": False, "blockers": [str(exc)], "causes": [], "repeated_attempts": []}
+    review = output.get("phase_review", {})
+    feedback = {row["id"]: row for row in review.get("feedback", [])}
+    for identity, ref in stage.get("review_feedback", {}).items():
+        if identity not in feedback:
+            feedback[identity] = store.resolve(ref)
+    result["ready"] = gates["ready"]
+    result["history"] = (evidence.review_history_page(workspace, head["history_ref"], limit=4)
+                         if head.get("history_ref") else {"entries": [], "next": None})
+    groups = {key: review.get(key, []) for key in ("dor", "dod", "run_dod", "uncertainties")}
+    groups.update(feedback=list(feedback.values()), artifacts=artifacts,
+                  causes=gates.get("causes", review.get("causes", [])),
+                  repeated_attempts=gates.get("repeated_attempts", []), blockers=gates.get("blockers", []))
+    for key, values in groups.items():
+        selected: list[Any] = []
+        for row in values[:6]:
+            if len(encode([*selected, row])) > 3072:
+                break
+            selected.append(deepcopy(row))
+        result[key] = {"total": len(values), "items": selected, "omitted": len(values) - len(selected)}
+    # Holds carry actual source text, but the full immutable event stays in state.
+    if result["hold"] and len(encode(result["hold"])) > 2048:
+        hold = result["hold"]
+        result["hold"] = {"active": hold.get("active"), "event_id": hold.get("event_id"),
+                          "reason": str(hold.get("reason", ""))[:512], "source_excerpt_omitted": True}
+    return result
 
 
 def collection(store: Store, values: list[Any], kind: str, limit: int = 4) -> dict[str, Any]:
@@ -109,6 +164,15 @@ def summary(store: Store, payload: dict[str, Any], action: str,
                            "tokens": payload.get("token_coverage", "unknown")},
               "errors": {"blocking": blocking, "reason": payload.get("reason"),
                          **collection(store, errors, "errors", 0)}, "details": details}
+    if visits and state.get("phase_contract"):
+        review = review_projection(store.workspace, state)
+        result["phase_review"] = {key: review.get(key) for key in
+            ("contract", "status", "revision", "ready", "draft_ref", "history_ref")}
+        result["phase_review"]["hold_active"] = bool((review.get("hold") or {}).get("active"))
+        result["phase_review"]["blockers"] = review["blockers"]
+        result["phase_review"]["details"] = store.put("phase-review-summary", review)
+        if not review["ready"]:
+            result["next_action"] = "Resolve the phase review blockers; an active user hold requires explicit release. Readiness is separate from approval."
     accounting = payload.get("phase_usage", {}).get("accounting")
     if accounting:
         result["usage_accounting"] = {**accounting,
@@ -128,7 +192,7 @@ def summary(store: Store, payload: dict[str, Any], action: str,
         if result["outcomes"].get("details"):
             references.append(result["outcomes"]["details"])
         for section in (result["errors"], result["coverage"], result["context"], result.get("usage_accounting"),
-                      result["tokens"], result["native_tokens"], result["token_coverage"]):
+                      result["tokens"], result["native_tokens"], result["token_coverage"], result.get("phase_review")):
             if not isinstance(section, dict):
                 continue
             if section.get("details"):

@@ -46,6 +46,22 @@ def timestamp(value: Any) -> datetime:
         raise w.Refusal("invalid_evidence", "Decision time is invalid.") from None
 
 
+def refinement_source(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    """Validate an observed user statement; this is not host attestation."""
+    source = request.get("source")
+    w.require(isinstance(source, dict) and source.get("kind") in {"conversation", "native_prompt"}
+              and source.get("conversation") == state["root"] and source.get("actor") == "user"
+              and source.get("automatic") is False
+              and isinstance(source.get("reference"), str) and 0 < len(source["reference"].strip()) <= 512
+              and request.get("recorder") in {"root_orchestrator", "native_prompt_hook"}
+              and isinstance(request.get("excerpt"), str) and 0 < len(request["excerpt"].strip()) <= 4096,
+              "invalid_evidence", "Refinement requires actual observed user provenance.")
+    assert isinstance(source, dict)
+    w.require(timestamp(state["started_at"]) <= timestamp(source.get("observed_at"))
+              <= datetime.now(timezone.utc), "invalid_evidence", "Refinement source is outside this run's chronology.")
+    return {"kind": "human", "reference": source["reference"], "excerpt": request["excerpt"]}
+
+
 def inventory(workspace: Path) -> dict[str, str]:
     """Bounded source audit, including additions/deletions and symlink identity."""
     result: dict[str, str] = {}
@@ -415,6 +431,16 @@ class LocalWorkflow:
                         == self.workspace/".taskplane/dashboard.html")
         if runtime_command.diagnostic(words):
             return True
+        if len(words) >= 4 and words[2:4] == ["flow", "refine"]:
+            options = words[4:]
+            if "--full" in options:
+                options = [word for word in options if word != "--full"]
+            if len(options) % 2 or len(set(options[::2])) != len(options[::2]):
+                return False
+            values = dict(zip(options[::2], options[1::2]))
+            return (set(values) == {"--workspace", "--run", "--expected-revision", "--request-json"}
+                    and selected_workspace(values["--workspace"]) and values["--run"] == state["run"]
+                    and values["--expected-revision"].isdigit())
         if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.

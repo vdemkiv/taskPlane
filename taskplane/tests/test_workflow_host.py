@@ -66,6 +66,162 @@ def native(host, s, key="human-event", **extra):
     return key
 
 
+def test_collaborative_refinement_race_replay_and_worker_denial(tmp_path):
+    from taskplane.tests.test_workflow_local import collaborative_setup, refinement
+    c, state, _ = collaborative_setup(tmp_path)
+    request = refinement(state, 'hold', {'reason':'Explore options'})
+    def apply(value):
+        return c.refine(state['run'], state['revision'], json.dumps(value))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = list(pool.map(apply, [request, request]))
+    assert result[0] == result[1] and result[0]['revision'] == state['revision'] + 1
+    assert len(result[0]['refinement_events']) == 1
+    with pytest.raises(w.Refusal, match='Conflicting'):
+        apply({**request, 'payload':{'reason':'Changed claim'}})
+    other = {**request, 'event_id':'second'}
+    with pytest.raises(w.Refusal, match='exact run'): apply(other)
+    c.principal = 'child'
+    with pytest.raises(w.Refusal, match='Workers'): apply(request)
+
+
+def test_collaborative_creation_is_explicit_and_does_not_migrate_legacy(tmp_path):
+    from taskplane.tests.test_workflow_local import setup
+    c, state = setup(tmp_path)
+    assert w.phase_contract(state) is None
+    before = c._path().read_bytes()
+    reused = c.start({'request_reference':'conversation/user-1'}, phase_contract=w.PHASE_CONTRACT)
+    assert w.phase_contract(reused) is None and c._path().read_bytes() == before
+
+
+def test_collaborative_root_gate_retains_failed_attempt_causal_obligation(tmp_path):
+    from taskplane.tests.test_workflow_local import collaborative_setup, collaborative_seal
+    c, state, output = collaborative_setup(tmp_path)
+    state = collaborative_seal(c, state, output)
+    # A selected passing result cannot erase its captured failed attempt.
+    w.current(state)['packet']['verification'] = {'history': {'attempts': [
+        {'check_id':'REGRESSION', 'status':'fail'}, {'check_id':'REGRESSION', 'status':'pass'}]}}
+    before = deepcopy(state)
+    status = h.phase_readiness(tmp_path, state, w.current(state)['packet']['output'])
+    assert not status['ready'] and any('REGRESSION' in blocker for blocker in status['blockers'])
+    assert state == before
+    with pytest.raises(w.Refusal, match='causal corrections'): c._phase_ready(state)
+
+
+def collaborative_repair_submit(c, state, output):
+    from taskplane import depgraph
+    from taskplane.context_handoff import Session, consume_required
+    from taskplane.tests.test_workflow_local import present
+    depgraph.scan(str(c.workspace), decompose=True, strict=True)
+    output['context_receipt'], _ = consume_required(Session(c.workspace, state))
+    path = output['phase'] + '.json'
+    (c.workspace / path).write_text(json.dumps(output))
+    state = c.apply('submit', state['run'], expected_revision=state['revision'], output=path, tasks='tasks.json')
+    present(c, state)
+    return state
+
+
+def collaborative_repair_setup(tmp_path):
+    from taskplane.tests.test_workflow_local import collaborative_setup
+    # Check evidence exists before the native source baseline is captured.
+    prepare(tmp_path, 'build')
+    prepare(tmp_path, 'evaluate')
+    return collaborative_setup(tmp_path)
+
+
+def collaborative_repair_evaluate(c, state):
+    from taskplane.tests.test_workflow_evidence import collaborative_review
+    from taskplane.tests.test_workflow_local import decide, decision
+    import hashlib
+    evidence = {'path': 'check.txt', 'sha256': hashlib.sha256(
+        (c.workspace / 'check.txt').read_bytes()).hexdigest()}
+    for index, phase in enumerate(w.PHASES[:5]):
+        _, output, _ = prepare(c.workspace, phase)
+        output.update(run=state['run'], visit=w.current(state)['id'],
+                      phase_review=collaborative_review(state, evidence))
+        if phase == 'evaluate':
+            output['unknowns_and_failures'] = []
+            return state, output, evidence
+        if phase == 'build':
+            output['known_gaps'] = []
+        state = collaborative_repair_submit(c, state, output)
+        state = decide(c, state, decision(state, event='accept-' + phase))
+        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=w.PHASES[index + 1])
+    raise AssertionError('Evaluate was not reached')
+
+
+@pytest.mark.parametrize('outcome', ['fail', 'unknown', 'listed'])
+def test_collaborative_repair_evaluate_manual_refuses_outcomes_but_allows_negative(tmp_path, outcome):
+    from taskplane.tests.test_workflow_local import decide, decision
+    c, state, _ = collaborative_repair_setup(tmp_path)
+    state, output, _ = collaborative_repair_evaluate(c, state)
+    if outcome == 'listed':
+        output['unknowns_and_failures'] = ['Scenario remains unresolved']
+    else:
+        output['criterion_results']['AC1']['status'] = outcome
+    state = collaborative_repair_submit(c, state, output)
+    original = deepcopy(w.current(state)['packet'])
+    with pytest.raises(w.Refusal, match='Evaluate'):
+        decide(c, state, decision(state, event='positive'))
+    gates = h.phase_readiness(c.workspace, state)
+    assert not gates['ready']
+    assert any('causal investigation: AC1' in item for item in gates['blockers']) == (outcome == 'fail')
+    state = decide(c, state, decision(state, text='Changes requested', event='negative'))
+    assert w.current(state)['decision'] == 'changes_requested'
+    assert w.current(state)['packet'] == original
+
+
+@pytest.mark.parametrize('route', ['direct', 'draft'])
+@pytest.mark.parametrize('defect', ['required', 'default_required', 'affected_checks', 'required_type', 'checks_type'])
+def test_collaborative_repair_controller_preserves_causal_obligations(tmp_path, route, defect):
+    from taskplane.tests.test_workflow_evidence import collaborative_cause
+    from taskplane.tests.test_workflow_local import collaborative_setup, refine, refinement, decide
+    c, state, output = collaborative_setup(tmp_path)
+    cause = collaborative_cause(tmp_path, output['phase_review']['dor'][0]['evidence'][0])
+    cause['affected_checks'].append('integration')
+    if defect == 'default_required':
+        cause.pop('required')
+    output['phase_review']['causes'] = [cause]
+    if route == 'draft':
+        (tmp_path / 'product.json').write_text(json.dumps(output))
+        state = refine(c, state, refinement(state, 'draft', {'output': 'product.json'}, human=False))
+    else:
+        state = collaborative_repair_submit(c, state, output)
+    original = deepcopy(state)
+    persisted = c.adapter.control_path(c.workspace, c.root).read_bytes()
+    output['phase_review']['revision'] = 2
+    if defect == 'affected_checks':
+        cause['affected_checks'].remove('integration')
+    elif defect == 'checks_type':
+        cause['affected_checks'] = 'regression'
+    elif defect == 'required_type':
+        cause['required'] = 'true'
+    else:
+        cause['required'] = False
+    with pytest.raises(w.Refusal, match='Causal'):
+        if route == 'draft':
+            (tmp_path / 'product.json').write_text(json.dumps(output))
+            refine(c, state, refinement(state, 'draft', {'output': 'product.json'}, human=False))
+        else:
+            collaborative_repair_submit(c, state, output)
+    assert c.adapter.control_path(c.workspace, c.root).read_bytes() == persisted
+    # Restoring, reordering and strengthening the original obligation permits
+    # closure only after every affected check has matching verification.
+    cause['required'] = True
+    cause['affected_checks'] = ['integration', 'regression', 'additional']
+    cause['verification'].extend({**deepcopy(cause['verification'][0]), 'id': key, 'kind': 'integration'}
+                                for key in ('integration', 'additional'))
+    if route == 'draft':
+        (tmp_path / 'product.json').write_text(json.dumps(output))
+        state = refine(c, state, refinement(state, 'draft', {'output': 'product.json'}, human=False))
+    state = collaborative_repair_submit(c, state, output)
+    assert h.phase_readiness(tmp_path, state)['ready']
+    if route == 'direct':
+        assert any(row.get('packet') == w.current(original)['packet'] for row in state['history'])
+    state = decide(c, state)
+    state = c.apply('advance', state['run'], expected_revision=state['revision'], phase='design')
+    assert w.current(state)['phase'] == 'design'
+
+
 def test_standalone_repair_refusal_preserves_protected_authorization(tmp_path):
     c, host, s = controller(tmp_path, {"entry": "engineering", "standalone": True})
     s = submit(c, s)

@@ -12,7 +12,7 @@ import uuid
 
 from . import depgraph, primitives, workflow as w, workflow_evidence as evidence
 from .context import Store, digest, encode, signed, PAGE_LIMIT, OBJECT_LIMIT, REFERENCE_SCHEMA
-from .context_views import PHASE_BYTES, collection, view
+from .context_views import PHASE_BYTES, collection, view, review_projection
 
 CONTRACT = "bounded/v1"
 SEMANTIC_CONTRACT = "bounded/v2"
@@ -128,6 +128,9 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
                     "body": {"goal": state.get("goal", ""), "criteria": criteria, "phase": phase, "paths": paths,
                              "tasks": [{k:v for k,v in row.items() if k not in evidence.TASK_OBSERVATIONS}
                                        for row in selected]}})
+    if state.get("phase_contract"):
+        items.append({"id": "phase-review/current", "kind": "phase-review-summary",
+                      "body": review_projection(workspace, state)})
     declared_reads = ({p for row in selected for p in evidence.read_inputs(state, row)}
                       if selected else set(state["scope"].get("verification_inputs", [])))
     source_paths = sorted(set(paths) | declared_reads)
@@ -230,6 +233,16 @@ class Session:
         self.handoff_ref = self.store.put("context-handoff", self.handoff)
         self.refs = list(self.input_refs.values())
         self.refs += [self.view_ref, self.handoff_ref, self.view["authority_ref"]]
+        stage = w.current(state)
+        head = stage.get("phase_review") or {}
+        self.refs += [head[key] for key in ("ref", "history_ref") if head.get(key)]
+        self.refs += [row["body_ref"] for row in (stage.get("packet") or {}).get("review_artifacts", [])]
+        self.refs += list(stage.get("review_feedback", {}).values())
+        review_summary: dict[str, Any] = next((item["body"] for item in self.items if item["id"] == "phase-review/current"), {})
+        self.refs += [row["ref"] for row in review_summary.get("history", {}).get("entries", [])]
+        self.refs += [row["body_ref"] for row in review_summary.get("artifacts", {}).get("items", [])]
+        if review_summary.get("history", {}).get("next"):
+            self.refs.append(review_summary["history"]["next"])
         for field in (self.view["references"], self.view["required_inputs"], self.handoff["accepted_inputs"]):
             if field.get("details"):
                 self.refs.append(field["details"])
@@ -344,6 +357,18 @@ class Session:
         response = self._deliver({"schema": "taskplane.context-read/v1", "page": result}, set(),
                                 (key, page, result["pages"]) if section is None else None)
         w.require(len(encode(response)) <= 16384, "context_overflow", "Read envelope exceeds its page budget.")
+        # Follow only published review links, one bounded read at a time. Do not
+        # traverse every historical draft/body when building ordinary context.
+        refs = []
+        if result["kind"] in {"phase-review-history", "phase-review-draft"}:
+            record = self.store.resolve(key)
+            if result["kind"] == "phase-review-history":
+                refs = [record[field] for field in ("ref", "previous") if record.get(field)]
+            else:
+                refs = [row["body_ref"] for row in record.get("artifacts", [])]
+            if refs:
+                self.store.register(self.read_binding, refs)
+                self.allowed = None
         return response
 
     def drain(self, key: str) -> dict[str, Any]:

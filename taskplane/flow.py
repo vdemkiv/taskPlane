@@ -1240,7 +1240,7 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
          governor: workflow_host.Controller | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
-                                           "submit", "decide", "advance", "policy", "auto-decide", "hook",
+                                           "submit", "decide", "advance", "policy", "auto-decide", "refine", "hook",
                                            "activate", "deactivate", "present", "wait", "diagnose", "recover", "inspect", "prevalidate", "context", "retire", "worker"])
     parser.add_argument("--kind", choices=["contract", "result"])
     parser.add_argument("--reference")
@@ -1279,6 +1279,7 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--mods-request-json", help="Strict observed-UI prepare, record_ui or receipt request")
     parser.add_argument("--decision-json", default="", help="Observed decision envelope; never host authentication")
     parser.add_argument("--policy-json", default="", help="Observed user policy envelope; never host authentication")
+    parser.add_argument("--request-json", help="Bounded refinement envelope; refine only")
     parser.add_argument("--presentation", choices=["linked", "verified", "blocked"])
     assessments = parser.add_mutually_exclusive_group()
     assessments.add_argument("--assessment", help="Assessment JSON file for auto-decide (at most 64 KiB)")
@@ -1295,6 +1296,8 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
     except ValueError as exc:
         parser.error(str(exc))
     args = parser.parse_args(arguments)
+    if args.request_json is not None and args.action != "refine":
+        parser.error("--request-json applies only to flow refine")
     if args.action != 'recover' and (args.recover_from is not None or args.expected_sha256 is not None):
         parser.error('recovery options apply only to flow recover')
     if args.task is not None and args.action not in {"context", "worker"}:
@@ -1526,7 +1529,7 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
                                       "goal": args.goal, "native_reference": args.native_event,
                                       "scope": scope, "request_reference": args.request_reference, "tasks": args.tasks,
                                       "replace_run": args.replace_run, "expected_revision": args.expected_revision,
-                                      "initial_journal_observation": "cli-start/v1"})
+                                      "initial_journal_observation": "cli-start/v1"}, phase_contract=workflow.PHASE_CONTRACT)
             committed_state = state
             created = state.pop('start_created', False)
             observation_errors.extend(state.pop("start_observation_errors", []))
@@ -1576,6 +1579,11 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
                                            "captured": capture_attachments(workspace, artifacts)})
                     except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
                         observation_errors.append("Run resumed; optional attachment observation unavailable.")
+        elif args.action == "refine":
+            workflow.require(run and args.request_json is not None, "invalid_evidence", "Refine needs an active run and --request-json.")
+            assert run is not None
+            state = controller.refine(str(run["run"]), args.expected_revision, args.request_json)
+            committed_state = state
         elif args.action in {"submit", "decide", "advance", "finish", "policy", "auto-decide", "retire"}:
             workflow.require(run, "state_unavailable", "No active workflow binding.")
             assert run is not None

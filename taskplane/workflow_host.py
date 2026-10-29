@@ -17,6 +17,33 @@ from . import host_capabilities, host_native, command_runtime, workflow_local, w
 from . import workspace_binding
 
 
+def phase_readiness(workspace: Path, state: dict[str, Any],
+                    output: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Read-only status shared by live acceptance and review presentation."""
+    from .context import Store
+    stage = w.current(state)
+    packet = stage.get("packet") or {}
+    selected = output if output is not None else packet.get("output", {})
+    gates = evidence.phase_review_gates(state, selected, root=workspace)
+    if not w.phase_contract(state):
+        return gates
+    blockers = list(gates["blockers"])
+    failures = {row["check_id"] for row in packet.get("verification", {}).get("history", {}).get("attempts", [])
+                if row.get("status") == "fail"}
+    verified = {row["failure_id"] for row in gates["causes"] if evidence.causal_verified(row, root=workspace)}
+    if failures - verified:
+        blockers.append("Recorded failed checks need verified causal corrections: " + ", ".join(sorted(failures - verified)))
+    accepted = {row["id"]: row for row in selected.get("phase_review", {}).get("feedback", [])}
+    for ref in stage.get("review_feedback", {}).values():
+        row = Store(workspace).resolve(ref)
+        current = accepted.get(row["id"], row)
+        if current.get("material", True) and current.get("disposition") == "open":
+            blocker = "Open material feedback: " + row["id"] + "."
+            if blocker not in blockers:
+                blockers.append(blocker)
+    return {**gates, "ready": not blockers, "blockers": blockers}
+
+
 class HostAdapter:
     """An in-process trusted host integration, never selected from agent input."""
 
@@ -399,7 +426,7 @@ class Controller:
             w.require(not initial or requested == initial,
                       "stale_checkpoint", "Start retry cannot replace the run's initial tasks.")
 
-    def start(self, request: dict[str, Any]) -> dict[str, Any]:
+    def start(self, request: dict[str, Any], *, phase_contract: str | None = None) -> dict[str, Any]:
         w.require(self.principal == self.root, "scope_violation", "Workers cannot start or replace workflows.")
         contract = (workspace_binding.ensure(self.workspace)
                     if self.adapter.profile == "native_workflow" else None)
@@ -416,7 +443,7 @@ class Controller:
                 self._initial_tasks(request, authorized["scope"])
                 # Validate route before creating the durable initialization marker.
                 w.new_state(str(self.workspace), self.root, "validate", authorized["scope"],
-                            entry=authorized["entry"], standalone=authorized["standalone"])
+                            entry=authorized["entry"], standalone=authorized["standalone"], phase_contract=phase_contract)
                 self.adapter.initialize()
             db = self._read(target)
             replaced = None
@@ -458,7 +485,7 @@ class Controller:
             authorized = authorized or self.adapter.verify_start(self.workspace, self.root, request)
             evidence.valid_scope(self.workspace, authorized["scope"])
             s = w.new_state(str(self.workspace), self.root, uuid.uuid4().hex, authorized["scope"],
-                            entry=authorized["entry"], standalone=authorized["standalone"])
+                            entry=authorized["entry"], standalone=authorized["standalone"], phase_contract=phase_contract)
             s.update(goal=str(authorized.get("goal", request.get("goal", ""))),
                      started_at=datetime.now(timezone.utc).isoformat(), profile=self.adapter.profile,
                      initial_context_tasks=self._initial_tasks(request, authorized["scope"]))
@@ -704,6 +731,234 @@ class Controller:
             self._write(target, db)
             return result
 
+    def _review_output(self, state: dict[str, Any]) -> dict[str, Any]:
+        from .context import Store
+        stage = w.current(state)
+        head = stage.get("phase_review")
+        return dict(Store(self.workspace).resolve(head["ref"])["output"] if head else
+                    deepcopy((stage.get("packet") or {}).get("output", {})))
+
+    def _feedback_rows(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        from .context import Store
+        return [Store(self.workspace).resolve(ref) for ref in w.current(state).get("review_feedback", {}).values()]
+
+    def _feedback_target(self, state: dict[str, Any], target: dict[str, Any]) -> None:
+        """Resolve identity against published bytes, including historical drafts."""
+        from .context import Store
+        store = Store(self.workspace)
+
+        def matches(output: dict[str, Any], artifacts: list[dict[str, Any]]) -> bool:
+            review = output.get("phase_review", {})
+            candidates = [{"id": row["id"], "revision": row["revision"], "digest": row["sha256"]}
+                          for row in artifacts]
+            candidates += [{"id": "criterion:" + row["id"], "revision": review.get("revision"),
+                            "digest": primitives.content_fingerprint(row)}
+                           for row in output.get("acceptance_criteria", []) if isinstance(row, dict)]
+            candidates.append({"id": "draft", "revision": review.get("revision"),
+                               "digest": primitives.content_fingerprint(output)})
+            return target in candidates
+
+        remaining = 50
+        truncated = len(state["visits"]) > 50
+        for stage in reversed(state["visits"][-50:]):
+            packet = stage.get("packet") or {}
+            if packet and matches(packet.get("output", {}), packet.get("review_artifacts", [])):
+                return
+            cursor = (stage.get("phase_review") or {}).get("history_ref")
+            if cursor and remaining:
+                page = evidence.review_history_page(self.workspace, cursor, limit=remaining)
+                for row in page["entries"]:
+                    body = store.resolve(row["ref"])
+                    if matches(body["output"], body["artifacts"]):
+                        return
+                remaining -= len(page["entries"])
+                truncated = truncated or bool(page["next"])
+            elif cursor:
+                truncated = True
+        if truncated:
+            raise w.Refusal("invalid_evidence", "Feedback target was not resolved within the 50 published draft lookup bound.")
+        raise w.Refusal("invalid_evidence", "Feedback target is not an actual published revision and digest.")
+
+    def _review_sources(self, state: dict[str, Any], output: dict[str, Any],
+                        source: dict[str, Any] | None = None) -> None:
+        previous = self._review_output(state).get("phase_review", {})
+        known = [row.get("source") for row in previous.get("feedback", []) + self._feedback_rows(state)]
+        known += [row.get("resolution", {}).get("source") for row in previous.get("uncertainties", [])]
+        if source:
+            known.append(source)
+        review = output.get("phase_review")
+        w.require(isinstance(review, dict) and all(isinstance(review.get(key), list)
+                  and all(isinstance(row, dict) for row in review[key]) for key in ("feedback", "uncertainties")),
+                  "invalid_evidence", "Phase review needs structured feedback and uncertainty records.")
+        assert isinstance(review, dict)
+        w.require(all(isinstance(row.get("id"), str) and type(row.get("material", True)) is bool
+                      for row in review["feedback"])
+                  and all(isinstance(row.get("resolution", {}), dict) for row in review["uncertainties"]),
+                  "invalid_evidence", "Invalid feedback identity, material flag or uncertainty resolution.")
+        known_targets = [row.get("target") for row in previous.get("feedback", []) + self._feedback_rows(state)]
+        for row in review.get("feedback", []):
+            w.require(row.get("source") in known, "invalid_evidence", "New feedback needs an observed refinement source.")
+            if row.get("target", {}) not in known_targets:
+                self._feedback_target(state, row.get("target", {}))
+        for row in review.get("uncertainties", []):
+            resolution = row.get("resolution", {})
+            if resolution.get("kind") == "decision":
+                w.require(resolution.get("source") in known, "invalid_evidence", "Product decision needs an observed user source.")
+        indexed = {row["id"]: row for row in review.get("feedback", [])}
+        for row in self._feedback_rows(state):
+            w.require(row["id"] in indexed and all(indexed[row["id"]].get(k) == row.get(k)
+                      for k in ("source", "target", "criteria", "material")), "invalid_evidence",
+                      "Draft cannot erase or retarget recorded feedback.")
+
+    def _phase_ready(self, state: dict[str, Any]) -> None:
+        gates = phase_readiness(self.workspace, state)
+        w.require(gates["ready"], "phase_not_ready", "; ".join(gates["blockers"]))
+
+    def refine(self, run: str, revision: int | None, raw: str) -> dict[str, Any]:
+        w.require(self.principal == self.root, "scope_violation", "Workers cannot refine workflow control state.")
+        w.require(self.adapter.profile == "native_workflow", "unsupported_authority",
+                  "Observed refinement is available only in native_workflow.")
+        w.require(isinstance(raw, str) and 0 < len(raw.encode()) <= 65536, "invalid_evidence", "Refinement exceeds 64 KiB.")
+        try:
+            request = json.loads(raw)
+        except ValueError:
+            raise w.Refusal("invalid_evidence", "Refinement needs a JSON object.") from None
+        w.require(isinstance(request, dict) and request.get("schema") == "taskplane.refinement/v1",
+                  "invalid_evidence", "Refinement schema is missing.")
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            w.require(db["active"] == run, "state_unavailable", "Refinement must address the active run.")
+            state = db["runs"][run]
+            w.require(w.phase_contract(state) and not state["finished"], "invalid_evidence", "Refinement requires an active collaborative run.")
+            event = request.get("event_id")
+            w.require(isinstance(event, str) and 0 < len(event.strip()) <= 512, "invalid_evidence", "Refinement needs an event ID.")
+            digest = primitives.content_fingerprint(request)
+            events = state.get("refinement_events", {})
+            if event in events:
+                w.require(events[event]["digest"] == digest and revision == request.get("expected_revision"),
+                          "stale_checkpoint", "Conflicting refinement event replay.")
+                return deepcopy(state)
+            stage = w.current(state)
+            before = self._review_output(state)
+            draft_revision = before.get("phase_review", {}).get("revision", 0)
+            w.require(type(revision) is int and revision == state["revision"] == request.get("expected_revision")
+                      and request.get("run") == run and request.get("visit") == stage["id"]
+                      and type(request.get("draft_revision")) is int and request["draft_revision"] == draft_revision,
+                      "stale_checkpoint", "Refinement must bind the exact run, visit, workflow and draft revision.")
+            w.require(event not in state["decisions"] and event not in state.get("policy_events", {}),
+                      "stale_checkpoint", "Event already belongs to another control operation.")
+            operation, payload = request.get("operation"), request.get("payload")
+            w.require(operation in {"draft", "feedback", "hold", "release"} and isinstance(payload, dict),
+                      "invalid_evidence", "Unknown refinement operation or payload.")
+            from .context import Store
+            store = Store(self.workspace)
+            source = None
+            provenance = request.get("source") or {}
+            w.require(isinstance(provenance, dict), "invalid_evidence", "Refinement source must be an object.")
+            if operation == "feedback" and provenance.get("kind") == "automated_check":
+                ref = provenance.get("record_ref")
+                history_path = provenance.get("history_path")
+                declared = set(state["scope"].get("verification_inputs", []))
+                declared.update(path for paths in state["scope"]["paths"].values() for path in paths)
+                w.require(isinstance(ref, dict) and ref.get("kind") == "verification-record"
+                          and isinstance(history_path, str) and history_path in declared
+                          and provenance.get("reference") == ref.get("sha256")
+                          and isinstance(request.get("excerpt"), str) and 0 < len(request["excerpt"].strip()) <= 4096,
+                          "invalid_evidence", "Automated feedback needs its immutable check reference and observation.")
+                assert isinstance(ref, dict)
+                assert isinstance(history_path, str)
+                history = evidence.object_file(self.workspace, history_path)
+                record = store.resolve(ref)
+                attempts = history.get("attempts", [])
+                w.require(history.get("schema") == evidence.VERIFICATION_HISTORY and history.get("run") == run
+                          and isinstance(attempts, list) and isinstance(record, dict)
+                          and record.get("schema") == "taskplane.verification-record/v1"
+                          and isinstance(record.get("verification"), dict) and isinstance(record.get("log_ref"), dict)
+                          and record.get("verification", {}).get("run") == run
+                          and record.get("verification", {}).get("visit") in {row["id"] for row in state["visits"]}
+                          and record.get("status") in {"pass", "fail", "unknown"}
+                          and any(isinstance(row, dict) and row.get("record_ref") == ref
+                                  and row.get("status") == record["status"] and row.get("log_ref") == record.get("log_ref")
+                                  and all(row.get(key) == record["verification"].get(key)
+                                          for key in ("id", "check_id", "run", "visit", "kind", "environment"))
+                                  for row in attempts),
+                          "invalid_evidence", "Automated feedback must reference an actual run-bound check.")
+                log = store.resolve(record["log_ref"])
+                w.require(isinstance(log, dict) and log.get("path") == record.get("log_path")
+                          and isinstance(log.get("text"), str),
+                          "invalid_evidence", "Automated feedback record must retain its actual check log.")
+                try:
+                    observed = json.loads(log["text"])
+                except ValueError:
+                    raise w.Refusal("invalid_evidence", "Automated check log is not structured evidence.") from None
+                w.require(observed == record.get("result"), "invalid_evidence", "Automated check log differs from its record.")
+                source = {"kind": "automated_check", "reference": ref["sha256"], "excerpt": request["excerpt"]}
+            elif operation in {"hold", "release"} or provenance:
+                source = workflow_local.refinement_source(state, request)
+            updated = deepcopy(state)
+            current = updated["visits"][updated["index"]]
+            if operation == "draft":
+                w.require(stage["decision"] in {"not_requested", "changes_requested", "rejected", "stale"},
+                          "approval_required", "Reopen the sealed checkpoint before publishing a changed draft.")
+                w.require(set(payload) == {"output"} and payload["output"] in state["scope"]["paths"][stage["phase"]],
+                          "scope_violation", "Draft output must be an exact current-phase path.")
+                output = evidence.object_file(self.workspace, payload["output"])
+                w.require(output.get("schema") == "taskplane.phase-output/v1" and output.get("run") == run
+                          and output.get("visit") == stage["id"] and output.get("phase") == stage["phase"],
+                          "invalid_evidence", "Draft output has a foreign binding.")
+                self._review_sources(state, output, source)
+                self.adapter.before_action(state, "refine")
+                drift = evidence.changed(self.workspace, state, skip_current=True)
+                w.require(not drift, "stale_checkpoint", "Accepted predecessor evidence changed.")
+                current["phase_review"] = evidence.publish_phase_review(self.workspace, updated, output)
+                current["work"] = "working"
+            elif operation == "feedback":
+                w.require(before, "invalid_evidence", "Publish a draft or checkpoint before feedback.")
+                w.require(payload.get("source") == source and source is not None and payload.get("disposition") == "open",
+                          "invalid_evidence", "Feedback must retain the actual observed source and begin open.")
+                w.require(type(payload.get("material", True)) is bool, "invalid_evidence", "Feedback material flag must be boolean.")
+                self._feedback_target(state, payload.get("target", {}))
+                rows = self._feedback_rows(state) + before.get("phase_review", {}).get("feedback", [])
+                w.require(not any(row.get("id") == payload.get("id") for row in rows), "invalid_evidence", "Feedback ID already exists.")
+                trial = deepcopy(before)
+                trial["phase_review"]["feedback"].append(payload)
+                evidence.phase_review_gates(state, trial)
+                current.setdefault("review_feedback", {})[payload["id"]] = store.put("phase-review-feedback", payload)
+            elif operation == "hold":
+                w.require(set(payload) == {"reason"} and evidence.substantive(payload["reason"]), "invalid_evidence", "Hold needs a reason.")
+                w.require(not stage.get("hold", {}).get("active"), "invalid_evidence", "Release the current hold before replacing it.")
+                current["hold"] = {"active": True, "event_id": event, "reason": payload["reason"], "source": source}
+            else:
+                w.require(set(payload) == {"hold_event"} and stage.get("hold", {}).get("active")
+                          and payload["hold_event"] == stage["hold"]["event_id"], "stale_checkpoint", "Release must identify the active hold.")
+                import re
+                text = request["excerpt"].casefold()
+                w.require(re.search(r"\b(release|lift|continue|resume|proceed|go ahead)\b", text)
+                          and not re.search(r"\b(no|not|don't|do not|keep|if)\b|\?", text),
+                          "invalid_evidence", "Hold release intent is unclear; preserve an explicit user release.")
+                current["hold"].update(active=False, release_event=event, release_source=source)
+            ref = store.put("phase-refinement-event", {"request": request, "source": source, "assurance": "observed"})
+            updated.setdefault("refinement_events", {})[event] = {"digest": digest, "ref": ref}
+            updated["revision"] += 1
+            db["runs"][run] = updated
+            self._write(target, db)
+            return deepcopy(updated)
+
+    def _submit(self, state: dict[str, Any], output: str, tasks: str) -> dict[str, Any]:
+        packet = evidence.seal(self.workspace, state, output, tasks)
+        if not w.phase_contract(state):
+            return w.submit(state, packet)
+        self._review_sources(state, packet["output"])
+        updated = deepcopy(state)
+        head = w.current(state).get("phase_review")
+        before = {k: v for k, v in self._review_output(state).items() if k != "context_receipt"}
+        after = {k: v for k, v in packet["output"].items() if k != "context_receipt"}
+        if not head or before != after:
+            updated["visits"][updated["index"]]["phase_review"] = evidence.publish_phase_review(
+                self.workspace, updated, packet["output"])
+        return w.submit(updated, packet)
+
     def apply(self, action: str, run: str, *, expected_revision: int | None = None,
               output: str = "", tasks: str = "", phase: str = "", native_reference: str = "",
               assessment_json: str | None = None) -> dict[str, Any]:
@@ -779,11 +1034,13 @@ class Controller:
                 self.adapter.before_action(s, action)
             if replay:
                 return w.decide(s, verified)
+            if action in {"advance", "finish", "auto-decide"} or action == "decide" and verified.get("choice") == "approved":
+                self._phase_ready(s)
             if action in ("advance", "finish", "submit", "auto-decide"):
                 w.require(self.adapter.can_seal(s),
                           "scope_violation", "Live tool processes must stop before sealing or revoking a phase grant.")
             operations: dict[str, Callable[[], dict[str, Any]]] = {
-                "submit": lambda: w.submit(s, evidence.seal(self.workspace, s, output, tasks)),
+                "submit": lambda: self._submit(s, output, tasks),
                 "decide": lambda: w.decide(s, verified),
                 "auto-decide": lambda: w.decide(s, verified),
                 "policy": lambda: workflow_approval.authorize(s, policy_request),

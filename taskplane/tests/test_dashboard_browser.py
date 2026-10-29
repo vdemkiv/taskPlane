@@ -707,3 +707,62 @@ def test_standalone_review_harness_hands_off_native_dashboard(tmp_path):
         assert browser.evaluate("document.querySelector('#snapshot-identity').textContent.includes("+json.dumps(state['run'])+")")
         assert browser.evaluate("document.querySelector('#decomposition') !== null")
         assert browser.evaluate("document.querySelector('#dependencies iframe') !== null")
+
+
+def test_collaborative_dashboard_immutable_safe_review_keyboard_and_narrow_layout(tmp_path):
+    """Real browser on self-cleaning synthetic evidence; no live user state served."""
+    from copy import deepcopy
+    from taskplane import flow_dashboard, workflow_evidence as evidence
+    from taskplane.context import Store
+    from taskplane.tests.test_context_handoff import collaborative_presentation_fixture
+    from taskplane.tests.test_workflow_evidence import collaborative_cause
+    workspace = tmp_path/'review-fixture'
+    workspace.mkdir()
+    state, output, observed = collaborative_presentation_fixture(workspace)
+    output['phase_review']['uncertainties'] = [{'id':'U1','criteria':['AC1'],
+        'state':'unresolved','question':'Which recovery branch should apply?'}]
+    output['phase_review']['causes'] = [collaborative_cause(workspace, observed)]
+    stage = state['visits'][0]
+    stage['phase_review'] = evidence.publish_phase_review(workspace, state, output)
+    old_state = deepcopy(state)
+    artifact = Store(workspace).resolve(stage['phase_review']['ref'])['artifacts'][0]
+    feedback = {'id':'F1','criteria':['AC1'], 'material':True, 'disposition':'open',
+        'source':{'kind':'human','reference':'fixture/actual-message','excerpt':'Compare the recovery branch'},
+        'target':{'id':'mock','revision':1,'digest':artifact['sha256']}}
+    stage['review_feedback'] = {'F1':Store(workspace).put('phase-review-feedback', feedback)}
+    stage['hold'] = {'active':True, 'event_id':'fixture/hold', 'reason':'Explore before advancing'}
+    # Workspace changes do not change the reviewed bytes or feedback's target.
+    (workspace/'mock.html').write_text('Replacement workspace file')
+    before = deepcopy(state)
+    files_before = {str(p):p.read_bytes() for p in workspace.rglob('*') if p.is_file()}
+    m = {'workflow':state, 'snapshot':{'presentation_target':str(workspace/'.taskplane/dashboard.html')}}
+    rendered = flow_dashboard._phase_review(str(workspace), m)
+    old = flow_dashboard._phase_review(str(workspace), {'workflow':old_state})
+    assert 'Original reviewed artifact' in old and 'Replacement workspace file' not in old
+    assert state == before
+    assert files_before == {str(p):p.read_bytes() for p in workspace.rglob('*') if p.is_file()}
+    target = workspace/'.taskplane/dashboard.html'
+    target.write_text(dashboard.standalone_document([flow_dashboard.STYLE+'<main class="tp-flow">'+rendered+'</main>'], title='Synthetic phase review'))
+    with _LoopbackServer(workspace) as server, _RealBrowser(tmp_path, _json_fixture('environment.json')) as browser:
+        browser.navigate(server.url('.taskplane/dashboard.html'))
+        assert browser.evaluate("document.querySelector('#phase-review').textContent.includes('Not ready')")
+        for text in ('Definition of Ready','Definition of Done','Durable user hold: Active',
+                     'Which recovery branch should apply?', 'fixture/actual-message', artifact['sha256'],
+                     'disposition', 'discriminates', 'Original reviewed artifact'):
+            assert browser.evaluate('document.querySelector("#phase-review").textContent.includes('+json.dumps(text)+')')
+        assert browser.evaluate('window.artifactExecuted === undefined')
+        assert browser.evaluate('document.querySelectorAll("#phase-review script, #phase-review iframe, #phase-review img, #phase-review form").length') == 0
+        browser.evaluate('document.querySelector("#phase-review details summary").focus()')
+        before_open = browser.evaluate('document.activeElement.parentElement.open')
+        browser.call('Input.dispatchKeyEvent', {'type':'keyDown','key':'Enter','code':'Enter','windowsVirtualKeyCode':13,'text':'\r','unmodifiedText':'\r'})
+        browser.call('Input.dispatchKeyEvent', {'type':'keyUp','key':'Enter','code':'Enter','windowsVirtualKeyCode':13})
+        assert browser.evaluate('document.activeElement.parentElement.open') is not before_open
+        for width in (390, 768, 1280):
+            browser.call('Emulation.setDeviceMetricsOverride', {'width':width,'height':1000,'deviceScaleFactor':1,'mobile':False})
+            assert browser.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+        href = browser.evaluate('document.querySelector("#phase-review article a").getAttribute("href")')
+        assert href.startswith('context-v1/objects/') and href.endswith('.json')
+        browser.navigate(server.url('.taskplane/'+href))
+        assert browser.evaluate('document.body.textContent.includes("base64")')
+        assert browser.evaluate('document.body.textContent.includes('+json.dumps(artifact['sha256'])+')')
+    assert state == before

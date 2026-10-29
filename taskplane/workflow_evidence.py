@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
 import os
 from copy import deepcopy
 from pathlib import Path
@@ -19,6 +21,8 @@ VERIFICATION_STRATEGY = "taskplane.verification-strategy/v1"
 VERIFICATION_HISTORY = "taskplane.verification-history/v1"
 CHECK_KINDS = {"static", "unit", "roundtrip", "browser", "integration", "independent"}
 CHECK_ENVIRONMENTS = {"fixture", "local", "deployed"}
+PHASE_REVIEW = "taskplane.phase-review/v1"
+ARTIFACT_LIMIT = 8 * 1024 * 1024
 
 EMPTY_LIST_FIELDS = {"non_goals", "dependencies", "finding_references", "known_gaps",
                      "findings", "source_locations", "remaining_risk", "unknowns_and_failures",
@@ -33,6 +37,423 @@ def substantive(value: Any) -> bool:
     if isinstance(value, list):
         return bool(value) and any(substantive(v) for v in value)
     return False
+
+
+def _review_rows(review: dict[str, Any], field: str) -> list[dict[str, Any]]:
+    rows = review.get(field)
+    w.require(isinstance(rows, list) and all(isinstance(row, dict) and
+              isinstance(row.get("id"), str) and row["id"].strip() for row in rows),
+              "invalid_evidence", f"phase_review.{field} needs records with stable IDs.")
+    assert isinstance(rows, list)
+    w.require(len({row["id"] for row in rows}) == len(rows), "invalid_evidence",
+              f"Duplicate phase_review.{field} IDs.")
+    return list(rows)
+
+
+def _review_evidence(value: Any, root: Path | None) -> bool:
+    """A file digest identifies observed bytes, never a caller's ready boolean."""
+    if not isinstance(value, list) or not value:
+        return False
+    for ref in value:
+        if not isinstance(ref, dict) or not isinstance(ref.get("path"), str):
+            return False
+        digest = ref.get("sha256")
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            return False
+        if root is not None:
+            if hashlib.sha256(read(root, ref["path"])).hexdigest() != digest:
+                return False
+    return True
+
+
+def _review_source(source: Any) -> bool:
+    return (isinstance(source, dict) and source.get("kind") in {"human", "automated_check"}
+            and all(isinstance(source.get(k), str) and source[k].strip() for k in ("reference", "excerpt")))
+
+
+def accepted_review_inputs(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{"checkpoint": v["packet"]["checkpoint"], "digest": content_fingerprint(v["packet"])}
+            for v in state["visits"][:state["index"]]
+            if not v["superseded"] and v.get("packet") and v["decision"] == "approved"]
+
+
+def review_baseline(state: dict[str, Any]) -> dict[str, Any]:
+    """Accepted Product fixes DoD and applicability; later drafts cannot waive it."""
+    for stage in reversed(state["visits"][:state["index"]]):
+        if stage["phase"] == "product" and not stage["superseded"] and stage["decision"] == "approved":
+            return dict(stage["packet"]["output"].get("phase_review", {}))
+    return {}
+
+
+def review_obligations(state: dict[str, Any], review: dict[str, Any]) -> dict[str, list[str]]:
+    """Stable minimum obligations supplement each phase's existing output contract."""
+    baseline = review_baseline(state) or review
+    run_dod = _review_rows(baseline, "run_dod")
+    return {"dor": ["phase-entry"],
+            "dod": ["phase-output", *["criterion:" + c for c in state["scope"]["criteria"]],
+                    *["run-dod:" + item["id"] for item in run_dod if item.get("required") is True
+                      and w.current(state)["phase"] in item.get("phases", [])]]}
+
+
+def _causal_records(state: dict[str, Any], rows: list[dict[str, Any]], root: Path | None) -> list[dict[str, Any]]:
+    """Resolve reusable records once at sealing; pure decision rules use that snapshot."""
+    from .context import Store
+    sealed = (w.current(state).get("packet") or {}).get("phase_review_gates", {}).get("causes", [])
+    result = []
+    for row in rows:
+        ref = row.get("record_ref")
+        if ref is None:
+            result.append(row)
+            continue
+        w.require(set(row) == {"id", "record_ref"} and isinstance(ref, dict)
+                  and ref.get("kind") == "phase-review-cause", "invalid_evidence", "Invalid causal record reference.")
+        if root is not None:
+            body = Store(root).resolve(ref)
+        else:
+            body = next((item for item in sealed if item.get("id") == row["id"] and item.get("record_ref") == ref), None)
+        w.require(isinstance(body, dict) and body.get("id") == row["id"], "invalid_evidence",
+                  "Referenced causal record is unavailable or has a different identity.")
+        result.append({**body, "record_ref": deepcopy(ref)})
+    return result
+
+
+def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
+                       root: Path | None = None) -> dict[str, Any]:
+    """Common manual/policy gate. Structural errors refuse; honest gaps stay reviewable.
+
+    root=None evaluates sealed metadata; Controller freshness checks protect its bytes.
+    root supplied additionally verifies every referenced file against its exact digest.
+    """
+    if not w.phase_contract(state):
+        return {"contract": "legacy", "ready": True, "blockers": [], "files": []}
+    review = output.get("phase_review")
+    w.require(isinstance(review, dict) and review.get("schema") == PHASE_REVIEW
+              and type(review.get("revision")) is int and review["revision"] > 0,
+              "invalid_evidence", "Contracted output needs a versioned phase_review and positive revision.")
+    assert isinstance(review, dict)
+    if root is not None:
+        validate_review_continuity(root, state, review)
+    rows = {field: _review_rows(review, field) for field in
+            ("dor", "dod", "uncertainties", "feedback", "artifacts", "causes", "run_dod")}
+    rows["causes"] = _causal_records(state, rows["causes"], root)
+    criteria = set(state["scope"]["criteria"])
+    blockers: list[str] = []
+    files: set[str] = set()
+    repeated_attempts: list[dict[str, Any]] = []
+
+    def evidence(value: Any) -> bool:
+        valid = _review_evidence(value, root)
+        if isinstance(value, list):
+            files.update(ref["path"] for ref in value if isinstance(ref, dict) and isinstance(ref.get("path"), str))
+        return valid
+
+    def linked(row: dict[str, Any]) -> None:
+        values = _strings(row.get("criteria"), "Review criteria", nonempty=False)
+        w.require(set(values) <= criteria, "invalid_evidence", "Review item names unknown criteria.")
+
+    w.require(isinstance(review.get("inputs"), list), "invalid_evidence", "Review inputs must be a list.")
+    if review["inputs"] != accepted_review_inputs(state):
+        blockers.append("Accepted input references are missing, stale or foreign.")
+    baseline = review_baseline(state)
+    if baseline and rows["run_dod"] != baseline.get("run_dod"):
+        blockers.append("Run DoD differs from accepted Product.")
+    if not rows["run_dod"]:
+        blockers.append("Run DoD is not refined.")
+    for item in rows["run_dod"]:
+        linked(item)
+        w.require(type(item.get("required")) is bool and substantive(item.get("statement")),
+                  "invalid_evidence", "Run DoD needs a statement and required flag.")
+        phases = _strings(item.get("phases"), "Run DoD applicable phases")
+        w.require(set(phases) <= set(w.PHASES), "invalid_evidence", "Run DoD names unknown phases.")
+    obligations = review_obligations(state, review)
+    for group in ("dor", "dod"):
+        indexed = {row["id"]: row for row in rows[group]}
+        for item_id in obligations[group]:
+            if item_id not in indexed or indexed[item_id].get("required") is not True:
+                blockers.append(f"Required {group} item missing or waived: {item_id}.")
+        for item in rows[group]:
+            linked(item)
+            if item["id"].startswith("criterion:"):
+                w.require(item["id"].removeprefix("criterion:") in item["criteria"],
+                          "invalid_evidence", "Criterion gate must link its named criterion.")
+            w.require(type(item.get("required")) is bool and item.get("outcome") in
+                      {"met", "unmet", "unknown", "not_applicable"} and substantive(item.get("explanation")),
+                      "invalid_evidence", "Gate needs required flag, typed outcome and explanation.")
+            supported = evidence(item.get("evidence"))
+            if item["outcome"] == "not_applicable":
+                # An accepted Product condition binds the exact obligation, never a free waiver.
+                applicability = next((row.get("applicability") for row in baseline.get(group, [])
+                                      if row.get("id") == item["id"]), None)
+                supported = bool(applicability and item.get("applicability") == applicability and supported)
+            if item["required"] and (item["outcome"] in {"unmet", "unknown"} or not supported):
+                blockers.append(f"Required {group} item is {item['outcome']} or unsupported: {item['id']}.")
+    for item in rows["uncertainties"]:
+        linked(item)
+        w.require(substantive(item.get("question")) and item.get("state") in {"unresolved", "resolved"},
+                  "invalid_evidence", "Uncertainty needs a question and resolution state.")
+        resolution = item.get("resolution", {})
+        resolved = isinstance(resolution, dict) and substantive(resolution.get("summary")) and (
+            resolution.get("kind") == "evidence" and evidence(resolution.get("evidence"))
+            or resolution.get("kind") == "decision" and _review_source(resolution.get("source"))
+            and resolution["source"]["kind"] == "human" and item.get("nature") == "decision")
+        if item["state"] != "resolved" or not resolved:
+            if w.current(state)["phase"] == "product" or item.get("required", True):
+                blockers.append("Unresolved uncertainty: " + item["id"] + ".")
+    for item in rows["feedback"]:
+        linked(item)
+        target = item.get("target", {})
+        w.require(_review_source(item.get("source")) and isinstance(target, dict)
+                  and isinstance(target.get("id"), str) and type(target.get("revision")) is int
+                  and target["revision"] > 0 and isinstance(target.get("digest"), str)
+                  and len(target["digest"]) == 64 and item.get("disposition") in {"open", "addressed", "deferred", "declined"},
+                  "invalid_evidence", "Feedback needs actual source, exact revision target and disposition.")
+        if item["disposition"] != "open":
+            w.require(substantive(item.get("response")) and evidence(item.get("evidence")),
+                      "invalid_evidence", "Feedback disposition needs response and evidence.")
+        if item["disposition"] == "addressed":
+            w.require(type(item.get("resulting_revision")) is int and
+                      target["revision"] < item["resulting_revision"] <= review["revision"],
+                      "invalid_evidence", "Addressed feedback must identify the resulting revision.")
+        if item.get("material", True) and item["disposition"] == "open":
+            blockers.append("Open material feedback: " + item["id"] + ".")
+    for item in rows["artifacts"]:
+        linked(item)
+        w.require(all(isinstance(item.get(k), str) and item[k].strip() for k in
+                      ("path", "purpose", "media_type", "fallback")) and type(item.get("revision")) is int
+                  and 0 < item["revision"] <= review["revision"], "invalid_evidence",
+                  "Review artifact needs path, purpose, media type, fallback and revision.")
+        allowed = set(state["scope"]["paths"][w.current(state)["phase"]])
+        allowed.update(p for v in state["visits"][:state["index"]] if v["decision"] == "approved"
+                       for p in (v.get("packet") or {}).get("manifest", {}))
+        w.require(item["path"] in allowed, "scope_violation", "Review artifact is outside current or accepted scope.")
+        if not evidence([item]):
+            blockers.append("Artifact bytes changed or digest missing: " + item["id"] + ".")
+    verified_failures: set[str] = set()
+    for cause in rows["causes"]:
+        linked(cause)
+        w.require(type(cause.get("required", True)) is bool, "invalid_evidence",
+                  "Causal obligations need a boolean required flag.")
+        _strings(cause.get("affected_checks", []), "Causal affected checks", nonempty=False)
+        w.require(bool(cause["criteria"]) and isinstance(cause.get("verification", []), list)
+                  and isinstance(cause.get("input_fingerprint", {}), dict), "invalid_evidence",
+                  "Causal record needs criteria and typed verification/input fields.")
+        w.require(cause.get("state") in {"investigating", "contained", "verified"}
+                  and all(substantive(cause.get(k)) for k in ("failure_id", "failure", "expected", "observations", "hypotheses")),
+                  "invalid_evidence", "Causal record needs failure, expected behavior, observations and hypotheses.")
+        valid = causal_verified(cause, root=root)
+        if valid and cause.get("required", True):
+            verified_failures.add(cause["failure_id"])
+        # Gather all evidence files so sealing/freshness covers causal observations too.
+        for field in ("reproduction", "cause_evidence", "correction_evidence"):
+            evidence(cause.get(field))
+        for check in cause.get("verification", []):
+            if isinstance(check, dict):
+                evidence(check.get("evidence"))
+                evidence(check.get("before_evidence"))
+        files.update(cause.get("input_fingerprint", {}).keys())
+        attempts = cause.get("attempts", [])
+        w.require(isinstance(attempts, list) and all(isinstance(a, dict) for a in attempts),
+                  "invalid_evidence", "Causal attempts must be records.")
+        for index, attempt in enumerate(attempts):
+            prior = repeated_causal_attempt(attempts[:index], attempt)
+            if prior is not None:
+                repeated_attempts.append({"cause": cause["id"], "attempt": index, "previous": prior})
+        if cause["state"] == "verified" and not valid or cause["state"] != "verified" and cause.get("required", True):
+            blockers.append("Causal correction is not verified: " + cause["id"] + ".")
+    failures = set()
+    required_checks = {item["id"] for item in _plan(state).get("verification_strategy", {}).get("checks", [])
+                       if item.get("required")} if typed_plan(_plan(state)) else set()
+    for check in output.get("build_checks", []):
+        if (isinstance(check, dict) and (check.get("required", True) or check.get("check_id") in required_checks)
+                and check.get("status") != "pass"):
+            blockers.append("Required check is not passing: " + str(check.get("check_id", check.get("name"))) + ".")
+            if check.get("status") == "fail":
+                failures.add(str(check.get("check_id", check.get("name"))))
+    if w.current(state)["phase"] == "evaluate":
+        results = output.get("criterion_results", {})
+        w.require(isinstance(results, dict) and all(isinstance(result, dict) for result in results.values()),
+                  "invalid_evidence", "Evaluate criterion results must be records.")
+        for criterion, result in results.items():
+            if result.get("status") != "pass":
+                blockers.append("Evaluate criterion is not passing: " + criterion + ".")
+            if result.get("status") == "fail":
+                failures.add(criterion)
+        if output.get("unknowns_and_failures"):
+            blockers.append("Evaluate has unresolved unknowns or failures.")
+    for entry in state.get("history", []):
+        if entry.get("visit") == w.current(state)["id"]:
+            historical = entry.get("packet", {}).get("output", {})
+            for check in historical.get("build_checks", []):
+                if isinstance(check, dict) and check.get("status") == "fail":
+                    failures.add(str(check.get("check_id", check.get("name"))))
+            if w.current(state)["phase"] == "evaluate":
+                failures.update(criterion for criterion, result in historical.get("criterion_results", {}).items()
+                                if result.get("status") == "fail")
+    for failure_id in sorted(failures - verified_failures):
+        blockers.append("Failure needs causal investigation: " + failure_id + ".")
+    active_hold = w.current(state).get("hold")
+    if isinstance(active_hold, dict) and active_hold.get("active"):
+        blockers.append("An explicit user hold is active.")
+    return {"contract": w.PHASE_CONTRACT, "ready": not blockers, "blockers": blockers,
+            "revision": review["revision"], "files": sorted(files),
+            "dor": deepcopy(rows["dor"]), "dod": deepcopy(rows["dod"]),
+            "causes": deepcopy(rows["causes"]), "repeated_attempts": repeated_attempts}
+
+
+def validate_review_continuity(root: Path, state: dict[str, Any], review: dict[str, Any]) -> None:
+    """A new draft or direct submission cannot erase previously observed obligations."""
+    from .context import Store
+    stage = w.current(state)
+    previous = stage.get("phase_review") or {}
+    before = (Store(root).resolve(previous["ref"])["output"]["phase_review"] if previous else
+              (stage.get("packet") or {}).get("output", {}).get("phase_review"))
+    if not before:
+        return
+    w.require(review["revision"] >= before["revision"], "stale_checkpoint", "Review revision is older than current draft.")
+    if review["revision"] == before["revision"]:
+        w.require(review == before, "stale_checkpoint", "A changed review needs a new revision.")
+    for field in ("uncertainties", "feedback", "causes"):
+        prior = _review_rows(before, field)
+        revised = _review_rows(review, field)
+        if field == "causes":
+            prior = _causal_records(state, prior, root)
+            revised = _causal_records(state, revised, root)
+        after = {row["id"]: row for row in revised}
+        w.require(all(row["id"] in after for row in prior), "invalid_evidence",
+                  f"Refinement cannot erase {field} history.")
+        immutable = {"uncertainties": ("question", "criteria"), "feedback": ("source", "target"),
+                     "causes": ("failure_id", "failure", "expected", "criteria")}[field]
+        w.require(all(all(row.get(k) == after[row["id"]].get(k) for k in immutable) for row in prior),
+                  "invalid_evidence", f"Original {field} identity and provenance are immutable.")
+        if field == "causes":
+            for row in prior:
+                updated = after[row["id"]]
+                w.require(type(updated.get("required", True)) is bool, "invalid_evidence",
+                          "Causal obligations need a boolean required flag.")
+                affected = _strings(row.get("affected_checks", []), "Causal affected checks", nonempty=False)
+                retained = _strings(updated.get("affected_checks", []), "Causal affected checks", nonempty=False)
+                w.require((not row.get("required", True) or updated.get("required", True))
+                          and set(affected) <= set(retained), "invalid_evidence",
+                          "Causal obligations cannot weaken required corrections or affected checks.")
+
+
+def causal_verified(cause: dict[str, Any], *, root: Path | None = None) -> bool:
+    """Require a before/after discriminating observation and every affected rerun."""
+    fingerprint = cause.get("input_fingerprint")
+    if (cause.get("state") != "verified" or not substantive(cause.get("supported_cause"))
+            or not substantive(cause.get("correction")) or not isinstance(fingerprint, dict) or not fingerprint
+            or not all(_review_evidence(cause.get(k), root) for k in
+                       ("reproduction", "cause_evidence", "correction_evidence"))):
+        return False
+    if not all(isinstance(p, str) and isinstance(d, str) and len(d) == 64 for p, d in fingerprint.items()):
+        return False
+    if root is not None and manifest(root, list(fingerprint)) != fingerprint:
+        return False
+    checks = cause.get("verification")
+    affected = cause.get("affected_checks")
+    if (not isinstance(checks, list) or not isinstance(affected, list) or not affected
+            or not all(isinstance(name, str) for name in affected)):
+        return False
+    matched: set[str] = set()
+    discriminating = False
+    for check in checks:
+        if (not isinstance(check, dict) or not isinstance(check.get("id"), str)
+                or check.get("failure_id") != cause.get("failure_id") or check.get("status") != "pass"
+                or check.get("input_fingerprint") != fingerprint
+                or not isinstance(check.get("criteria"), list)
+                or not all(isinstance(c, str) for c in check["criteria"])
+                or not set(cause.get("criteria", [])) <= set(check["criteria"])
+                or not _review_evidence(check.get("evidence"), root)):
+            return False
+        matched.add(check["id"])
+        if check.get("kind") in {"regression", "counterexample"}:
+            discriminating = bool(check.get("before_status") == "fail"
+                                  and _review_evidence(check.get("before_evidence"), root)
+                                  and substantive(check.get("expected")) and substantive(check.get("observed"))
+                                  and substantive(check.get("discriminates"))) or discriminating
+    return discriminating and set(affected) <= matched
+
+
+def repeated_causal_attempt(previous: list[dict[str, Any]], attempt: dict[str, Any]) -> dict[str, Any] | None:
+    """Surface unchanged attempts unless the new attempt states a diagnostic hypothesis."""
+    keys = ("failure_id", "input_fingerprint", "command")
+    for prior in reversed(previous):
+        if all(attempt.get(key) == prior.get(key) for key in keys) and not substantive(attempt.get("diagnostic_hypothesis")):
+            return deepcopy(prior)
+    return None
+
+
+def require_phase_ready(state: dict[str, Any], *, root: Path | None = None) -> dict[str, Any]:
+    if not w.phase_contract(state):
+        return {"contract": "legacy", "ready": True, "blockers": []}
+    packet = w.current(state).get("packet") or {}
+    gates = phase_review_gates(state, packet.get("output", {}), root=root)
+    w.require(gates["ready"], "phase_not_ready", "; ".join(gates["blockers"]))
+    return gates
+
+
+def pin_review_artifacts(root: Path, state: dict[str, Any], output: dict[str, Any], *,
+                         persist: bool = True) -> list[dict[str, Any]]:
+    """Preserve exact bytes, including binary and invalid UTF-8, in the existing store."""
+    if not w.phase_contract(state):
+        return []
+    phase_review_gates(state, output, root=root)
+    from .context import Store
+    from .snapshot_retention import register_references
+    store = Store(root)
+    result = []
+    for item in output["phase_review"]["artifacts"]:
+        raw = read(root, item["path"])
+        w.require(len(raw) <= ARTIFACT_LIMIT, "context_overflow", "Review artifact exceeds 8 MiB.")
+        digest = hashlib.sha256(raw).hexdigest()
+        w.require(item.get("sha256") == digest, "invalid_evidence", "Artifact digest does not match reviewed bytes.")
+        body = {"encoding": "base64", "bytes": len(raw), "sha256": digest,
+                "data": base64.b64encode(raw).decode("ascii")}
+        if persist:
+            register_references(root, raw, "phase-review-artifact", format="json" if item["path"].endswith(".json") else "text")
+        ref = store.put("phase-review-artifact", body) if persist else store.reference("phase-review-artifact", body)
+        result.append({**deepcopy(item), "body_ref": ref})
+    return result
+
+
+def publish_phase_review(root: Path, state: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
+    """Build immutable draft/head metadata; the locked Controller owns state mutation.
+
+    The visit's phase_review holds this return value. history_ref is a linked object,
+    not a growing array. Reads use review_history_page or Store.page for large bodies.
+    """
+    w.require(w.phase_contract(state), "invalid_evidence", "Refinement requires the collaborative contract.")
+    gates = phase_review_gates(state, output, root=root)
+    from .context import Store
+    store = Store(root)
+    previous = w.current(state).get("phase_review") or {}
+    revision = output["phase_review"]["revision"]
+    w.require(revision == previous.get("revision", 0) + 1, "stale_checkpoint", "Draft revision must increment exactly once.")
+    if previous:
+        validate_review_continuity(root, state, output["phase_review"])
+    artifacts = pin_review_artifacts(root, state, output)
+    ref = store.put("phase-review-draft", {"run": state["run"], "visit": w.current(state)["id"],
+                                           "output": deepcopy(output), "artifacts": artifacts})
+    history = store.put("phase-review-history", {"revision": revision, "ref": ref,
+                                                 "previous": previous.get("history_ref")})
+    return {"revision": revision, "ref": ref, "history_ref": history,
+            "ready": gates["ready"], "blocker_count": len(gates["blockers"])}
+
+
+def review_history_page(root: Path, head: dict[str, Any], *, limit: int = 10) -> dict[str, Any]:
+    w.require(type(limit) is int and 1 <= limit <= 50, "invalid_context", "History page limit is 1..50.")
+    from .context import Store
+    store = Store(root)
+    cursor: dict[str, Any] | None = head
+    entries = []
+    for _ in range(limit):
+        if cursor is None:
+            break
+        w.require(cursor.get("kind") == "phase-review-history", "invalid_context", "Foreign history reference.")
+        row = store.resolve(cursor)
+        entries.append({"revision": row["revision"], "ref": row["ref"]})
+        cursor = row["previous"]
+    return {"entries": entries, "next": cursor}
 
 
 def criterion_map(value: Any, criteria: list[str], label: str) -> None:
@@ -970,11 +1391,12 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
                   "invalid_evidence", f"{phase} output needs substantive {field}.")
     criteria = state["scope"]["criteria"]
     w.require(output.get("criteria") == criteria, "invalid_evidence", "Output must identify the accepted criteria.")
+    review_gates = phase_review_gates(state, output, root=root)
     if state.get("context_contract"):
         from .context_handoff import Session
         Session(root, state, persist=False).validate(output.get("context_receipt"))
     tasks = task_dag(object_file(root, tasks_path), criteria)
-    files = [output_path, *execution_evidence(root, state, tasks, output)]
+    files = [output_path, *review_gates["files"], *execution_evidence(root, state, tasks, output)]
     for t in tasks:
         for p in t["paths"]:
             path(root, p)
@@ -1114,11 +1536,16 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
             # Context is sealed in the protected packet; shared views can refresh without
             # invalidating approved normative artifacts merely because telemetry changed.
             "context": {"graph": graph, "graph_receipt": receipt, "tasks": tasks, "tasks_path": tasks_path, "dashboard_digest": content_fingerprint(dashboard)},
-            "verification": verification, "route_change": change}
+            "verification": verification, "route_change": change,
+            **({"phase_contract": w.PHASE_CONTRACT, "phase_review_gates": review_gates,
+                "review_artifacts": pin_review_artifacts(root, state, output, persist=False)}
+               if w.phase_contract(state) else {})}
 
 
 def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -> dict[str, Any]:
     packet = prevalidate(root, state, output_path, tasks_path)
+    if w.phase_contract(state):
+        packet["review_artifacts"] = pin_review_artifacts(root, state, packet["output"])
     from .snapshot_retention import register_references
     # Complete artifact bodies, before any immutable finding/context publication.
     for relative in packet["manifest"]:
