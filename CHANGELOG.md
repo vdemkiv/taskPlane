@@ -2,7 +2,7 @@
 
 ## v2.35.4 — collaborative phases and causal verification
 
-- Add opt-in collaborative phase refinement with durable holds, feedback bound to exact artifacts, and immutable supporting artifacts in the conversation and existing dashboard. Legacy runs keep their existing contract.
+- Add collaborative phase refinement for new CLI runs, with durable holds, feedback bound to exact artifacts, and immutable supporting artifacts in the conversation and existing dashboard. Legacy runs keep their existing contract.
 - Make Product readiness and completion criteria explicit, require all identified Product uncertainties to be resolved before Design, and carry DoR/DoD obligations through later phases.
 - Require causal evidence for blocked work: observations, competing hypotheses, discriminating checks and affected reruns. Preserve required RCA obligations across revisions and include current and retained Evaluate failures in shared approval/advance gates.
 - Retain explicitly authorized automatic approval through Retro while stopping on holds, unresolved feedback or failed requirements; manual policies remain manual.

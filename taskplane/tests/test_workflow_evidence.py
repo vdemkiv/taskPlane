@@ -325,6 +325,7 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
     if phase == "evaluate":
         (tmp_path/"check.txt").write_text("Observed fixture check result")
         out["criterion_results"] = {"AC1": {"status": "pass", "evidence": "check.txt", "explanation": "Observed check"}}
+        out["unknowns_and_failures"] = []
     if phase == "engineering":
         out.update(findings=[], lens_coverage=[{"lens": "quality", "reviewer": "primary", "rationale": "Boundary checks"}],
                    requirements_comparison={"AC1": "Matches observed checkpoint behavior"})

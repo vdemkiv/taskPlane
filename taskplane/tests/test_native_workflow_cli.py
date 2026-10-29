@@ -167,6 +167,9 @@ def output(workspace,state,change=None):
     _,out,_=prepare(workspace,phase)
     out.update(run=state['run'],visit=w.current(state)['id'])
     if change:out['route_change']=change
+    if w.phase_contract(state):
+        from taskplane.tests.test_workflow_local import collaborative_output
+        collaborative_output(workspace, state, out)
     path=phase+'.json';(workspace/path).write_text(json.dumps(out))
     depgraph.scan(str(workspace),decompose=True,strict=True)
     return path
