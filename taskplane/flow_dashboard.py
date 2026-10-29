@@ -5,7 +5,11 @@ from html import escape
 from copy import deepcopy
 from collections import Counter
 import json
+import base64
+import hashlib
+import os
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any
 
 if __package__:
@@ -27,6 +31,7 @@ STYLE = '''
 .tp-flow nav{display:flex;gap:20px;flex-wrap:wrap;padding:15px 0;border-block:1px solid var(--border,#ddd9d0);margin:24px 0}.tp-flow a{color:inherit;text-underline-offset:4px}.tp-flow .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:20px 0 26px}.tp-flow .metric{padding:15px 18px;border:1px solid var(--border,#ddd9d0);border-radius:9px}.tp-flow .metric b{font-size:26px;font-weight:550;letter-spacing:-.7px;display:block}
 .tp-flow section{margin:34px 0}.tp-flow .section-head{margin-bottom:14px}.tp-flow .stages{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}.tp-flow .stage{border:1px solid var(--border,#ddd9d0);border-radius:8px;padding:12px 10px;background:var(--surface-1,#f7f6f3)}.tp-flow .stage strong{display:block;font-size:12px}.tp-flow .stage small{font-size:10px;color:var(--text-secondary)}.tp-flow .stage.recorded{border-top:3px solid var(--good)}.tp-flow .stage.current{outline:2px solid var(--good)}
 .tp-flow details{border-bottom:1px solid var(--border,#ddd9d0);padding:12px 0}.tp-flow summary{cursor:pointer;font-weight:550}.tp-flow .note{margin:10px 0;padding:10px 13px;background:var(--surface-1,#f7f6f3);border-radius:5px;overflow-wrap:anywhere}.tp-flow .table-wrap{overflow:auto;border:1px solid var(--border,#ddd9d0);border-radius:9px}.tp-flow table{border-collapse:collapse;width:100%;font-size:12px}.tp-flow th,.tp-flow td{text-align:left;border-bottom:1px solid var(--border,#ddd9d0);padding:12px 14px;vertical-align:top}.tp-flow th{background:var(--surface-1,#f7f6f3);font-size:10px;letter-spacing:.6px;text-transform:uppercase}.tp-flow td code{font-size:11px;overflow-wrap:anywhere}.tp-flow pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.65 var(--font-mono,monospace);max-height:440px;overflow:auto;background:var(--surface-1,#f7f6f3);padding:14px;border-radius:7px}
+.tp-flow :is(a,button,summary):focus-visible{outline:3px solid var(--good);outline-offset:4px}.tp-flow .review-record{padding:10px 0;border-bottom:1px solid var(--border,#ddd9d0);min-width:0}.tp-flow .review-record pre{max-height:240px}
 .tp-flow .task-chain{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px}.tp-flow .task-chain span{border:1px solid var(--border,#ddd9d0);border-radius:6px;padding:7px 12px;font-size:12px}.tp-flow iframe{width:100%;height:690px;border:1px solid var(--border,#ddd9d0);border-radius:10px;background:var(--surface-2,#fff)}.tp-flow .review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.tp-flow .review{border:1px solid var(--border,#ddd9d0);border-radius:9px;padding:16px;min-width:0}.tp-flow footer{border-top:1px solid var(--border,#ddd9d0);padding:20px 0;color:var(--text-secondary);font-size:11px;overflow-wrap:anywhere}
 @media(prefers-color-scheme:dark){.tp-flow{--good:#93cab4;--good-bg:#243d31;--warn:#e7ac81}}
 @media(max-width:760px){.tp-flow .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.tp-flow .stages{grid-template-columns:repeat(2,minmax(0,1fr))}.tp-flow .review-grid{grid-template-columns:1fr}.tp-flow .topline{align-items:flex-start}.tp-flow nav{gap:12px}.tp-flow iframe{height:760px}}
@@ -154,6 +159,92 @@ def headline(m: dict[str, Any]) -> str:
     return f"taskplane: {m['status']} · {m['phase']} · {len(m['tasks'])} tasks · {len(m['reviews'])} lens reviews · {_number((m.get('tokens') or {}).get('total_tokens'))} flow tokens"
 
 
+def _review_link(ws: str, m: dict[str, Any], ref: Any, label: str) -> str:
+    """Link only digest-validated immutable JSON, never an artifact-supplied URL."""
+    from taskplane.context import Store
+    from taskplane.workflow import Refusal
+    if not isinstance(ref, dict):
+        return '<span class="muted">Immutable reference unavailable</span>'
+    try:
+        store = Store(Path(ws))
+        store.node(ref)
+        target = Path(m.get('snapshot', {}).get('presentation_target') or Path(ws)/'.taskplane/dashboard.html')
+        href = quote(os.path.relpath(store.path(ref['sha256']), target.parent), safe='/')
+        return '<a href="'+_e(href)+'" target="_blank" rel="noopener noreferrer">'+_e(label)+'</a>'
+    except (Refusal, OSError, ValueError):
+        return '<span class="muted">Immutable reference unavailable: '+_e(ref.get('sha256'))+'</span>'
+
+
+def _phase_review(ws: str, m: dict[str, Any]) -> str:
+    from taskplane.context_views import review_projection
+    from taskplane.context import Store
+    from taskplane.workflow import Refusal
+    state = m.get('workflow') or {}
+    html = '<section id="phase-review"><h2>Phase review</h2>'
+    if not state.get('visits'):
+        return html+'<p>Legacy observation: phase review evidence unavailable.</p></section>'
+    try:
+        review = review_projection(Path(ws), state)
+    except (Refusal, OSError, ValueError, KeyError) as exc:
+        return html+'<p role="status">Readiness unknown: '+_e(exc)+'</p></section>'
+    if review['status'] == 'legacy':
+        return html+'<p>'+_e(review['note'])+'</p></section>'
+    html += '<p>'+_e(review['phase'])+' · revision '+_e(review['revision'])+' · '+_e(review['status'])+'</p>'
+    html += '<p role="status"><strong>'+('Ready for decision' if review['ready'] else 'Not ready')+'</strong>'
+    html += ' · Approval: '+_e(review['approval'])+' · Mode: '+_e(state.get('approval_policy', {}).get('mode', 'manual'))+'</p>'
+    html += '<p class="muted">Readiness checked when this snapshot was rendered. Viewing does not approve or release a hold.</p>'
+    hold = review.get('hold') or {}
+    html += '<div class="note">Durable user hold: <strong>'+('Active' if hold.get('active') else 'Inactive')+'</strong>'
+    if hold:
+        html += '<pre>'+_e(json.dumps(hold, ensure_ascii=False, indent=2))+'</pre>'
+    html += '</div>'
+    for key, label in [('blockers', 'Continuation blockers'), ('dor', 'Definition of Ready'),
+                       ('dod', 'Definition of Done'), ('run_dod', 'Run DoD'),
+                       ('uncertainties', 'Uncertainties and resolutions'), ('feedback', 'Feedback and dispositions'),
+                       ('causes', 'Causal investigation and verification'), ('repeated_attempts', 'Repeated unchanged attempts')]:
+        group = review[key]
+        html += '<details'+(' open' if key in {'blockers', 'dor', 'dod'} else '')+'><summary>'+label+' ('+_e(group['total'])+')</summary>'
+        for row in group['items']:
+            html += '<div class="review-record"><pre>'+_e(json.dumps(row, ensure_ascii=False, indent=2) if isinstance(row, dict) else row)+'</pre></div>'
+        if not group['total']:
+            html += '<p class="muted">No records.</p>'
+        if group['omitted']:
+            html += '<p class="muted">'+_e(group['omitted'])+' records omitted from this bounded summary; use the immutable draft or sealed output.</p>'
+        html += '</details>'
+    html += '<details open><summary>Artifacts and immutable history</summary>'
+    for artifact in review['artifacts']['items']:
+        html += '<article class="review-record"><h3>'+_e(artifact.get('id'))+' · revision '+_e(artifact.get('revision'))+'</h3>'
+        html += '<p>'+_e(artifact.get('purpose'))+'</p><p>'+_e(artifact.get('fallback'))+'</p>'
+        html += '<p>Criteria: '+_e(artifact.get('criteria'))+' · Media: '+_e(artifact.get('media_type'))+'</p>'
+        html += '<p>SHA-256: <code>'+_e(artifact.get('sha256'))+'</code></p>'
+        html += _review_link(ws, m, artifact.get('body_ref'), 'Pinned artifact bytes (base64 JSON)')
+        try:
+            # Large and binary media use the caption/link; never execute HTML/SVG.
+            ref = artifact.get('body_ref')
+            if not ref or not str(artifact.get('media_type', '')).startswith('text/') or ref.get('bytes', 32769) > 32768:
+                raise ValueError('Preview unavailable; use pinned bytes.')
+            body = Store(Path(ws)).resolve(ref)
+            if body.get('bytes', 32769) > 32768:
+                raise ValueError('Preview exceeds the byte limit.')
+            raw = base64.b64decode(body['data'], validate=True)
+            if hashlib.sha256(raw).hexdigest() != artifact.get('sha256'):
+                raise ValueError('Pinned artifact digest differs.')
+            html += '<pre>'+_e(raw[:4096].decode('utf-8', errors='replace'))+'</pre>'
+            if len(raw) > 4096:
+                html += '<p class="muted">Text preview limited to 4,096 bytes.</p>'
+        except (Refusal, OSError, ValueError, KeyError) as exc:
+            html += '<p class="muted">'+_e(exc)+'</p>'
+        html += '</article>'
+    if review['artifacts']['omitted']:
+        html += '<p>'+_e(review['artifacts']['omitted'])+' artifact records omitted; use the immutable draft.</p>'
+    html += '<p>'+_review_link(ws, m, review.get('draft_ref'), 'Current published draft JSON')+'</p>'
+    for row in review['history']['entries']:
+        html += '<p>'+_review_link(ws, m, row['ref'], 'Historical draft revision '+str(row['revision'])+' JSON')+'</p>'
+    if review['history']['next']:
+        html += '<p>'+_review_link(ws, m, review['history']['next'], 'Continue immutable history (bounded context read)')+'</p>'
+    return html+'</details></section>'
+
+
 def _workflow(m: dict[str, Any]) -> str:
     authority = m.get('workflow') or {}
     header = ''
@@ -278,7 +369,7 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         status = 'Confirmed by adapter' if value is True else 'Unverified' if value is False else 'Unknown'
         header += f'<tr><td>{label}</td><td>{status}</td></tr>'
     header += '</tbody></table></div></details>'
-    header += '<nav aria-label="Dashboard sections">'+''.join(f'<a href="#{key}">{name}</a>' for key, name in [('workflow','Workflow'),('decomposition','Tasks'),('dependencies','Dependency graph'),('lenses','Lenses'),('telemetry','Tokens'),('evidence','Evidence')])+'</nav>'
+    header += '<nav aria-label="Dashboard sections">'+''.join(f'<a href="#{key}">{name}</a>' for key, name in [('workflow','Workflow'),('phase-review','Phase review'),('decomposition','Tasks'),('dependencies','Dependency graph'),('lenses','Lenses'),('telemetry','Tokens'),('evidence','Evidence')])+'</nav>'
     for error in m.get('evidence_errors',[]):
         header += f'<p role="status">{_e(error)}</p>'
     stages = _workflow(m)
@@ -364,7 +455,7 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         evidence += f'<details><summary>{_e(path)}</summary>{_evidence(ws,path,m)}</details>'
     evidence += '</section>'
     footer = f'<footer>Run {_e(m["run"])} · Snapshot of recorded evidence and current native counters. Regenerate the dashboard to refresh. Historical findings remain visible after fixes.</footer>'
-    return [('Overview', header),('Workflow',stages),('Task decomposition',plan),('Dependency graph',graph),('Lens reviews',lenses),('Token usage',tokens),('Evidence and Retro',evidence+footer)]
+    return [('Overview', header),('Workflow',stages),('Phase review',_phase_review(ws,m)),('Task decomposition',plan),('Dependency graph',graph),('Lens reviews',lenses),('Token usage',tokens),('Evidence and Retro',evidence+footer)]
 
 
 def render(ws: str, m: dict[str, Any] | None = None) -> str:

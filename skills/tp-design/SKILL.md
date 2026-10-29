@@ -17,6 +17,15 @@ existing decisions. Describe the smallest workable approach, the interfaces and
 data it changes, meaningful alternatives, risks, and how success will be tested.
 Use a diagram or mockup only if it makes a decision easier.
 
+Apply the shared [collaborative refinement and readiness policy](../tp-go/references/shared-flow.md#collaborative-refinement-and-readiness).
+Delivery Design DoR requires current accepted Product with every identified
+uncertainty resolved. Standalone Design records the inputs actually available.
+Design DoD settles material design questions and maps approach, interfaces, failure
+behavior and verification to criteria and applicable run DoD. Use mockups, diagrams
+or prototypes when they help review a decision; identify each artifact's purpose,
+criteria and immutable revision, with a readable fallback. Preserve feedback on
+the version reviewed. Previewing a design never accepts it.
+
 Follow [the shared flow](../tp-go/references/shared-flow.md) for standalone Design
 and delivery alike. Start/reuse the relevant run at Design, inspect dependencies
 and source decomposition, attach the design task decomposition and evidence, and
@@ -30,7 +39,7 @@ Present the design and resolve this checkpoint through the shared approval polic
 via [delivery](../tp-go/SKILL.md). Reuse an existing valid Design approval.
 
 Record useful milestones and refresh the shared dashboard throughout Design.
-Missing observations are advisory and do not invalidate the design.
+Missing optional telemetry is advisory; required readiness evidence remains mandatory.
 
 ## Shared delivery state
 

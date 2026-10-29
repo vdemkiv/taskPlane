@@ -525,6 +525,8 @@ def automatic_decision(state: dict[str, Any], assessment: dict[str, Any]) -> dic
     packet = stage["packet"]
     w.require(content_fingerprint(assessment["binding"]) == content_fingerprint(w.binding(state, packet)) and assessment.get("policy_digest") == policy["digest"],
               "stale_checkpoint", "Assessment belongs to an old policy or checkpoint.")
+    from .workflow_evidence import require_phase_ready
+    require_phase_ready(state)
     outer = policy["authorized_scope"]
     w.require(state["scope"]["criteria"] == outer["criteria"]
               and state["scope"].get("verification_inputs", []) == outer.get("verification_inputs", [])

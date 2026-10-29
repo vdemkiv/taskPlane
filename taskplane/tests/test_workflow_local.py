@@ -18,6 +18,185 @@ def setup(workspace, *, entry="product", standalone=False):
     return c,s
 
 
+def collaborative_output(workspace, state, output):
+    import hashlib
+    from taskplane.tests.test_workflow_evidence import collaborative_review
+    revision = w.current(state).get('phase_review', {}).get('revision', 0) + 1
+    # Native seven-phase fixtures intentionally edit app.py during Build.
+    # Their stable observed check is the review evidence, not that future source.
+    path = 'check.txt' if (workspace/'check.txt').exists() else 'app.py'
+    evidence = {'path': path, 'sha256': hashlib.sha256((workspace/path).read_bytes()).hexdigest()}
+    output['phase_review'] = collaborative_review(state, evidence, revision)
+    return output
+
+
+def collaborative_setup(workspace):
+    initial, output, _ = prepare(workspace)
+    (workspace/'mock.txt').write_text('Published mock version one')
+    initial['scope']['paths']['product'].append('mock.txt')
+    c = h.Controller(workspace, 'root', h.installed_adapter('codex'))
+    state = c.start({'scope': initial['scope'], 'request_reference': 'fixture/collaboration'},
+                    phase_contract=w.PHASE_CONTRACT)
+    output.update(run=state['run'], visit=w.current(state)['id'])
+    return c, state, collaborative_output(workspace, state, output)
+
+
+def refinement(state, operation, payload, *, event=None, human=True):
+    from datetime import datetime, timezone
+    request = dict(schema='taskplane.refinement/v1', event_id=event or operation+'-'+str(state['revision']),
+        run=state['run'], visit=w.current(state)['id'], expected_revision=state['revision'],
+        draft_revision=w.current(state).get('phase_review', {}).get('revision', 0),
+        operation=operation, payload=payload)
+    if human:
+        request.update(source=dict(kind='conversation', conversation=state['root'], actor='user', automatic=False,
+            reference='fixture/message/'+request['event_id'], observed_at=datetime.now(timezone.utc).isoformat()),
+            excerpt='Release this hold and continue.' if operation == 'release' else 'Stay here and explore the current work.',
+            recorder='root_orchestrator')
+    return request
+
+
+def refine(c, state, request):
+    return c.refine(state['run'], request['expected_revision'], json.dumps(request))
+
+
+def collaborative_seal(c, state, output):
+    from taskplane import depgraph
+    from taskplane.context_handoff import Session, consume_required
+    depgraph.scan(str(c.workspace), decompose=True, strict=True)
+    output['context_receipt'], _ = consume_required(Session(c.workspace, state))
+    (c.workspace/'product.json').write_text(json.dumps(output))
+    state = c.apply('submit', state['run'], expected_revision=state['revision'], output='product.json', tasks='tasks.json')
+    present(c, state)
+    return state
+
+
+def test_collaborative_hold_survives_wait_restart_and_sealed_controls(tmp_path):
+    c, state, output = collaborative_setup(tmp_path)
+    state = collaborative_seal(c, state, output)
+    state = decide(c, state)
+    approved, packet = deepcopy(state['decisions']), deepcopy(w.current(state)['packet'])
+    request = refinement(state, 'hold', {'reason': 'Compare options'})
+    state = refine(c, state, request)
+    resumed = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
+    local.Harness(tmp_path, 'root').wait(state, 'Actual missing answer')
+    local.Harness(tmp_path, 'root').update(waiting=None)
+    assert w.current(resumed.report())['hold']['active']
+    present(c, state)
+    with pytest.raises(w.Refusal, match='hold'):
+        c.apply('advance', state['run'], expected_revision=state['revision'], phase='design')
+    with pytest.raises(w.Refusal, match='sealed'):
+        c.guard({'tool_name':'Write', 'tool_input':{'path':'product.json'}}, state['run'])
+    state = refine(c, state, refinement(state, 'release', {'hold_event':request['event_id']}))
+    assert state['decisions'] == approved and w.current(state)['packet'] == packet
+    present(c, state)
+    assert w.current(c.apply('advance', state['run'], expected_revision=state['revision'], phase='design'))['phase'] == 'design'
+
+
+@pytest.mark.parametrize('defect', ['actor', 'automatic', 'foreign', 'future', 'revision', 'draft', 'release'])
+def test_collaborative_refinement_refuses_bad_sources_and_bindings(tmp_path, defect):
+    c, state, _ = collaborative_setup(tmp_path)
+    request = refinement(state, 'hold', {'reason':'Explore'})
+    if defect == 'actor': request['source']['actor'] = 'assistant'
+    elif defect == 'automatic': request['source']['automatic'] = True
+    elif defect == 'foreign': request['visit'] = 'elsewhere'
+    elif defect == 'future': request['source']['observed_at'] = '2999-01-01T00:00:00Z'
+    elif defect == 'revision': request['expected_revision'] += 1
+    elif defect == 'draft': request['draft_revision'] += 1
+    else: request.update(operation='release', payload={'hold_event':'absent'})
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal): refine(c, state, request)
+    assert c._path().read_bytes() == before
+
+
+def test_collaborative_drafts_resolve_actual_historical_targets_and_keep_sealed_bytes(tmp_path):
+    import hashlib
+    from taskplane import workflow_evidence as evidence
+    c, state, output = collaborative_setup(tmp_path)
+    output['phase_review']['uncertainties'] = [{'id':'U1', 'criteria':['AC1'], 'question':'Which platform?', 'state':'unresolved'}]
+    artifact = dict(id='mock', path='mock.txt', revision=1, sha256=hashlib.sha256((tmp_path/'mock.txt').read_bytes()).hexdigest(),
+                    purpose='Compare options', media_type='text/plain', fallback='Read mock', criteria=['AC1'])
+    output['phase_review']['artifacts'] = [artifact]
+    (tmp_path/'product.json').write_text(json.dumps(output))
+    state = refine(c, state, refinement(state, 'draft', {'output':'product.json'}, human=False))
+    assert not w.current(state)['phase_review']['ready']  # Discovery remains possible.
+    request = refinement(state, 'feedback', {})
+    feedback = dict(id='FB1', criteria=['AC1'], source=local.refinement_source(state, request),
+                    target={'id':'mock', 'revision':1, 'digest':artifact['sha256']}, disposition='open')
+    request['payload'] = feedback
+    fabricated = deepcopy(request); fabricated['payload']['target']['digest'] = 'a'*64
+    with pytest.raises(w.Refusal, match='published'): refine(c, state, fabricated)
+    state = refine(c, state, request)
+    output['phase_review']['revision'] = 2
+    output['phase_review']['feedback'] = [feedback]
+    (tmp_path/'mock.txt').write_text('Published mock version two')
+    artifact.update(revision=2, sha256=hashlib.sha256((tmp_path/'mock.txt').read_bytes()).hexdigest())
+    (tmp_path/'product.json').write_text(json.dumps(output))
+    state = refine(c, state, refinement(state, 'draft', {'output':'product.json'}, human=False))
+    c._feedback_target(state, feedback['target'])
+    assert evidence.review_history_page(tmp_path, w.current(state)['phase_review']['history_ref'])['entries'][1]['revision'] == 1
+    output['phase_review']['feedback'] = []
+    output['phase_review']['revision'] = 3
+    (tmp_path/'product.json').write_text(json.dumps(output))
+    with pytest.raises(w.Refusal, match='erase'): refine(c, state, refinement(state, 'draft', {'output':'product.json'}, human=False))
+
+
+@pytest.mark.parametrize('review', [None, [], {}, {'feedback':[{}], 'uncertainties':[]}])
+def test_collaborative_malformed_draft_refuses_without_mutating_state(tmp_path, review):
+    c, state, output = collaborative_setup(tmp_path)
+    output['phase_review'] = review
+    (tmp_path/'product.json').write_text(json.dumps(output))
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal):
+        refine(c, state, refinement(state, 'draft', {'output':'product.json'}, human=False))
+    assert c._path().read_bytes() == before
+
+
+def test_collaborative_target_lookup_reports_bound_instead_of_false_absence(tmp_path, monkeypatch):
+    from taskplane import workflow_evidence as evidence
+    c, state, output = collaborative_setup(tmp_path)
+    (tmp_path/'product.json').write_text(json.dumps(output))
+    state = refine(c, state, refinement(state, 'draft', {'output':'product.json'}, human=False))
+    calls = []
+    def bounded(root, cursor, *, limit):
+        calls.append(limit)
+        return {'entries':[], 'next':cursor}
+    monkeypatch.setattr(evidence, 'review_history_page', bounded)
+    with pytest.raises(w.Refusal, match='50 published draft lookup bound'):
+        c._feedback_target(state, {'id':'missing','revision':1,'digest':'a'*64})
+    assert calls == [50]
+
+
+def test_collaborative_automated_feedback_requires_declared_history_and_immutable_log(tmp_path):
+    from taskplane import context_reuse, workflow_evidence as evidence, primitives
+    from taskplane.context import Store
+    c, state, output = collaborative_setup(tmp_path)
+    store = Store(tmp_path)
+    binding = dict(id='attempt', check_id='CHECK', run=state['run'], visit=w.current(state)['id'], kind='unit', environment='local')
+    result = {'returncode':1, 'stdout':'Observed counterexample', 'stderr':''}
+    log = store.put('verification-log', {'path':'mock.txt', 'text':json.dumps(result)})
+    record = context_reuse.record(store, {}, status='fail', producer='fixture-observation', result=result,
+                                 verification=binding, log_ref=log, log_path='mock.txt')
+    history = {'schema':evidence.VERIFICATION_HISTORY, 'run':state['run'], 'attempts':[
+        {**binding, 'record_ref':record, 'log_ref':log, 'status':'fail'}]}
+    (tmp_path/'mock.txt').write_text(json.dumps(history))
+    state = collaborative_seal(c, state, output)
+    packet = deepcopy(w.current(state)['packet'])
+    request = refinement(state, 'feedback', {}, human=False)
+    request.update(source={'kind':'automated_check','reference':record['sha256'], 'record_ref':record,
+                           'history_path':'mock.txt'}, excerpt='Check observed a counterexample.')
+    request['payload'] = {'id':'AUTO', 'criteria':['AC1'], 'source':{'kind':'automated_check','reference':record['sha256'],
+                          'excerpt':request['excerpt']}, 'target':{'id':'draft','revision':1,
+                          'digest':primitives.content_fingerprint(packet['output'])}, 'disposition':'open'}
+    forged = context_reuse.record(store, {}, status='unknown', producer='unrecorded-fixture', result={},
+                                 verification=binding, log_ref=log, log_path='mock.txt')
+    bad = deepcopy(request)
+    bad['source'].update(record_ref=forged, reference=forged['sha256'])
+    with pytest.raises(w.Refusal, match='actual run-bound check'): refine(c, state, bad)
+    state = refine(c, state, request)
+    assert w.current(state)['packet'] == packet
+    with pytest.raises(w.Refusal, match='Open material feedback'): c._phase_ready(state)
+
+
 def test_source_diagnosis_discloses_unchecked_reference_integrity(tmp_path, monkeypatch):
     (tmp_path / 'app.py').write_text('source')
     (tmp_path / '.taskplane').mkdir()

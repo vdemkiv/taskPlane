@@ -28,6 +28,15 @@ Distinguish product readiness from delivered implementation. A completed spec
 means the outcome is defined; it does not mean the product has been built or
 validated. Surface only questions that materially affect the result.
 
+Apply the shared [collaborative refinement and readiness policy](../tp-go/references/shared-flow.md#collaborative-refinement-and-readiness).
+Product DoR permits discovery with incomplete criteria. Refine concrete scenarios,
+functional and relevant nonfunctional criteria, and phase-applicable run DoD with
+the user; useful artifacts include examples, constraints and a resolution summary.
+Product DoD requires every identified uncertainty resolved before Design by observed
+evidence or an actual product decision. An owner, planned validation or optional
+label is not resolution. Record each resolution and Design readiness separately
+from approval; future delivery checks remain obligations for their named phases.
+
 Use native tools for inspection and document authoring. Product-only work does
 not authorize implementation. For an already authorized delivery, return the
 criteria and dashboard for Product checkpoint acceptance under the shared policy before

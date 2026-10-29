@@ -94,7 +94,22 @@ def native_result_valid(workspace: Path, state: dict[str, Any], task_id: str,
         return False
 
 
-def result_valid(workspace: Path, state: dict[str, Any], task_id: str, seen: set[str] | None = None) -> bool:
+def result_valid(workspace: Path, state: dict[str, Any], task_id: str, seen: set[str] | None = None,
+                 *, _memo: dict[tuple[str, frozenset[str]], bool] | None = None) -> bool:
+    # Only a single status projection supplies this memo. Authority checks and
+    # subsequent calls always validate again; recursion ancestry remains part of
+    # the key so a cached result cannot conceal a dependency cycle.
+    key = (task_id, frozenset(seen or ()))
+    if _memo is not None and key in _memo:
+        return _memo[key]
+    valid = _result_valid(workspace, state, task_id, seen, _memo=_memo)
+    if _memo is not None:
+        _memo[key] = valid
+    return valid
+
+
+def _result_valid(workspace: Path, state: dict[str, Any], task_id: str, seen: set[str] | None,
+                  *, _memo: dict[tuple[str, frozenset[str]], bool] | None) -> bool:
     seen = set(seen or ())
     if task_id in seen:
         return False
@@ -121,7 +136,7 @@ def result_valid(workspace: Path, state: dict[str, Any], task_id: str, seen: set
                 and (not result.get("grant") or "input_manifest" in result)
                 and result.get("input_manifest", {}) == e.manifest(workspace, list(result.get("input_manifest", {})))
                 and result.get("dependency_results", {}) == dependency_results(state, definition["dependencies"])
-                and all(result_valid(workspace, state, d, seen) for d in definition["dependencies"]))
+                and all(result_valid(workspace, state, d, seen, _memo=_memo) for d in definition["dependencies"]))
     except w.Refusal:
         return False
 
@@ -777,7 +792,8 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
     return result
 
 
-def lens_summary(state: dict[str, Any], workspace: Path) -> list[dict[str, Any]]:
+def lens_summary(state: dict[str, Any], workspace: Path, *,
+                 _memo: dict[tuple[str, frozenset[str]], bool] | None = None) -> list[dict[str, Any]]:
     result = []
     phase = w.current(state)["phase"]
     capacity = state.get("worker_capacity", {})
@@ -795,7 +811,7 @@ def lens_summary(state: dict[str, Any], workspace: Path) -> list[dict[str, Any]]
     definitions = [row for row in e.context_tasks(state)
                    if row.get("phase", phase) == phase and row.get("review_lens")]
     valid_results = {row["id"]: state["task_results"][row["id"]] for row in definitions
-                     if row.get("execution") == "native_required" and result_valid(workspace, state, row["id"])}
+                     if row.get("execution") == "native_required" and result_valid(workspace, state, row["id"], _memo=_memo)}
     conflicts = e.native_lens_conflicts(definitions, valid_results)
     for definition in definitions:
         accepted = state.get("task_results", {}).get(definition["id"], {})
@@ -816,6 +832,7 @@ def lens_summary(state: dict[str, Any], workspace: Path) -> list[dict[str, Any]]
 
 
 def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, Any]:
+    memo: dict[tuple[str, frozenset[str]], bool] = {}
     rows = list(state.get("workers", {}).values())
     scheduling = []
     limit = state.get('worker_capacity', {}).get('effective_limit')
@@ -826,11 +843,11 @@ def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, A
             if definition.get('phase', phase) != phase:
                 continue
             key = definition['id']
-            missing = [d for d in definition['dependencies'] if not result_valid(workspace, state, d)]
+            missing = [d for d in definition['dependencies'] if not result_valid(workspace, state, d, _memo=memo)]
             candidate = {'paths': definition['paths'],
                          'input_manifest': set(e.read_inputs(state, definition)) - set(definition['paths']),
                          'dependency_manifest': dependency_manifest(state, definition['dependencies'])}
-            reason = ('accepted' if result_valid(workspace, state, key) else
+            reason = ('accepted' if result_valid(workspace, state, key, _memo=memo) else
                       'active attempt' if any(r['task_id'] == key for r in active) else
                       'prerequisites: ' + ', '.join(missing) if missing else
                       'root execution: ' + definition['execution_reason'] if definition.get('execution') == 'root' else
@@ -844,7 +861,7 @@ def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, A
                                'reference': state.get('worker_capacity', {}).get('reference')})
     return {"capacity": state.get("worker_capacity"), "default_limit": None,
             "scheduling": scheduling,
-            "lens_coverage": lens_summary(state, workspace) if workspace is not None else [],
+            "lens_coverage": lens_summary(state, workspace, _memo=memo) if workspace is not None else [],
             "pending": sum(r["state"] in {"prepared", "launch_pending", "unknown"} for r in rows),
             "live": sum(r["state"] in {"bootstrapping", "running", "cancel_requested"} for r in rows),
             "accepted": sum(r["state"] == "accepted" for r in rows),

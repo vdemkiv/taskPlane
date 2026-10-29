@@ -138,7 +138,7 @@ broad request to implement the goal is not acceptance of future unseen outputs.
 Explicit additional instructions can authorize automatic decisions under the policy below.
 Reuse an existing approval only while its root, run, visit, revision, scope and
 artifact binding remain valid. Never ask again for the same valid checkpoint.
-Work produced, evidence validated and human approved are distinct states.
+Work produced, evidence validated and accepted under the applicable policy are distinct states.
 
 The orchestrator prepares work and requests transitions. It cannot manufacture
 human approval or authorize its own automatic policy. Progress notes, task completion, dashboard edits, workspace receipts and
@@ -218,21 +218,91 @@ does not prevent this control action; exact CLI help/status, read-only diagnosti
 and fresh bootstrap proposals remain available. Do not ask the user to disable
 hooks or reopen the old checkpoint merely to start the run they requested.
 
-| Phase | Required output |
-| --- | --- |
-| Product | Scope, stable acceptance criteria, non-goals, dependencies, task outline, finding references |
-| Design | Approach, alternatives, interfaces/state, authority boundaries, failure/recovery, graph impact, acceptance test map |
-| Plan | Task DAG, ownership, exact Build write scope, criterion coverage, verification strategy, integration order |
-| Build | Change inventory, task/criterion map, actual Build checks, known gaps |
-| Evaluate | Each criterion's pass/fail/unknown status, existing evidence files and explanation, source/test fingerprints, regression evidence, unknowns/failures |
-| Engineering | Findings and severity, actual lens coverage, source locations, requirements comparison, remaining risk |
-| Retro | Accepted outcome, actual verification, deferred items with owners, lessons |
+| Phase | Definition of Ready (DoR) | Definition of Done (DoD) and useful artifacts |
+| --- | --- | --- |
+| Product | Goal and intended user are clear enough to investigate; gaps are visible | Refined scenarios, functional/relevant nonfunctional criteria, scope/non-goals, dependencies, task outline, finding references and run DoD; every identified uncertainty resolved with its evidence or actual decision |
+| Design | Current accepted Product with all identified uncertainties resolved; standalone Design records its actual inputs without invented predecessors | Approach, meaningful alternatives, interfaces/state, authority boundaries, failure/recovery, graph impact and criterion test map; settled material design questions; mockups, diagrams or prototypes when useful |
+| Plan | Accepted Design and resolved implementation prerequisites | Owned task DAG, exact read/write scope, dependencies, criterion/run-DoD coverage, proportionate verification strategy and integration order |
+| Build | Accepted Plan, satisfied task prerequisites and required permissions | Exact change inventory, task/criterion map, current required passing checks, verified causal corrections and explicit gaps; demos and reproduction results where useful |
+| Evaluate | Candidate source and evidence match accepted Build | Each criterion's pass/fail/unknown result, evidence and explanation; applicable run DoD, source/test fingerprints, discriminating regressions and affected reruns; unknowns/failures remain explicit |
+| Engineering | Current candidate, required review inputs and agreed lens scope; standalone review uses the requested comparison | Findings/severity, actual lens coverage, source locations, requirements comparison and remaining risk; blocking corrections verified, with supported dispositions and causal references |
+| Retro | Required preceding visits accepted and actual outcome known | Accepted outcome, actual verification, lessons and owned nonblocking follow-ups; no required unresolved obligation relabelled as a deferred item |
 
 Keep outputs proportionate, but preserve these distinctions. The validator checks
-structure and bindings; it does not prove the truth of an agent's claims. Human
-review and appropriate checks remain necessary. Tokens are advisory: missing usage
+structure and bindings; it does not prove the truth of an agent's claims. Evidence
+review and appropriate checks remain necessary under either approval mode. Tokens are advisory: missing usage
 is unknown, never zero, and cannot approve or reject work. Missing required evidence
 blocks submission; optional usage failures do not erase a valid human decision.
+
+## Collaborative refinement and readiness
+
+New CLI-created runs freeze `phase_contract: "collaborative/v1"`. Existing runs
+without it retain their original contract and approvals; never backfill gate
+outcomes or remove/change the marker to bypass readiness. The phase output adds
+one `phase_review` object; [CLI contracts](../../../docs/cli-reference.md#collaborative-refinement)
+define its fields and the root-only `flow refine` envelope.
+
+Work within the current scope until the result is reviewable. A blocked draft can
+be published while criteria, evidence or decisions are incomplete; readiness gates
+must not prevent the investigation needed to satisfy them. Show its revision,
+addressed feedback and remaining blockers. DoR/DoD outcomes and acceptance are
+separate: required `unmet`, `unknown` or unsupported items cannot be called ready
+or done. `not_applicable` needs the same gate's accepted Product applicability
+condition and evidence; a caller's `ready` flag cannot waive an obligation.
+
+Product refines scenarios, criteria and run DoD with the user, reusing settled
+answers and asking only for decisions or missing inputs the evidence cannot settle.
+Run DoD names applicable phases: defining an Evaluate/Retro verification obligation
+does not claim implementation complete in Product. Accepted Product freezes that
+baseline. Every identified Product uncertainty must be resolved before Design,
+including items labelled optional. An owner, validation plan or nonblocking label
+is insufficient. Evidence can settle a factual question; an observed product choice
+can settle a decision, but accepting a factual assumption does not make it true.
+
+Offer feedback and artifact review in all seven phases without inserting a timer,
+mandatory question or extra approval. Optional collaboration does not create a hold.
+When the user explicitly asks to stay in the phase, persist a `hold` with the actual
+source and reason. It survives tool activity and restart and blocks positive decisions,
+advance and finish even after acceptance. `flow wait` is only a transient missing-input
+wait. An explicit `release` names the active hold; it clears that hold, never approves
+output or resumes suspended policy. Ambiguous release intent needs clarification.
+
+Record material feedback against an actual published artifact, criterion or draft
+ID/revision/digest and retain its observed human or automated source. Keep original
+source/target and show open, addressed, deferred or declined disposition with evidence;
+addressed feedback names the later resulting revision. Open material feedback blocks
+readiness, including feedback after sealing. Deferral cannot settle a Product
+uncertainty, waive a required gate or release a hold. Feedback and viewing never
+approve. Editing sealed normative output requires the existing negative-decision
+correction route; comments alone do not reopen it. Changed accepted inputs invalidate
+affected descendants through the existing route, preserving historical decisions.
+
+For a failure in any phase, reuse its check/finding ID and a proportionate causal
+record: expected behavior, observations/reproduction, competing hypotheses, supported
+cause, containment versus correction and affected obligations. `investigating` and
+`contained` are not verified closure. A verified fix needs current input fingerprints,
+cause/correction evidence, an observed failing-before/passing-after regression or
+non-code counterexample that discriminates the failure, and every affected check
+rerun. Unrelated passing tests or an RCA essay do not close it. Keep failed attempts;
+unchanged failure/input/command attempts are surfaced with the prior result. Retry
+only for changed inputs or an explicit diagnostic hypothesis, not a global retry
+quota. Reuse the causal reference downstream rather than seven duplicate essays.
+
+Keep draft bodies, causal references and exact artifact bytes in the existing
+content-addressed store. Use immutable `body_ref` for an older artifact, never its
+current workspace bytes. Keep purpose, criteria, revision, media type and readable
+fallback; preview availability is optional and viewing has no decision effect. Read
+bounded history pages/references on demand; preserve lookup-limit refusals rather
+than claiming missing history. Do not create unlimited numbered files or widen scope.
+
+The Controller evaluates current files, typed failed-check history and material
+feedback in addition to sealed gate metadata; use its shared `phase_readiness` for
+presentation. Structure/binding validation does not prove causal truth or authenticate
+human origin. Observed events cannot intercept messages the host has not delivered.
+With valid explicit policy, current passing evidence and no hold, eligible phases
+continue through Retro without repeated human prompts. Stop phases, revocation,
+staleness, required checks and existing policy suspension/resumption rules still apply.
+Supporting automatic approval never enables it for a manual run.
 
 ## Findings-led routes and shared views
 

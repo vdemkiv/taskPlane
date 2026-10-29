@@ -26,6 +26,14 @@ Reuse authorization already given. Missing telemetry or a
 review quota must not block authorized implementation. Native host permissions
 remain in force.
 
+Apply the shared [collaborative refinement and readiness policy](../tp-go/references/shared-flow.md#collaborative-refinement-and-readiness).
+Build DoR is the accepted Plan, satisfied task prerequisites and required permissions.
+Build DoD is a scoped change inventory, criterion/run-DoD mapping and current required
+passing checks, with causal fixes verified and gaps explicit. Use demos, reproduction
+results and focused regression evidence when useful. A passing unrelated check does
+not close a prior failure; retain its cause and discriminating before/after result,
+then rerun affected verification. Do not rerun the full suite for each prose change.
+
 ## Shared delivery state
 
 Follow [the shared flow](../tp-go/references/shared-flow.md) for every execution.

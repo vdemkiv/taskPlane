@@ -61,6 +61,14 @@ root orchestrator prepares and carries out that approved transition.
 
 ## Shared delivery state
 
+Apply the shared [collaborative refinement and readiness policy](../tp-go/references/shared-flow.md#collaborative-refinement-and-readiness).
+Engineering DoR is the current candidate, required review evidence and agreed lens
+scope; standalone review uses the requested source/comparison. DoD records findings,
+actual coverage, criterion/applicable run-DoD comparison, supported dispositions and
+remaining risk. Discuss findings with source and evidence references. Reuse causal
+records and verify discriminating corrections for blocking findings; containment or
+unrelated passing checks cannot establish closure. Review does not grant repair writes.
+
 These defaults apply equally to standalone Engineering and delivery. Use one run,
 task decomposition, dependency graph and dashboard for the requested scope. The
 root orchestrator owns stage advancement; a review-only request still ends at review.

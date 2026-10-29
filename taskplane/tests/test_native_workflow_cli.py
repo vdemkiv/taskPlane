@@ -42,6 +42,17 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
         assert returned['remaining_required'] == 0
         target = workspace/args[args.index('--output')+1]
         data = json.loads(target.read_text()); data['context_receipt'] = returned['context_receipt']
+        state = cli(workspace, host, 'report', root=root, environment=environment)['workflow']
+        if w.phase_contract(state):
+            from taskplane.tests.test_workflow_local import collaborative_output
+            if 'phase_review' not in data:
+                collaborative_output(workspace, state, data)
+            else:
+                from taskplane.context import Store
+                head = w.current(state).get('phase_review')
+                previous = Store(workspace).resolve(head['ref'])['output'] if head else {}
+                if {k:v for k,v in data.items() if k != 'context_receipt'} != {k:v for k,v in previous.items() if k != 'context_receipt'}:
+                    data['phase_review']['revision'] = (head or {}).get('revision', 0) + 1
         target.write_text(json.dumps(data))
     env={k:v for k,v in os.environ.items() if not k.startswith(
         ('CODEX_', 'CLAUDE_', 'TASKPLANE_', 'PLUGIN_ROOT'))}
@@ -156,9 +167,68 @@ def output(workspace,state,change=None):
     _,out,_=prepare(workspace,phase)
     out.update(run=state['run'],visit=w.current(state)['id'])
     if change:out['route_change']=change
+    if w.phase_contract(state):
+        from taskplane.tests.test_workflow_local import collaborative_output
+        collaborative_output(workspace, state, out)
     path=phase+'.json';(workspace/path).write_text(json.dumps(out))
     depgraph.scan(str(workspace),decompose=True,strict=True)
     return path
+
+
+def test_collaborative_cli_selects_contract_and_admits_only_exact_refine(tmp_path):
+    from taskplane.tests.test_workflow_local import refinement
+    create(tmp_path)
+    state = cli(tmp_path, 'codex', 'start', '--scope','.taskplane/scope.json',
+                '--request-reference','fixture/collaborative')['workflow']
+    assert w.phase_contract(state) == w.PHASE_CONTRACT
+    request = refinement(state, 'hold', {'reason':'Explore'})
+    changed = cli(tmp_path, 'codex', 'refine', '--run',state['run'], '--expected-revision',str(state['revision']),
+                  '--request-json',json.dumps(request))['workflow']
+    assert w.current(changed)['hold']['active']
+    repeated = cli(tmp_path, 'codex', 'refine', '--run',state['run'], '--expected-revision',str(state['revision']),
+                   '--request-json',json.dumps(request))['workflow']
+    assert repeated['revision'] == changed['revision']
+
+
+def test_collaborative_first_product_draft_and_submit_through_cli(tmp_path):
+    from taskplane.tests.test_workflow_local import refinement, collaborative_output
+    create(tmp_path)
+    state = cli(tmp_path, 'codex', 'start', '--scope','.taskplane/scope.json',
+                '--request-reference','fixture/first-draft')['workflow']
+    path = output(tmp_path, state)
+    data = collaborative_output(tmp_path, state, json.loads((tmp_path/path).read_text()))
+    data['phase_review']['uncertainties'] = [{'id':'U', 'criteria':['AC1'], 'question':'Which option?', 'state':'unresolved'}]
+    (tmp_path/path).write_text(json.dumps(data))
+    request = refinement(state, 'draft', {'output':path}, human=False)
+    state = cli(tmp_path, 'codex', 'refine', '--run',state['run'], '--expected-revision',str(state['revision']),
+                '--request-json',json.dumps(request))['workflow']
+    assert w.current(state)['phase_review']['revision'] == 1 and not w.current(state)['phase_review']['ready']
+    # Keep the observed uncertainty, resolving it with actual evidence before sealing.
+    data['phase_review']['revision'] = 2
+    data['phase_review']['uncertainties'][0].update(state='resolved', resolution={
+        'kind':'evidence', 'summary':'Fixture evidence settles the question.', 'evidence':data['phase_review']['dor'][0]['evidence']})
+    (tmp_path/path).write_text(json.dumps(data))
+    request = refinement(state, 'draft', {'output':path}, human=False)
+    state = cli(tmp_path, 'codex', 'refine', '--run',state['run'], '--expected-revision',str(state['revision']),
+                '--request-json',json.dumps(request))['workflow']
+    assert w.current(state)['phase_review']['ready']
+    state = cli(tmp_path, 'codex', 'submit', '--run',state['run'], '--expected-revision',str(state['revision']),
+                '--output',path, '--tasks','tasks.json')['workflow']
+    assert w.current(state)['decision'] == 'awaiting_human_approval'
+
+
+def test_collaborative_native_admission_never_allows_shell_chaining(tmp_path):
+    from taskplane.tests.test_workflow_local import collaborative_setup
+    from taskplane import workflow_local
+    c, state, _ = collaborative_setup(tmp_path)
+    base = ['python3', str(ROOT/'taskplane/tp.py'), 'flow', 'refine', '--workspace',str(tmp_path),
+            '--run',state['run'], '--expected-revision',str(state['revision']), '--request-json','{}']
+    event = {'tool_name':'exec_command', 'tool_input':{'cmd':shlex.join(base)}}
+    assert c.adapter.control_action(event, state)
+    for command in [shlex.join(base)+'; touch unexpected', shlex.join(base)+' --output elsewhere',
+                    shlex.join(base)+' --run foreign', shlex.join(base)+' --expected-revision 9']:
+        assert not c.adapter.control_action({'tool_name':'exec_command','tool_input':{'cmd':command}}, state)
+    assert not workflow_local.command_words({'tool_input':{'cmd':shlex.join(base)+' && echo unsafe'}})
 
 
 def exercise_correction_cli(workspace, host, root=ROOT):

@@ -40,6 +40,102 @@ def auto(c, s, value=None, revision=None):
                    assessment_json=json.dumps(value or assessment(s)))
 
 
+@pytest.mark.parametrize('phase', w.PHASES)
+def test_collaborative_automatic_and_manual_gates_have_all_phase_parity(phase):
+    from taskplane.tests.test_workflow_evidence import collaborative_review
+    from taskplane.tests.test_workflow import scope
+    s = w.new_state('/workspace', 'root', 'run', scope(), phase_contract=w.PHASE_CONTRACT)
+    s.update(profile='native_workflow', started_at=datetime.now(timezone.utc).isoformat())
+    s['index'] = w.PHASES.index(phase)
+    s = approval.authorize(s, authorization(s))
+    output = dict(phase_review=collaborative_review(s, {'path':'evidence.txt','sha256':'a'*64}),
+                  write_scope=[], known_gaps=[], build_checks=[{'name':'check','status':'pass'}],
+                  criterion_results={'AC1':{'status':'pass'}}, unknowns_and_failures=[], findings=[])
+    s = w.submit(s, dict(phase=phase, visit=w.current(s)['id'], checkpoint='checkpoint',
+                         output=output, manifest={'evidence.txt':'a'*64}))
+    value = assessment(s)
+    decision_record = approval.automatic_decision(s, value)
+    assert decision_record['automatic'] and not decision_record['human']
+    blocked = deepcopy(s)
+    w.current(blocked)['packet']['output']['phase_review']['dod'][0]['outcome'] = 'unknown'
+    with pytest.raises(w.Refusal, match='Required dod'):
+        approval.automatic_decision(blocked, assessment(blocked))
+    s['visits'][s['index']]['hold'] = {'active':True}
+    with pytest.raises(w.Refusal, match='hold'): approval.automatic_decision(s, value)
+
+
+def test_collaborative_hold_stales_assessment_and_release_keeps_policy_suspended(tmp_path):
+    from taskplane.tests.test_workflow_local import collaborative_setup, collaborative_seal, refinement, refine
+    c, s, output = collaborative_setup(tmp_path)
+    s = set_policy(c, s)
+    s = collaborative_seal(c, s, output)
+    old = assessment(s)
+    hold = refinement(s, 'hold', {'reason':'Investigate'})
+    s = refine(c, s, hold)
+    with pytest.raises(w.Refusal, match='old policy|checkpoint'): auto(c, s, old)
+    s = decide(c, s, decision(s, text='Changes requested', event='negative'))
+    suspension = s['policy_suspension']
+    s = refine(c, s, refinement(s, 'release', {'hold_event':hold['event_id']}))
+    assert s['policy_suspension'] == suspension and w.current(s)['decision'] == 'changes_requested'
+
+
+@pytest.mark.parametrize('outcome', ['fail', 'unknown', 'listed'])
+def test_collaborative_repair_evaluate_automatic_uses_shared_outcome_gate(tmp_path, outcome):
+    from taskplane.tests.test_workflow_host import (
+        collaborative_repair_evaluate, collaborative_repair_submit, collaborative_repair_setup)
+    c, state, _ = collaborative_repair_setup(tmp_path)
+    state, output, _ = collaborative_repair_evaluate(c, state)
+    state = set_policy(c, state)
+    if outcome == 'listed':
+        output['unknowns_and_failures'] = ['Scenario remains unresolved']
+    else:
+        output['criterion_results']['AC1']['status'] = outcome
+    state = collaborative_repair_submit(c, state, output)
+    assert not h.phase_readiness(tmp_path, state)['ready']
+    with pytest.raises(w.Refusal, match='Evaluate') as refused:
+        auto(c, state)
+    assert refused.value.reason == 'phase_not_ready'
+    assert w.current(c.report())['decision'] == 'awaiting_human_approval'
+
+
+@pytest.mark.parametrize('mode', ['manual', 'automatic'])
+@pytest.mark.parametrize('closure', ['missing', 'optional', 'verified'])
+def test_collaborative_repair_evaluate_history_requires_required_verified_correction(tmp_path, mode, closure):
+    from taskplane.tests.test_workflow_evidence import collaborative_cause
+    from taskplane.tests.test_workflow_host import (
+        collaborative_repair_evaluate, collaborative_repair_submit, collaborative_repair_setup)
+    c, state, _ = collaborative_repair_setup(tmp_path)
+    state, output, evidence = collaborative_repair_evaluate(c, state)
+    if mode == 'automatic':
+        state = set_policy(c, state)
+    output['criterion_results']['AC1']['status'] = 'fail'
+    state = collaborative_repair_submit(c, state, output)
+    failed = deepcopy(w.current(state)['packet'])
+    output['phase_review']['revision'] = 2
+    output['criterion_results']['AC1']['status'] = 'pass'
+    if closure != 'missing':
+        cause = collaborative_cause(tmp_path, evidence)
+        cause['failure_id'] = 'AC1'
+        cause['verification'][0]['failure_id'] = 'AC1'
+        if closure == 'optional':
+            cause.update(required=False, state='contained')
+        output['phase_review']['causes'] = [cause]
+    state = collaborative_repair_submit(c, state, output)
+    assert any(row.get('packet') == failed for row in state['history'])
+    if closure != 'verified':
+        with pytest.raises(w.Refusal, match='causal investigation: AC1'):
+            auto(c, state) if mode == 'automatic' else decide(c, state)
+        assert not h.phase_readiness(tmp_path, state)['ready']
+    else:
+        state = auto(c, state) if mode == 'automatic' else decide(c, state)
+        record = next(record for record in state['decisions'].values()
+                      if record['binding']['checkpoint'] == w.current(state)['packet']['checkpoint'])
+        assert record['automatic'] == (mode == 'automatic')
+        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase='engineering')
+        assert w.current(state)['phase'] == 'engineering'
+        assert any(row.get('packet') == failed for row in state['history'])
+
+
 @pytest.mark.parametrize('raw', ['', '[1]', 'null', '{', ' ' * (65536 + 1)],
                          ids=['empty', 'array', 'null', 'malformed', 'oversized'])
 def test_inline_assessment_is_bounded_object(tmp_path, raw):

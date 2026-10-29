@@ -33,6 +33,16 @@ behavior; repeat checks only after changed inputs, failure or a specific gap.
 Evaluate and Engineering do not silently fix source: propose a scoped repair visit
 for acceptance. Finish only after every required visit has valid human or authorized policy acceptance.
 
+Use the shared [collaborative refinement and readiness policy](references/shared-flow.md#collaborative-refinement-and-readiness)
+and its seven-phase DoR/DoD table. Keep current-phase discussion and revision open
+within scope; optional feedback adds no mandatory pause to an authorized automatic
+flow. Root records actual feedback and durable holds through `flow refine`.
+For Plan, make ownership, exact scopes, dependencies and criterion/run-DoD checks
+concrete. Evaluate reports observed criterion results and affected verification;
+Retro reports actual outcomes, lessons and owned nonblocking follow-ups. Neither
+can turn an unresolved required obligation into completion. Use phase-appropriate
+artifacts and the existing dashboard, with immutable revision references.
+
 Use native_workflow inside Codex/Claude: start with an exact scope JSON and the actual
 user-request reference; submit evidence and record the explicit response using the
 observed-decision envelope documented in the CLI reference. Every transition still

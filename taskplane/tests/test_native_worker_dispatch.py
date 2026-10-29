@@ -13,6 +13,74 @@ from taskplane.tests.test_farm_workers import requires_native_reader
 from taskplane.tests.test_claude_invocation import launched, command_event, execute  # noqa: F401
 
 
+@pytest.fixture
+def accepted_status_worker(tmp_path):
+    from taskplane.tests.test_worker_runtime import scoped, complete
+    controller, state = setup(tmp_path, count=2, scoped_input=True, extra_inputs=['other.py'])
+    state = scoped(controller, state, tmp_path)
+    prepared = reserve(controller, state, 'T0')
+    launch(controller, state, prepared)
+    consume(controller, state, prepared['grant'], 'native-0')
+    complete(controller, state, prepared, 'native-0')
+    return controller.report(), prepared['grant']['grant_id']
+
+
+def test_status_projection_validates_shared_result_once(tmp_path, monkeypatch, accepted_status_worker):
+    state, _ = accepted_status_worker
+    before = deepcopy(state)
+    original = wr.result_valid
+    sessions = wr.worker_session
+    calls = []
+    def counted(*args, **kwargs):
+        calls.append(args[2]['task_id'])
+        return sessions(*args, **kwargs)
+    def uncached(*args, **kwargs):
+        kwargs.pop('_memo', None)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(wr, 'worker_session', counted)
+    monkeypatch.setattr(wr, 'result_valid', uncached)
+    expected = wr.summary(state, tmp_path)
+    assert calls.count('T0') >= 2
+    calls.clear()
+    monkeypatch.setattr(wr, 'result_valid', original)
+    assert wr.summary(state, tmp_path) == expected
+    assert calls == ['T0']
+    assert state == before
+
+
+@pytest.mark.parametrize('defect', ['source', 'output', 'receipt', 'identity', 'revision'])
+def test_status_projection_revalidates_after_each_call(tmp_path, accepted_status_worker, defect):
+    state, grant = accepted_status_worker
+    def accepted():
+        return next(row['reason'] for row in wr.summary(state, tmp_path)['scheduling'] if row['task'] == 'T0') == 'accepted'
+    assert accepted()
+    pristine = deepcopy(state)
+    changed = tmp_path / ('input.py' if defect == 'source' else 'T0.md')
+    original = changed.read_bytes()
+    if defect in {'source', 'output'}:
+        changed.write_text('changed after the previous status call')
+    elif defect == 'receipt':
+        state['workers'][grant]['context_receipt'] = {}
+    elif defect == 'identity':
+        state['workers'][grant]['worker_id'] = 'foreign-child'
+    else:
+        state['revision'] += 1
+    assert not accepted()
+    # Authority callers do not receive the status memo and must still refuse.
+    assert not wr.result_valid(tmp_path, state, 'T0')
+    changed.write_bytes(original)
+    state.clear(); state.update(pristine)
+    assert accepted()  # An earlier negative result cannot survive either.
+
+
+def test_status_projection_memo_preserves_recursion_boundary(tmp_path, accepted_status_worker):
+    state, _ = accepted_status_worker
+    memo = {}
+    assert wr.result_valid(tmp_path, state, 'T0', _memo=memo)
+    assert not wr.result_valid(tmp_path, state, 'T0', {'T0'}, _memo=memo)
+    assert wr.result_valid(tmp_path, state, 'T0', _memo=memo)
+
+
 @pytest.mark.parametrize('words, expected', [
     ([], None), (['--operation', 'claim'], 'claim'), (['--operation=claim'], 'claim'),
     (['--run=r', '--operation=claim', '--grant', 'g'], 'claim'),

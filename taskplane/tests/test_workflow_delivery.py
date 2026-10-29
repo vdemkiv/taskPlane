@@ -17,6 +17,9 @@ def output(c, s):
     phase = w.current(s)["phase"]
     _, out, _ = prepare(c.workspace, phase)
     out.update(run=s["run"], visit=w.current(s)["id"])
+    if w.phase_contract(s):
+        from taskplane.tests.test_workflow_local import collaborative_output
+        collaborative_output(c.workspace, s, out)
     (c.workspace/(phase+".json")).write_text(json.dumps(out))
     return phase+".json"
 

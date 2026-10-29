@@ -1,8 +1,295 @@
 """N06/N08/N09/N10/N12 and P10 exercise artifact and source binding."""
 import json
+import base64
+import hashlib
 from copy import deepcopy
 import pytest
 from taskplane import workflow as w, workflow_evidence as e
+
+
+def collaborative_review(s, evidence, revision=1):
+    """Phase evidence proves the current outcome; delivery checks belong to Evaluate."""
+    review = {"schema": e.PHASE_REVIEW, "revision": revision,
+              "inputs": e.accepted_review_inputs(s), "dor": [], "dod": [],
+              "uncertainties": [], "feedback": [], "artifacts": [], "causes": [],
+              "run_dod": [{"id": "DELIVERY", "required": True, "criteria": ["AC1"],
+                           "statement": "Verify implemented behavior", "phases": ["evaluate", "retro"]}]}
+    for group, ids in e.review_obligations(s, review).items():
+        review[group] = [{"id": key, "criteria": ["AC1"], "required": True,
+                          "outcome": "met", "evidence": [evidence],
+                          "explanation": "Observed phase-appropriate result"} for key in ids]
+    return review
+
+
+def collaborative_fixture(tmp_path):
+    s, out, tasks = prepare(tmp_path)
+    s = w.new_state(str(tmp_path), "root", "run", s["scope"], phase_contract=w.PHASE_CONTRACT)
+    out["visit"] = w.current(s)["id"]
+    (tmp_path/"observation.txt").write_text("Observed acceptance scenario")
+    evidence = {"path": "observation.txt", "sha256": hashlib.sha256((tmp_path/"observation.txt").read_bytes()).hexdigest()}
+    out["phase_review"] = collaborative_review(s, evidence)
+    return s, out, evidence
+
+
+def test_collaborative_product_defines_future_delivery_dod_without_claiming_implementation(tmp_path):
+    s, out, evidence = collaborative_fixture(tmp_path)
+    review = out["phase_review"]
+    assert "run-dod:DELIVERY" not in {row["id"] for row in review["dod"]}
+    review["uncertainties"] = [{"id": "PLATFORM", "criteria": ["AC1"], "question": "Which platform?",
+                                "state": "unresolved", "owner": "Product", "plan": "Ask user"}]
+    assert not e.phase_review_gates(s, out, root=tmp_path)["ready"]
+    # Discovery is publishable while blocked. A future verification is not reported as met.
+    head = e.publish_phase_review(tmp_path, s, out)
+    assert head["ready"] is False
+    review["uncertainties"][0].update(state="resolved", nature="decision",
+        resolution={"kind": "decision", "summary": "Choose Linux", "source": {
+            "kind": "human", "reference": "fixture-message/platform", "excerpt": "Target Linux"}})
+    (tmp_path/"product.json").write_text(json.dumps(out))
+    from taskplane import depgraph
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    packet = e.seal(tmp_path, s, "product.json", "tasks.json")
+    s = w.submit(s, packet)
+    s = w.decide(s, {"event_id": "accept-product", "human": True, "automatic": False,
+                     "choice": "approved", "binding": w.binding(s, w.current(s)["packet"])})
+    s = w.advance(s, "design")
+    design = {"phase_review": collaborative_review(s, evidence)}
+    assert e.phase_review_gates(s, design, root=tmp_path)["ready"]
+    s["index"] = w.PHASES.index("evaluate")
+    evaluate = {"phase_review": collaborative_review(s, evidence)}
+    evaluate["phase_review"]["dod"] = [row for row in evaluate["phase_review"]["dod"] if row["id"] != "run-dod:DELIVERY"]
+    assert not e.phase_review_gates(s, evaluate, root=tmp_path)["ready"]
+
+
+@pytest.mark.parametrize("defect", ["missing", "unknown", "unmet", "waived", "not_applicable", "stale"])
+def test_collaborative_gates_ignore_forged_ready_and_unaccepted_waivers(tmp_path, defect):
+    s, out, _ = collaborative_fixture(tmp_path)
+    review = out["phase_review"]
+    review["ready"] = True
+    row = review["dod"][0]
+    if defect == "missing":
+        review["dod"].pop(0)
+    elif defect == "waived":
+        row["required"] = False
+    elif defect == "stale":
+        (tmp_path/"observation.txt").write_text("Changed evidence")
+    else:
+        row["outcome"] = defect
+        row["applicability"] = "Caller says not applicable"
+    result = e.phase_review_gates(s, out, root=tmp_path)
+    assert result["ready"] is False and result["blockers"]
+
+
+@pytest.mark.parametrize("resolution", [{}, {"owner": "user", "plan": "later"},
+    {"kind": "decision", "summary": "Assume supported", "source": {"kind": "human", "reference": "message/1", "excerpt": "Accept risk"}}])
+def test_collaborative_uncertainty_needs_evidence_or_actual_choice_not_assumption(tmp_path, resolution):
+    s, out, _ = collaborative_fixture(tmp_path)
+    out["phase_review"]["uncertainties"] = [{"id": "FACT", "criteria": ["AC1"], "question": "Does it work?",
+        "state": "resolved", "nature": "factual", "required": False, "resolution": resolution}]
+    assert not e.phase_review_gates(s, out, root=tmp_path)["ready"]
+
+
+def test_collaborative_exact_binary_artifact_survives_workspace_revision(tmp_path):
+    from taskplane.context import Store
+    s, out, _ = collaborative_fixture(tmp_path)
+    raw = b"\xff\x00\xfe\r\nexact bytes"
+    (tmp_path/"mock.bin").write_bytes(raw)
+    s["scope"]["paths"]["product"].append("mock.bin")
+    out["phase_review"]["artifacts"] = [{"id": "mock", "path": "mock.bin", "revision": 1,
+        "sha256": hashlib.sha256(raw).hexdigest(), "criteria": ["AC1"], "purpose": "Review mockup",
+        "media_type": "application/octet-stream", "fallback": "Binary mockup; use linked download"}]
+    preview = e.pin_review_artifacts(tmp_path, s, out, persist=False)
+    assert not (tmp_path/".taskplane/context-v1").exists()
+    pinned = e.pin_review_artifacts(tmp_path, s, out)
+    assert pinned == preview
+    (tmp_path/"mock.bin").write_bytes(b"replacement")
+    body = Store(tmp_path).resolve(pinned[0]["body_ref"])
+    assert base64.b64decode(body["data"]) == raw
+    assert body["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert not e.phase_review_gates(s, out, root=tmp_path)["ready"]
+
+
+def test_collaborative_draft_history_is_bounded_and_feedback_target_is_immutable(tmp_path):
+    from taskplane.context import Store
+    s, out, evidence = collaborative_fixture(tmp_path)
+    review = out["phase_review"]
+    review["feedback"] = [{"id": "FB1", "criteria": ["AC1"], "material": False,
+        "source": {"kind": "human", "reference": "fixture/message/1", "excerpt": "Consider blue"},
+        "target": {"id": "mock", "revision": 1, "digest": "a"*64}, "disposition": "open"}]
+    first = None
+    for revision in range(1, 24):
+        review["revision"] = revision
+        head = e.publish_phase_review(tmp_path, s, out)
+        s["visits"][0]["phase_review"] = head
+        first = first or head
+        assert len(json.dumps(head)) < 1000
+    page = e.review_history_page(tmp_path, head["history_ref"], limit=3)
+    assert [row["revision"] for row in page["entries"]] == [23, 22, 21]
+    assert page["next"]
+    old = Store(tmp_path).resolve(first["ref"])
+    assert old["output"]["phase_review"]["revision"] == 1
+    assert old["output"]["phase_review"]["feedback"][0]["target"]["revision"] == 1
+    review["revision"] = 24
+    review["feedback"][0]["target"]["revision"] = 23
+    with pytest.raises(w.Refusal, match="immutable"):
+        e.publish_phase_review(tmp_path, s, out)
+    review["feedback"] = []
+    with pytest.raises(w.Refusal, match="erase"):
+        e.publish_phase_review(tmp_path, s, out)
+
+
+def collaborative_cause(tmp_path, evidence):
+    fingerprint = e.manifest(tmp_path, ["app.py"])
+    check = {"id": "regression", "failure_id": "BUG1", "criteria": ["AC1"], "status": "pass",
+             "kind": "regression", "input_fingerprint": fingerprint, "evidence": [evidence],
+             "before_status": "fail", "before_evidence": [evidence], "expected": "reject stale input",
+             "observed": "stale input rejected", "discriminates": "Old revision used to pass"}
+    return {"id": "CAUSE1", "state": "verified", "required": True, "criteria": ["AC1"],
+            "failure_id": "BUG1", "failure": "Stale input accepted", "expected": "Reject stale input",
+            "observations": "Old revision reached transition", "hypotheses": ["Missing revision check"],
+            "supported_cause": "Missing revision check", "correction": "Compare revision",
+            "input_fingerprint": fingerprint, "reproduction": [evidence], "cause_evidence": [evidence],
+            "correction_evidence": [evidence], "affected_checks": ["regression"], "verification": [check]}
+
+
+@pytest.mark.parametrize("defect", ["unrelated", "containment", "no_reproduction", "no_counterexample", "stale", "missing_rerun"])
+def test_collaborative_causal_closure_requires_discriminating_current_reruns(tmp_path, defect):
+    s, out, evidence = collaborative_fixture(tmp_path)
+    cause = collaborative_cause(tmp_path, evidence)
+    out["phase_review"]["causes"] = [cause]
+    assert e.phase_review_gates(s, out, root=tmp_path)["ready"]
+    if defect == "unrelated":
+        cause["verification"][0]["failure_id"] = "OTHER"
+    elif defect == "containment":
+        cause["state"] = "contained"
+    elif defect == "no_reproduction":
+        cause["reproduction"] = []
+    elif defect == "no_counterexample":
+        cause["verification"][0]["before_status"] = "unknown"
+    elif defect == "stale":
+        (tmp_path/"app.py").write_text("different = 2")
+    else:
+        cause["affected_checks"].append("integration")
+    assert not e.phase_review_gates(s, out, root=tmp_path)["ready"]
+
+
+def test_collaborative_noncode_counterexample_and_unchanged_retry(tmp_path):
+    _, _, evidence = collaborative_fixture(tmp_path)
+    cause = collaborative_cause(tmp_path, evidence)
+    cause["verification"][0].update(kind="counterexample", discriminates="Revised scenario has exactly one answer")
+    assert e.causal_verified(cause, root=tmp_path)
+    failed = {"failure_id": "BUG1", "input_fingerprint": cause["input_fingerprint"], "command": ["check"], "status": "fail"}
+    assert e.repeated_causal_attempt([failed], failed) == failed
+    assert e.repeated_causal_attempt([failed], {**failed, "diagnostic_hypothesis": "Observe lock ordering"}) is None
+    assert e.repeated_causal_attempt([failed], {**failed, "input_fingerprint": {"changed": "b"*64}}) is None
+
+
+def test_collaborative_direct_submission_cannot_erase_or_retarget_uncertainty(tmp_path):
+    s, out, _ = collaborative_fixture(tmp_path)
+    review = out["phase_review"]
+    review["uncertainties"] = [{"id": "U1", "criteria": ["AC1"], "question": "Which supported platform?", "state": "unresolved"}]
+    head = e.publish_phase_review(tmp_path, s, out)
+    s["visits"][0]["phase_review"] = head
+    review["revision"] = 2
+    review["uncertainties"][0]["question"] = "Is the sky blue?"
+    with pytest.raises(w.Refusal, match="immutable"):
+        e.phase_review_gates(s, out, root=tmp_path)
+    review["uncertainties"] = []
+    with pytest.raises(w.Refusal, match="erase"):
+        e.phase_review_gates(s, out, root=tmp_path)
+
+
+def test_collaborative_failure_requires_cause_even_after_unrelated_passing_check(tmp_path):
+    s, out, _ = collaborative_fixture(tmp_path)
+    s["history"].append({"visit": w.current(s)["id"], "packet": {"output": {
+        "build_checks": [{"check_id": "BUG1", "status": "fail"}]}}})
+    out["build_checks"] = [{"check_id": "UNRELATED", "status": "pass"}]
+    gates = e.phase_review_gates(s, out, root=tmp_path)
+    assert not gates["ready"]
+    assert any("causal investigation: BUG1" in blocker for blocker in gates["blockers"])
+
+
+def test_collaborative_causal_reference_reuses_record_and_surfaces_unchanged_attempt(tmp_path):
+    from taskplane.context import Store
+    s, out, evidence = collaborative_fixture(tmp_path)
+    cause = collaborative_cause(tmp_path, evidence)
+    attempt = {"failure_id": "BUG1", "input_fingerprint": cause["input_fingerprint"], "command": ["check"], "status": "fail"}
+    cause["attempts"] = [attempt, deepcopy(attempt)]
+    ref = Store(tmp_path).put("phase-review-cause", cause)
+    out["phase_review"]["causes"] = [{"id": "CAUSE1", "record_ref": ref}]
+    gates = e.phase_review_gates(s, out, root=tmp_path)
+    assert gates["ready"] and gates["repeated_attempts"][0]["previous"] == attempt
+    # The packet keeps the verified record snapshot; decision rules need no store I/O.
+    packet = {"phase": "product", "visit": w.current(s)["id"], "checkpoint": "causal",
+              "output": out, "phase_review_gates": gates}
+    s = w.submit(s, packet)
+    assert e.require_phase_ready(s)["ready"]
+    (tmp_path/"app.py").write_text("changed condition")
+    with pytest.raises(w.Refusal, match="not verified"):
+        e.require_phase_ready(s, root=tmp_path)
+
+
+@pytest.mark.parametrize('field,value', [('required', 'false'), ('required', 0), ('required', None),
+    ('affected_checks', 'regression'), ('affected_checks', [1]), ('affected_checks', ['']),
+    ('affected_checks', ['regression', 'regression'])])
+def test_collaborative_repair_causal_obligation_fields_are_typed(tmp_path, field, value):
+    state, output, evidence = collaborative_fixture(tmp_path)
+    cause = collaborative_cause(tmp_path, evidence)
+    cause.update(state='contained')
+    cause[field] = value
+    output['phase_review']['causes'] = [cause]
+    with pytest.raises(w.Refusal, match='Causal'):
+        e.phase_review_gates(state, output, root=tmp_path)
+
+
+@pytest.mark.parametrize('route', ['direct', 'draft'])
+@pytest.mark.parametrize('change', ['unchanged', 'reordered', 'strengthened', 'default_required'])
+def test_collaborative_repair_causal_obligations_allow_complete_strengthened_closure(tmp_path, route, change):
+    state, output, evidence = collaborative_fixture(tmp_path)
+    cause = collaborative_cause(tmp_path, evidence)
+    cause['affected_checks'].append('integration')
+    cause['verification'].append({**deepcopy(cause['verification'][0]), 'id': 'integration', 'kind': 'integration'})
+    if change == 'strengthened':
+        cause['required'] = False
+    output['phase_review']['causes'] = [cause]
+    if route == 'draft':
+        w.current(state)['phase_review'] = e.publish_phase_review(tmp_path, state, output)
+    else:
+        state = w.submit(state, {'phase': 'product', 'visit': w.current(state)['id'],
+                                'checkpoint': 'first', 'output': deepcopy(output)})
+    before = deepcopy(state)
+    output['phase_review']['revision'] = 2
+    if change == 'reordered':
+        cause['affected_checks'].reverse()
+    elif change == 'strengthened':
+        cause['required'] = True
+        cause['affected_checks'].append('additional')
+        cause['verification'].append({**deepcopy(cause['verification'][0]), 'id': 'additional'})
+    elif change == 'default_required':
+        cause.pop('required')
+    assert e.phase_review_gates(state, output, root=tmp_path)['ready']
+    assert state == before
+
+
+def test_collaborative_repair_unknown_history_does_not_create_failure_or_use_other_visits(tmp_path):
+    state, output, evidence = collaborative_fixture(tmp_path)
+    state['index'] = w.PHASES.index('evaluate')
+    output['phase_review'] = collaborative_review(state, evidence)
+    output['criterion_results'] = {'AC1': {'status': 'pass'}}
+    output['unknowns_and_failures'] = []
+    state['history'] = [
+        {'visit': w.current(state)['id'], 'packet': {'output': {'criterion_results': {'AC1': {'status': 'unknown'}}}}},
+        {'visit': 'another-visit', 'packet': {'output': {'criterion_results': {'AC1': {'status': 'fail'}}}}}]
+    assert e.phase_review_gates(state, output, root=tmp_path)['ready']
+
+
+@pytest.mark.parametrize('results', ['fail', {'AC1': 'fail'}])
+def test_collaborative_repair_evaluate_malformed_results_refuse_cleanly(tmp_path, results):
+    state, output, evidence = collaborative_fixture(tmp_path)
+    state['index'] = w.PHASES.index('evaluate')
+    output['phase_review'] = collaborative_review(state, evidence)
+    output['criterion_results'] = results
+    with pytest.raises(w.Refusal, match='Evaluate criterion results'):
+        e.phase_review_gates(state, output, root=tmp_path)
 
 
 def prepare(tmp_path, phase="product", *, plan_fixture=False):
@@ -38,6 +325,7 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
     if phase == "evaluate":
         (tmp_path/"check.txt").write_text("Observed fixture check result")
         out["criterion_results"] = {"AC1": {"status": "pass", "evidence": "check.txt", "explanation": "Observed check"}}
+        out["unknowns_and_failures"] = []
     if phase == "engineering":
         out.update(findings=[], lens_coverage=[{"lens": "quality", "reviewer": "primary", "rationale": "Boundary checks"}],
                    requirements_comparison={"AC1": "Matches observed checkpoint behavior"})

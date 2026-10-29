@@ -8,6 +8,132 @@ from taskplane.context_handoff import Session, consume_required
 from taskplane.tests.test_workflow_evidence import prepare
 
 
+def collaborative_presentation_fixture(tmp_path):
+    import hashlib
+    from taskplane.tests.test_workflow_evidence import collaborative_fixture
+    state, output, observed = collaborative_fixture(tmp_path)
+    raw = b'<script>window.artifactExecuted=true</script><h1>Original reviewed artifact</h1>'
+    (tmp_path/'mock.html').write_bytes(raw)
+    state['scope']['paths']['product'].append('mock.html')
+    output['phase_review']['artifacts'] = [{'id':'mock', 'path':'mock.html', 'revision':1,
+        'sha256':hashlib.sha256(raw).hexdigest(), 'criteria':['AC1'], 'purpose':'Review recovery example',
+        'media_type':'text/html', 'fallback':'Readable recovery description <img src=x onerror=alert(1)>'}]
+    return state, output, observed
+
+
+def test_collaborative_context_old_current_drafts_keep_exact_bounded_artifact_refs(tmp_path):
+    import base64
+    import hashlib
+    from taskplane.context_views import review_projection
+    state, output, _ = collaborative_presentation_fixture(tmp_path)
+    stage = state['visits'][0]
+    first = e.publish_phase_review(tmp_path, state, output)
+    stage['phase_review'] = first
+    old_artifact = Store(tmp_path).resolve(first['ref'])['artifacts'][0]
+    for revision in range(2, 13):
+        raw = ('New artifact '+str(revision)).encode()
+        (tmp_path/'mock.html').write_bytes(raw)
+        output['phase_review']['revision'] = revision
+        output['phase_review']['artifacts'][0].update(revision=revision, sha256=hashlib.sha256(raw).hexdigest())
+        stage['phase_review'] = e.publish_phase_review(tmp_path, state, output)
+    before = deepcopy(state)
+    projection = review_projection(tmp_path, state)
+    assert projection['ready'] and projection['revision'] == 12
+    assert len(projection['history']['entries']) == 4 and projection['history']['next']
+    assert len(encode(projection)) < 32768
+    session = Session(tmp_path, state)
+    receipt, replies = consume_required(session)
+    session.validate(receipt)
+    assert all(len(encode(reply)) <= 32768 for reply in replies)
+    # Bounded explicit reads can traverse beyond the initially displayed history.
+    cursor = projection['history_ref']
+    for _ in range(12):
+        response = session.read(cursor['sha256'])
+        assert len(encode(response)) <= 16384
+        row = session.store.resolve(cursor)
+        if row['revision'] == 1:
+            session.read(row['ref']['sha256'])
+            break
+        cursor = row['previous']
+    session.read(old_artifact['body_ref']['sha256'])
+    assert b'Original reviewed artifact' in base64.b64decode(session.store.resolve(old_artifact['body_ref'])['data'])
+    assert b'New artifact' not in base64.b64decode(session.store.resolve(old_artifact['body_ref'])['data'])
+    assert state == before
+
+
+def test_collaborative_projection_uses_typed_failure_sidecar_feedback_and_hold(tmp_path):
+    from taskplane.context_views import review_projection, summary
+    state, output, _ = collaborative_presentation_fixture(tmp_path)
+    stage = state['visits'][0]
+    stage['phase_review'] = e.publish_phase_review(tmp_path, state, output)
+    draft = Store(tmp_path).resolve(stage['phase_review']['ref'])
+    stage['packet'] = {'output':output, 'review_artifacts':draft['artifacts'],
+        'verification':{'history':{'attempts':[{'check_id':'BROKEN', 'status':'fail'}, {'check_id':'BROKEN','status':'pass'}]}}}
+    feedback = {'id':'F1','criteria':['AC1'], 'material':True, 'disposition':'open',
+        'target':{'id':'mock','revision':1,'digest':draft['artifacts'][0]['sha256']},
+        'source':{'kind':'human','reference':'fixture/message','excerpt':'Please investigate'}}
+    stage['review_feedback'] = {'F1':Store(tmp_path).put('phase-review-feedback', feedback)}
+    stage['hold'] = {'active':True,'event_id':'fixture/hold','reason':'Compare recovery paths'}
+    before = deepcopy(state)
+    projection = review_projection(tmp_path, state)
+    assert not projection['ready']
+    assert any('BROKEN' in x for x in projection['blockers']['items'])
+    assert any('F1' in x for x in projection['blockers']['items'])
+    assert projection['feedback']['items'] == [feedback]
+    assert projection['hold']['active']
+    # No changes to decisions, packet, durable hold or current draft on view.
+    assert state == before
+    response = summary(Store(tmp_path), {'workflow':state,'status':'approved'}, 'report')
+    assert not response['phase_review']['ready'] and 'blockers' in response['next_action']
+    assert len(encode(response)) < 16384
+
+
+def test_collaborative_projection_legacy_and_unpublished_are_explicit(tmp_path):
+    from taskplane.context_views import review_projection
+    legacy, _, _ = prepare(tmp_path)
+    before = deepcopy(legacy)
+    result = review_projection(tmp_path, legacy)
+    assert result['status'] == 'legacy' and result['ready'] is None
+    assert 'dor' not in result and legacy == before
+    from taskplane.tests.test_workflow_evidence import collaborative_fixture
+    state, _, _ = collaborative_fixture(tmp_path)
+    result = review_projection(tmp_path, state)
+    assert result['status'] == 'unpublished' and result['ready'] is False
+
+
+def test_collaborative_projection_bounds_large_gate_records_without_false_completion(tmp_path):
+    from taskplane.context_views import review_projection
+    state, output, observed = collaborative_presentation_fixture(tmp_path)
+    output['phase_review']['uncertainties'] = [{'id':f'U{i}', 'criteria':['AC1'],
+        'question':'Unanswered '+('x'*500), 'state':'unresolved'} for i in range(100)]
+    state['visits'][0]['phase_review'] = e.publish_phase_review(tmp_path, state, output)
+    projection = review_projection(tmp_path, state)
+    assert not projection['ready'] and projection['uncertainties']['total'] == 100
+    assert projection['uncertainties']['omitted'] > 90
+    assert len(encode(projection)) < 32768
+
+
+def test_collaborative_projection_prefers_revised_unsubmitted_draft_over_old_packet(tmp_path):
+    from taskplane.context_views import review_projection
+    state, output, observed = collaborative_presentation_fixture(tmp_path)
+    output['phase_review']['uncertainties'] = [{'id':'U1','criteria':['AC1'],
+        'question':'Does the acceptance scenario work?', 'state':'unresolved'}]
+    stage = state['visits'][0]
+    stage['phase_review'] = e.publish_phase_review(tmp_path, state, output)
+    stage['packet'] = {'output':deepcopy(output), 'review_artifacts':
+        Store(tmp_path).resolve(stage['phase_review']['ref'])['artifacts']}
+    stage['decision'] = 'changes_requested'
+    output['phase_review']['revision'] = 2
+    output['phase_review']['uncertainties'][0].update(state='resolved',
+        resolution={'kind':'evidence', 'summary':'Observed acceptance scenario', 'evidence':[observed]})
+    stage['phase_review'] = e.publish_phase_review(tmp_path, state, output)
+    before = deepcopy(state)
+    projection = review_projection(tmp_path, state)
+    assert projection['revision'] == 2 and projection['status'] == 'draft'
+    assert projection['ready'] and projection['approval'] == 'changes_requested'
+    assert state == before and stage['packet']['output']['phase_review']['revision'] == 1
+
+
 def many_artifacts(tmp_path, contract='bounded/v1', count=201):
     state, output, _ = prepare(tmp_path)
     output['artifacts'] = []

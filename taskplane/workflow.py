@@ -9,6 +9,7 @@ import uuid
 from .primitives import content_fingerprint
 
 PHASES = ("product", "design", "plan", "build", "evaluate", "engineering", "retro")
+PHASE_CONTRACT = "collaborative/v1"
 ENTRY_PHASES = ("product", "design", "engineering")
 OUTPUT_FIELDS = {
     "product": ("scope", "acceptance_criteria", "non_goals", "dependencies", "task_outline", "finding_references"),
@@ -67,14 +68,35 @@ def validate_scope(scope: dict[str, Any]) -> None:
 
 
 def new_state(workspace: str, root: str, run: str, scope: dict[str, Any], *,
-              entry: str = "product", standalone: bool = False) -> dict[str, Any]:
+              entry: str = "product", standalone: bool = False,
+              phase_contract: str | None = None) -> dict[str, Any]:
     require(entry in ENTRY_PHASES and (standalone or entry == "product"),
             "approval_required", "Full delivery begins at Product; standalone entry cannot grant Build.")
     validate_scope(scope)
-    return {"schema": "taskplane.workflow/v1", "workspace": workspace, "root": root,
+    require(phase_contract in (None, PHASE_CONTRACT), "invalid_evidence", "Unknown phase contract.")
+    result: dict[str, Any] = {"schema": "taskplane.workflow/v1", "workspace": workspace, "root": root,
             "run": run, "revision": 0, "scope": deepcopy(scope),
             "visits": [visit(p) for p in ((entry,) if standalone else PHASES)],
             "index": 0, "decisions": {}, "history": [], "finished": False}
+    if phase_contract:
+        result.update(phase_contract=phase_contract,
+                      run_contract={"run": run, "phase_contract": phase_contract})
+        for stage in result["visits"]:
+            stage["phase_contract"] = phase_contract
+    return result
+
+
+def phase_contract(state: dict[str, Any]) -> str | None:
+    """Validate the frozen creation contract without migrating historical state."""
+    marker = state.get("phase_contract")
+    frozen = state.get("run_contract")
+    visits = state.get("visits", [])
+    if marker is None and frozen is None and not any("phase_contract" in v for v in visits):
+        return None
+    require(marker == PHASE_CONTRACT and frozen == {"run": state.get("run"), "phase_contract": marker}
+            and all(v.get("phase_contract") == marker for v in visits),
+            "invalid_evidence", "Unknown, removed or changed frozen phase contract.")
+    return str(marker)
 
 
 def current(state: dict[str, Any]) -> dict[str, Any]:
@@ -93,6 +115,7 @@ def validate_state(state: dict[str, Any]) -> None:
     """Reject structurally corrupt protected records without inventing repairs."""
     from . import workflow_approval as approval
     validate_scope(state["scope"])
+    phase_contract(state)
     approval.validate_history(state)
     require(type(state["revision"]) is int and state["revision"] >= 0
             and type(state["index"]) is int and isinstance(state["visits"], list)
@@ -137,6 +160,7 @@ def binding(state: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
 
 
 def submit(state: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
+    phase_contract(state)
     require(not state["finished"], "approval_required", "This route is already accepted.")
     s = deepcopy(state)
     stage = s["visits"][s["index"]]
@@ -145,6 +169,10 @@ def submit(state: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
     if stage["packet"]:
         s["history"].append({"visit": stage["id"], "packet": stage["packet"], "decision": stage["decision"]})
     stage.update(packet=deepcopy(packet), work="ready", decision="awaiting_human_approval")
+    if phase_contract(s):
+        from .workflow_evidence import phase_review_gates
+        gates = phase_review_gates(s, packet.get("output", {}))
+        stage["work"] = "ready" if gates["ready"] else "evidence_blocked"
     from .primitives import content_fingerprint
     stage["submitted_at"] = datetime.now(timezone.utc).isoformat()
     stage["checkpoint_scope_digest"] = content_fingerprint(s["scope"])
@@ -155,6 +183,7 @@ def submit(state: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
 
 def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
     """Consume a profile-validated decision; adapters own its stated assurance."""
+    phase_contract(state)
     event_id = verified.get("event_id")
     require(isinstance(event_id, str) and event_id, "unsupported_authority", "Native event identity is missing.")
     from . import workflow_approval as approval
@@ -181,6 +210,9 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
     choice = verified.get("choice")
     require(choice in ("approved", "changes_requested", "rejected", "cancelled"),
             "invalid_evidence", "Unknown human decision.")
+    if choice == "approved":
+        from .workflow_evidence import require_phase_ready
+        require_phase_ready(state)
     s = deepcopy(state)
     stage = s["visits"][s["index"]]
     stage["decision"] = choice
@@ -224,12 +256,15 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
                 if old["phase"] in PHASES[3:]:
                     old["superseded"] = True
         s["history"].append({"route_change": deepcopy(change), "event_id": event_id})
-        s["visits"].extend(visit(p) for p in stages)
+        s["visits"].extend({**visit(p), **({"phase_contract": PHASE_CONTRACT} if phase_contract(state) else {})}
+                           for p in stages)
     s["revision"] += 1
     return s
 
 
 def advance(state: dict[str, Any], phase: str) -> dict[str, Any]:
+    from .workflow_evidence import require_phase_ready
+    require_phase_ready(state)
     require(not state["finished"], "approval_required", "The accepted route cannot be reopened by progress.")
     stage = current(state)
     require(stage["decision"] == "approved", "approval_required", f"Human or authorized policy approval for {stage['phase']} is required.")
@@ -246,6 +281,8 @@ def advance(state: dict[str, Any], phase: str) -> dict[str, Any]:
 
 
 def finish(state: dict[str, Any]) -> dict[str, Any]:
+    from .workflow_evidence import require_phase_ready
+    require_phase_ready(state)
     require(all(v["superseded"] or v["decision"] == "approved" for v in state["visits"]),
             "approval_required", "Every required stage visit needs current human acceptance or valid policy acceptance.")
     s = deepcopy(state)
@@ -257,6 +294,7 @@ def finish(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def invalidate(state: dict[str, Any], visit_id: str, reason: str) -> dict[str, Any]:
+    phase_contract(state)
     s = deepcopy(state)
     first = next(i for i, v in enumerate(s["visits"]) if v["id"] == visit_id)
     for v in s["visits"][first:]:
