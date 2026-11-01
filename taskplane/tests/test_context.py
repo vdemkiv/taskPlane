@@ -133,7 +133,7 @@ real_open=os.open
 real_sync=os.fsync
 def crash(path, flags, *args, **kwargs):
     fd=real_open(path, flags, *args, **kwargs)
-    if sys.argv[2]=="create" and flags & os.O_EXCL and str(Path(path).parent).endswith("context-v1/objects"):
+    if sys.argv[2]=="create" and flags & os.O_EXCL and Path(path).parent.parts[-2:] == ("context-v1", "objects"):
         os._exit(73)
     return fd
 def crash_sync(fd):
