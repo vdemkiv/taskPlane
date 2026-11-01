@@ -3,10 +3,16 @@
 Decision messages are explicit test observations; these are not live human or
 host-containment certifications. No trusted owner/FixtureHost is injected.
 """
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from copy import deepcopy
 import json
 import inspect
 import os
+import re
+import signal
+import time
 import shlex
 from pathlib import Path
 import subprocess
@@ -20,6 +26,154 @@ from taskplane.tests.test_workflow_local import decision, check_historical_finis
 ROOT=Path(__file__).resolve().parents[2]
 
 
+JOURNEY_SECONDS = 3600
+CHILD_SECONDS = 120
+_JOURNEY_DEADLINE = ContextVar('native_journey_deadline', default=None)
+
+
+@contextmanager
+def journey_budget(seconds=JOURNEY_SECONDS):
+    """Nested helpers and different workspaces share the outer journey deadline."""
+    token = None
+    if _JOURNEY_DEADLINE.get() is None:
+        token = _JOURNEY_DEADLINE.set(time.monotonic() + seconds)
+    try:
+        yield _JOURNEY_DEADLINE.get()
+    finally:
+        if token is not None:
+            _JOURNEY_DEADLINE.reset(token)
+
+
+def journey(function):
+    @wraps(function)
+    def bounded(*args, **kwargs):
+        with journey_budget():
+            return function(*args, **kwargs)
+    return bounded
+
+
+@pytest.fixture(autouse=True)
+def native_journey_budget():
+    with journey_budget():
+        yield
+
+
+def _windows_job(process):
+    """Assign the suspended process before any shell can create descendants."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    job = kernel.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not kernel.AssignProcessToJobObject(job, int(process._handle)):
+        error = ctypes.WinError(ctypes.get_last_error())
+        kernel.CloseHandle(job)
+        raise error
+    ntdll = ctypes.WinDLL('ntdll')
+    ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    if ntdll.NtResumeProcess(int(process._handle)) != 0:
+        kernel.TerminateJobObject(job, 1)
+        kernel.CloseHandle(job)
+        raise OSError('Cannot resume bounded test subprocess')
+    return kernel, job
+
+
+@journey
+def bounded_run(command, *, timeout=CHILD_SECONDS, **kwargs):
+    """subprocess.run semantics with a shared budget and bounded tree cleanup."""
+    remaining = _JOURNEY_DEADLINE.get() - time.monotonic()
+    cwd = kwargs.get('cwd', Path.cwd())
+    diagnostic = f'command={command!r} cwd={str(cwd)!r}'
+    assert remaining > 0, f'Journey deadline exhausted: {diagnostic}'
+    limit = min(timeout, CHILD_SECONDS, remaining)
+    check = kwargs.pop('check', False)
+    capture = kwargs.pop('capture_output', False)
+    supplied_input = kwargs.pop('input', None)
+    if capture:
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if supplied_input is not None:
+        kwargs['stdin'] = subprocess.PIPE
+    kwargs.update(start_new_session=os.name == 'posix')
+    if os.name == 'nt':
+        kwargs['creationflags'] = kwargs.get('creationflags', 0) | 0x00000004  # CREATE_SUSPENDED
+    process = subprocess.Popen(command, **kwargs)
+    windows_job = None
+    try:
+        if os.name == 'nt':
+            try:
+                windows_job = _windows_job(process)
+            except BaseException:
+                process.kill()
+                process.wait(timeout=2)
+                raise
+        try:
+            limit = min(limit, max(0, _JOURNEY_DEADLINE.get() - time.monotonic()))
+            stdout, stderr = process.communicate(supplied_input, timeout=limit)
+        except subprocess.TimeoutExpired as error:
+            # poll() may already report exit while a descendant holds the pipes.
+            # The group/job still owns those descendants after the parent exits.
+            cleanup_errors = []
+            if os.name == 'posix':
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            elif windows_job:
+                kernel, job = windows_job
+                if not kernel.TerminateJobObject(job, 1):
+                    cleanup_errors.append('TerminateJobObject failed')
+            if process.poll() is None:
+                process.kill()
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                stdout, stderr = error.output, error.stderr
+                cleanup_errors.append('pipes did not close within cleanup budget')
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                cleanup_errors.append('child was not reaped within cleanup budget')
+            raise AssertionError(
+                f'Subprocess timed out after {limit:.3f}s: {diagnostic}\n'
+                f'stdout={stdout!r}\nstderr={stderr!r}\ncleanup={cleanup_errors!r}') from error
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        if check:
+            result.check_returncode()
+        return result
+    finally:
+        if windows_job:
+            windows_job[0].CloseHandle(windows_job[1])
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def consume_required_context(read, returned):
+    """Receipt hashes/timestamps are not progress; pages and consumed members are."""
+    seen_pages, consumed = set(), set()
+    stalled = 0
+    while True:
+        pages = {(page['sha256'], page.get('page', 0), page.get('section'))
+                 for page in returned.get('pages', [])}
+        members = set(returned.get('context_receipt', {}).get('consumed_inputs', []))
+        progress = bool(pages - seen_pages or members - consumed)
+        seen_pages.update(pages)
+        consumed.update(members)
+        if not returned['remaining_required']:
+            return returned
+        stalled = 0 if progress else stalled + 1
+        assert stalled < 3, 'Required-body delivery made no semantic progress (repeated pages/receipts)'
+        assert time.monotonic() < _JOURNEY_DEADLINE.get(), 'Context journey deadline exhausted'
+        returned = read()
+
+
 def native_root(env):
     """Publish real fixture lineage for first use, outside the source tree."""
     from taskplane.tests.test_flow_integration import native
@@ -30,15 +184,16 @@ def native_root(env):
     return transcript
 
 
+@journey
 def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
     if args[0] == 'submit' and code == 0:
         # A legitimate fixture producer refreshes its receipt after corrections.
         # Every body is returned through the selected shipped runtime's CLI.
         prepared = cli(workspace, host, 'context', root=root, environment=environment)
         returned = cli(workspace, host, 'context', '--consume', prepared['handoff_ref']['sha256'], root=root, environment=environment)
-        while returned['remaining_required']:
-            returned = cli(workspace, host, 'context', '--read-required', prepared['handoff_ref']['sha256'], root=root, environment=environment)
-            assert returned['pages'], 'Required-body delivery made no progress'
+        returned = consume_required_context(
+            lambda: cli(workspace, host, 'context', '--read-required',
+                        prepared['handoff_ref']['sha256'], root=root, environment=environment), returned)
         assert returned['remaining_required'] == 0
         target = workspace/args[args.index('--output')+1]
         data = json.loads(target.read_text()); data['context_receipt'] = returned['context_receipt']
@@ -78,7 +233,7 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
         event={'hook_event_name':name,'cwd':str(workspace),'tool_use_id':call_id,**identity,
                'tool_name':tool,'tool_input':{key:shlex.join(argv)},**extra}
         command=hooks[name][0]['hooks'][0]['commandWindows' if os.name=='nt' else 'command']
-        result=subprocess.run(command,shell=True,cwd=workspace,env=env,input=json.dumps(event),
+        result=bounded_run(command,shell=True,cwd=workspace,env=env,input=json.dumps(event),
                               capture_output=True,text=True)
         assert result.returncode==0,(result.stdout,result.stderr)
         return json.loads(result.stdout)
@@ -86,12 +241,13 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
     if before.get('hookSpecificOutput',{}).get('permissionDecision')=='deny':
         assert code==2,before
         return {**before,'hook_refusal':True}  # The denied operation is never executed.
-    result=subprocess.run(argv,cwd=workspace,env=env,capture_output=True,text=True)
+    result=bounded_run(argv,cwd=workspace,env=env,capture_output=True,text=True)
     assert result.returncode==code,(result.stdout,result.stderr)
     hook('PostToolUse',tool_response={'exit_code':result.returncode})
     return json.loads(result.stdout)
 
 
+@journey
 def handoff(workspace,host,root=ROOT):
     if host=='claude':
         # Claude has no Codex opener. A linked artifact is a supported handoff;
@@ -112,7 +268,7 @@ def handoff(workspace,host,root=ROOT):
                'tool_input':{'target':{'type':'browser','url':(workspace/'.taskplane/dashboard.html').as_uri()}}}
         if name=='PostToolUse':event['tool_response']={'status':'queued','threadId':'root'}
         command=hooks[name][0]['hooks'][0]['commandWindows' if os.name=='nt' else 'command']
-        r=subprocess.run(command,shell=True,cwd=workspace,env=env,input=json.dumps(event),capture_output=True,text=True)
+        r=bounded_run(command,shell=True,cwd=workspace,env=env,input=json.dumps(event),capture_output=True,text=True)
         assert r.returncode==0,(r.stdout,r.stderr)
         assert json.loads(r.stdout).get('hookSpecificOutput',{}).get('permissionDecision')!='deny',r.stdout
     cli(workspace,host,'present','--evidence','.taskplane/dashboard.html','--presentation','linked',
@@ -231,6 +387,7 @@ def test_collaborative_native_admission_never_allows_shell_chaining(tmp_path):
     assert not workflow_local.command_words({'tool_input':{'cmd':shlex.join(base)+' && echo unsafe'}})
 
 
+@journey
 def exercise_correction_cli(workspace, host, root=ROOT):
     create(workspace)
     state=cli(workspace,host,'start','--scope','.taskplane/scope.json','--request-reference','test/review-correction',root=root)['workflow']
@@ -258,6 +415,7 @@ def test_native_correction_resubmission(tmp_path, host):
     exercise_correction_cli(tmp_path/'workspace',host)
 
 
+@journey
 def exercise(workspace,host,root=ROOT):
     create(workspace)
     report=cli(workspace,host,'start','--scope','.taskplane/scope.json','--request-reference','test/user-request',root=root)
@@ -295,6 +453,7 @@ def exercise(workspace,host,root=ROOT):
     return state
 
 
+@journey
 def exercise_state_repairs(workspace, host, root=ROOT):
     """Run both repaired state invariants against the selected actual runtime."""
     create(workspace)
@@ -308,7 +467,7 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     out['supporting_notes'] = '\u03bb' * (8 * 1024 * 1024 // 6 + 1)
     (workspace/target).write_text(json.dumps(out))
     # Resolve the actual selected runtime's store path without a source fallback.
-    path_probe = subprocess.run([sys.executable,'-I','-c',
+    path_probe = bounded_run([sys.executable,'-I','-c',
         "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
         "from taskplane import workflow_host as h; "
         "assert Path(h.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()); "
@@ -364,7 +523,7 @@ finished = next(s for s in db['runs'].values() if s['finished'])
 check_historical_finish_preserves_active(c, finished, active)
 print('NGEM-F01 NGEM-F02 repaired state checks passed')
 '''
-    child = subprocess.run([sys.executable,'-I','-c',script,str(root),str(replay_ws),host],
+    child = bounded_run([sys.executable,'-I','-c',script,str(root),str(replay_ws),host],
                            cwd=workspace.parent,capture_output=True,text=True)
     assert child.returncode == 0, child.stdout + child.stderr
     assert 'NGEM-F01 NGEM-F02 repaired state checks passed' in child.stdout
@@ -376,13 +535,14 @@ def test_native_state_repairs_through_production_interfaces(tmp_path,host):
     exercise_state_repairs(tmp_path.resolve()/'native',host)
 
 
+@journey
 def exercise_repeated_repair_capacity(workspace, host, root=ROOT):
     """Retain eleven real checkpoints across two accepted repair routes."""
     create(workspace)
     state = cli(workspace, host, 'start', '--scope', '.taskplane/scope.json',
                 '--request-reference', 'fixture/repeated-repair-capacity', root=root)['workflow']
     # Resolve the store with the selected archive runtime, never a source adapter.
-    probe = subprocess.run([sys.executable, '-I', '-c',
+    probe = bounded_run([sys.executable, '-I', '-c',
         "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
         "from taskplane import workflow_host as h; "
         "assert Path(h.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()); "
@@ -704,6 +864,7 @@ def test_optional_graph_failure_preserves_committed_decision(tmp_path, monkeypat
     assert c.report()['status']=='approved'
 
 
+@journey
 def exercise_counter_freshness(workspace, host, root=ROOT):
     """EV-F01: real CLI readers retain saved data time after a transcript disappears."""
     from unittest.mock import patch
@@ -746,21 +907,25 @@ def test_saved_counters_keep_their_measurement_time(tmp_path,host):
 def test_measurement_clock_distinguishes_coverage(tmp_path,monkeypatch,case):
     from taskplane import flow
     from taskplane.tests.test_workflow_local import setup
+    from taskplane.tests.test_usage_accounting import counts
     c,state=setup(tmp_path)
     old='2026-09-01T00:00:00+00:00'
     def session(sid,status,stamp=old):
         return {'session':sid,'agent':sid,'role':'orchestrator' if sid=='root' else 'lens',
-                'usage':{'total_tokens':30},'native_usage':{'total_tokens':130},
+                'usage':counts(30),'native_usage':counts(130),
                 'status':status,'measured_at':stamp}
     sessions=[session('root','measured')]
     if case=='recorded':sessions=[session('root','recorded; native counter unavailable')]
     if case=='mixed':sessions.append(session('child','recorded; native counter unavailable'))
     if case=='missing':sessions[0].update(status='unavailable',usage=None,native_usage=None)
-    if case=='reset':sessions[0]['native_usage']={'total_tokens':1}
+    if case=='reset':sessions[0]['native_usage']=counts(1)
     if case=='unknown_time':sessions=[session('root','recorded; native counter unavailable',None)]
-    flow.append(tmp_path,{'kind':'start','session':'root','run':state['run'],'phase':'product','at':state['started_at'],'usage':{'total_tokens':100},'hook_setup':'host_adapter'})
-    monkeypatch.setattr(flow.flow_usage,'reconcile',lambda *_,**kw:{'sessions':deepcopy(sessions),'tokens':{'total_tokens':30},'token_coverage':{'discovery_errors':1 if case=='discovery' else 0}})
-    result=flow.report(tmp_path,state['run'],governor=c)
+    flow.append(tmp_path,{'kind':'start','session':'root','run':state['run'],'phase':'product','at':state['started_at'],'usage':counts(100),'hook_setup':'host_adapter'})
+    monkeypatch.setattr(flow.flow_usage,'reconcile',lambda *_,**kw:{'sessions':deepcopy(sessions),'tokens':counts(30),'token_coverage':{'discovery_errors':1 if case=='discovery' else 0}})
+    with flow.codex_cache.action_budget(tmp_path) as budget:
+        budget.discovery_status = 'complete'
+        budget.catalog_status = 'complete'
+        result=flow.report(tmp_path,state['run'],governor=c)
     clock=result['usage_measurement']
     expected={'fresh':'fresh','recorded':'recorded','mixed':'mixed','missing':'unavailable','reset':'unavailable','unknown_time':'partial','discovery':'partial'}[case]
     assert clock['status']==expected
@@ -773,6 +938,7 @@ def test_measurement_clock_distinguishes_coverage(tmp_path,monkeypatch,case):
     assert result['snapshot']['measurement_at']==clock['measured_at']
 
 
+@journey
 def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt=None,standalone=True):
     """Start with declared hooks before fixture evidence or skill/start calls."""
     import shlex,shutil
@@ -795,7 +961,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     identity={'session_id':'root'} if host=='claude' else {'thread_id':'root'}
     def hook(event,**payload):
         data={'hook_event_name':event,'cwd':str(workspace),'transcript_path':str(transcript),**identity,**payload}
-        proc=subprocess.run(hooks[event][0]['hooks'][0]['commandWindows' if os.name == 'nt' else 'command'],shell=True,cwd=workspace,env=env,
+        proc=bounded_run(hooks[event][0]['hooks'][0]['commandWindows' if os.name == 'nt' else 'command'],shell=True,cwd=workspace,env=env,
                             input=json.dumps(data),capture_output=True,text=True)
         assert proc.returncode==0,(proc.stdout,proc.stderr)
         return json.loads(proc.stdout)
@@ -811,7 +977,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
             assert bash, 'The Claude adapter fixture requires Git Bash on Windows'
             argv=[bash,'-c','. "$1"; shift; exec "$@"','fixture','.taskplane/fixture-env',*words]
         else:argv=words
-        proc=subprocess.run(argv,cwd=workspace,env=env,capture_output=True,text=True)
+        proc=bounded_run(argv,cwd=workspace,env=env,capture_output=True,text=True)
         assert proc.returncode==code,(proc.stdout,proc.stderr)
         return json.loads(proc.stdout) if cli_entry == 'flow' else proc.stdout.strip()
     assert hook('SessionStart')=={}
@@ -893,14 +1059,49 @@ def test_declared_hooks_require_harness_for_standalone_entries(tmp_path,host,pha
     exercise_harness_entry((tmp_path/'workspace').resolve(),host,phase)
 
 
-def shipped_execution_prompts():
-    """Use the actual UI/documentation contract instead of test-only phrasings."""
-    prompts=json.loads((ROOT/'.codex-plugin/plugin.json').read_text())['interface']['defaultPrompt']
+SHIPPED_PROMPT_NAMES = ('menu-design', 'menu-build', 'menu-review',
+                        'readme-autonomous-build', 'readme-complete-first-task')
+
+
+def readme_prompt(readme, heading):
+    marker = '### ' + heading
+    heading_match = re.search(rf'(?m)^{re.escape(marker)}[ \t]*$', readme)
+    assert heading_match, f'README.md: missing heading {marker!r}'
+    section = re.split(r'\n#{1,3} ', readme[heading_match.end():], maxsplit=1)[0]
+    assert '```text\n' in section, f'README.md: missing text fence under {marker!r}'
+    fenced = section.split('```text\n', 1)[1]
+    assert '```' in fenced, f'README.md: unterminated text fence under {marker!r}'
+    return fenced.split('```', 1)[0].strip()
+
+
+def shipped_execution_prompts(root=ROOT, *, codex_menu_root=ROOT):
+    """Resolve actual UI/documentation text only during the relevant test."""
+    menu_manifest = root/'.codex-plugin/plugin.json'
+    if not menu_manifest.exists() and not (root/'.codex-plugin').exists():
+        # Claude archives omit the Codex host directory. Only a validated Claude
+        # package may use this explicit cross-host fixture; README stays local.
+        from taskplane.version_contract import inspect_versions
+        claude_path = '.claude-plugin/plugin.json'
+        manifests = {claude_path: (root/claude_path).read_bytes()}
+        claude = json.loads(manifests[claude_path])
+        assert isinstance(claude, dict) and claude.get('name') == 'taskplane', \
+            'Claude-only package must identify the Taskplane plugin'
+        marketplace = '.claude-plugin/marketplace.json'
+        if (root/marketplace).exists():
+            manifests[marketplace] = (root/marketplace).read_bytes()
+        assert inspect_versions(manifests)['ok'], 'Claude package manifest versions must agree'
+        menu_manifest = codex_menu_root/'.codex-plugin/plugin.json'
+    menu = json.loads(menu_manifest.read_text())
+    assert isinstance(menu, dict) and isinstance(menu.get('interface'), dict), \
+        'Codex menu manifest requires an interface object'
+    prompts = menu['interface'].get('defaultPrompt')
+    assert isinstance(prompts, list) and all(isinstance(prompt, str) for prompt in prompts), \
+        'Codex defaultPrompt must be a list of strings'
     assert len(prompts)==3, 'Give every shipped menu prompt an explicit route expectation'
     assert all(len(prompt)<=128 for prompt in prompts), 'Codex ignores menu prompts longer than 128 characters'
-    readme=(ROOT/'README.md').read_text()
-    first_task=readme.split('### Try a small real change',1)[1].split('```text\n',1)[1].split('```',1)[0].strip()
-    autonomous=readme.split('### Working autonomously',1)[1].split('```text\n',1)[1].split('```',1)[0].strip()
+    readme=(root/'README.md').read_text()
+    first_task=readme_prompt(readme, 'Try a small real change')
+    autonomous=readme_prompt(readme, 'Working autonomously')
     return [('menu-design',prompts[0],'design',True),
             ('menu-build',prompts[1],'product',False),
             ('menu-review',prompts[2],'engineering',True),
@@ -908,8 +1109,233 @@ def shipped_execution_prompts():
             ('readme-complete-first-task',first_task,'product',False)]
 
 
+def _archive_prompt_fixture(tmp_path, host='claude'):
+    root, menu_root = tmp_path/'extracted', tmp_path/'menu-source'
+    root.mkdir()
+    (menu_root/'.codex-plugin').mkdir(parents=True)
+    menu = {'interface': {'defaultPrompt': ['design sentinel', 'build sentinel', 'review sentinel']}}
+    (menu_root/'.codex-plugin/plugin.json').write_text(json.dumps(menu))
+    (root/'README.md').write_text(
+        '### Try a small real change\n```text\nextracted first task\n```\n'
+        '### Working autonomously\n```text\nextracted autonomous task\n```\n')
+    (root/f'.{host}-plugin').mkdir()
+    manifest = {'name': 'taskplane', 'version': '2.35.4'}
+    if host == 'codex':
+        manifest.update(menu)
+    (root/f'.{host}-plugin/plugin.json').write_text(json.dumps(manifest))
+    return root, menu_root
+
+
+@pytest.mark.parametrize('marketplace', [False, True])
+def test_shipped_prompts_claude_only_uses_extracted_readme(tmp_path, marketplace):
+    root, menu_root = _archive_prompt_fixture(tmp_path)
+    if marketplace:
+        (root/'.claude-plugin/marketplace.json').write_text(json.dumps({
+            'version': '2.35.4', 'plugins': [{'name': 'taskplane', 'version': '2.35.4'}]}))
+    assert shipped_execution_prompts(root, codex_menu_root=menu_root) == [
+        ('menu-design', 'design sentinel', 'design', True),
+        ('menu-build', 'build sentinel', 'product', False),
+        ('menu-review', 'review sentinel', 'engineering', True),
+        ('readme-autonomous-build', 'extracted autonomous task', 'product', False),
+        ('readme-complete-first-task', 'extracted first task', 'product', False)]
+    # The unchanged archive caller supplies only root and uses the explicit default menu source.
+    rows = shipped_execution_prompts(root)
+    assert rows[:3] == shipped_execution_prompts()[:3]
+    assert rows[3:] == [('readme-autonomous-build', 'extracted autonomous task', 'product', False),
+                       ('readme-complete-first-task', 'extracted first task', 'product', False)]
+
+
+@pytest.mark.parametrize('invalid', ['missing', 'json', 'shape', 'identity', 'version',
+                                  'missing-name', 'missing-version',
+                                  'market-json', 'market-version', 'market-entry'])
+def test_shipped_prompts_require_valid_claude_only_identity(tmp_path, invalid):
+    root, menu_root = _archive_prompt_fixture(tmp_path)
+    manifest = root/'.claude-plugin/plugin.json'
+    if invalid == 'missing':
+        manifest.unlink()
+    elif invalid == 'json':
+        manifest.write_text('{')
+    elif invalid == 'shape':
+        manifest.write_text('[]')
+    elif invalid in ('identity', 'version'):
+        manifest.write_text(json.dumps({'name': 'other' if invalid == 'identity' else 'taskplane',
+                                       'version': 'invalid' if invalid == 'version' else '2.35.4'}))
+    elif invalid in ('missing-name', 'missing-version'):
+        value = {'name': 'taskplane', 'version': '2.35.4'}
+        del value[invalid.removeprefix('missing-')]
+        manifest.write_text(json.dumps(value))
+    else:
+        market = {'version': '2.35.5' if invalid == 'market-version' else '2.35.4',
+                  'plugins': [{'name': 'other' if invalid == 'market-entry' else 'taskplane',
+                               'version': '2.35.4'}]}
+        (root/'.claude-plugin/marketplace.json').write_text(
+            '{' if invalid == 'market-json' else json.dumps(market))
+    with pytest.raises((AssertionError, ValueError, FileNotFoundError)):
+        shipped_execution_prompts(root, codex_menu_root=menu_root)
+
+
+@pytest.mark.parametrize('invalid', ['missing', 'json', 'shape', 'interface'])
+def test_shipped_prompts_never_mask_codex_manifest_failure(tmp_path, invalid):
+    root, menu_root = _archive_prompt_fixture(tmp_path)
+    (root/'.codex-plugin').mkdir()
+    if invalid != 'missing':
+        (root/'.codex-plugin/plugin.json').write_text(
+            {'json': '{', 'shape': '[]', 'interface': '{"interface": []}'}[invalid])
+    with pytest.raises((AssertionError, ValueError, FileNotFoundError)):
+        shipped_execution_prompts(root, codex_menu_root=menu_root)
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('prompts', ['abc', {'a': 'one', 'b': 'two', 'c': 'three'},
+                                   ['one', 'two'], ['one', 3, 'three'], ['one', None, 'three'],
+                                   ['one', 'two', 'x'*129]])
+def test_shipped_prompts_validate_three_bounded_strings(tmp_path, host, prompts):
+    root, menu_root = _archive_prompt_fixture(tmp_path, host)
+    menu_path = (root if host == 'codex' else menu_root)/'.codex-plugin/plugin.json'
+    menu_path.write_text(json.dumps({'interface': {'defaultPrompt': prompts}}))
+    with pytest.raises(AssertionError):
+        shipped_execution_prompts(root, codex_menu_root=menu_root)
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_shipped_prompts_accept_128_character_boundary(tmp_path, host):
+    root, menu_root = _archive_prompt_fixture(tmp_path, host)
+    menu_path = (root if host == 'codex' else menu_root)/'.codex-plugin/plugin.json'
+    prompts = ['x'*128, 'y'*128, 'z'*128]
+    menu_path.write_text(json.dumps({'interface': {'defaultPrompt': prompts}}))
+    rows = shipped_execution_prompts(root, codex_menu_root=menu_root)
+    assert rows[:3] == [('menu-design', prompts[0], 'design', True),
+                        ('menu-build', prompts[1], 'product', False),
+                        ('menu-review', prompts[2], 'engineering', True)]
+
+
+def test_shipped_prompts_codex_manifest_takes_precedence(tmp_path):
+    root, menu_root = _archive_prompt_fixture(tmp_path, 'codex')
+    (menu_root/'.codex-plugin/plugin.json').write_text('{')
+    (root/'.claude-plugin').mkdir()
+    (root/'.claude-plugin/plugin.json').write_text('{')
+    rows = shipped_execution_prompts(root, codex_menu_root=menu_root)
+    assert rows == [('menu-design', 'design sentinel', 'design', True),
+                    ('menu-build', 'build sentinel', 'product', False),
+                    ('menu-review', 'review sentinel', 'engineering', True),
+                    ('readme-autonomous-build', 'extracted autonomous task', 'product', False),
+                    ('readme-complete-first-task', 'extracted first task', 'product', False)]
+
+
+@pytest.mark.parametrize('body,diagnostic', [
+    (None, 'README.md'),
+    ('unrelated text', 'missing heading'),
+    ('### Try a small real change\nplain text', 'missing text fence'),
+    ('### Try a small real change\n```text\nunfinished', 'unterminated text fence'),
+])
+def test_shipped_prompts_claude_only_reports_extracted_readme_failure(tmp_path, body, diagnostic):
+    root, menu_root = _archive_prompt_fixture(tmp_path)
+    if body is None:
+        (root/'README.md').unlink()
+    else:
+        (root/'README.md').write_text(body)
+    with pytest.raises((AssertionError, FileNotFoundError), match=diagnostic):
+        shipped_execution_prompts(root, codex_menu_root=menu_root)
+
+
 @pytest.mark.parametrize('host',['codex','claude'])
-@pytest.mark.parametrize('name,prompt,phase,standalone',shipped_execution_prompts(),
-                         ids=[row[0] for row in shipped_execution_prompts()])
-def test_shipped_execution_prompts_require_harness_before_agent_setup(tmp_path,host,name,prompt,phase,standalone):
+@pytest.mark.parametrize('name', SHIPPED_PROMPT_NAMES)
+def test_shipped_execution_prompts_require_harness_before_agent_setup(tmp_path,host,name):
+    _, prompt, phase, standalone = next(row for row in shipped_execution_prompts() if row[0] == name)
     exercise_harness_entry((tmp_path/name).resolve(),host,phase,prompt=prompt,standalone=standalone)
+
+
+@pytest.mark.parametrize('body,diagnostic', [
+    ('unrelated text', 'missing heading'),
+    ('### Working autonomously\nplain text\n## Next section\n```text\nunrelated\n```', 'missing text fence'),
+    ('### Working autonomously\n```text\nunfinished', 'unterminated text fence'),
+])
+def test_readme_prompt_reports_structural_errors(body, diagnostic):
+    with pytest.raises(AssertionError, match=diagnostic):
+        readme_prompt(body, 'Working autonomously')
+
+
+def test_malformed_readme_does_not_break_helper_imports_or_collection(tmp_path):
+    script = '''from pathlib import Path
+original = Path.read_text
+def read(self, *args, **kwargs):
+    text = original(self, *args, **kwargs)
+    return text.replace('### Working autonomously', '### Renamed') if self.name == 'README.md' else text
+Path.read_text = read
+from taskplane.tests import test_native_workflow_cli as native
+from taskplane.tests import test_workflow_autonomy, test_workflow_packages
+import pytest
+assert pytest.main(['--collect-only', '-q', '-p', 'no:cacheprovider',
+                   'taskplane/tests/test_native_workflow_cli.py']) == 0
+try:
+    native.shipped_execution_prompts()
+except AssertionError as error:
+    assert 'missing heading' in str(error), str(error)
+    print('lazy prompt diagnostic:', error)
+else:
+    raise AssertionError('Malformed README was accepted')
+'''
+    result = bounded_run([sys.executable, '-B', '-c', script], cwd=ROOT,
+                         capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'lazy prompt diagnostic:' in result.stdout
+
+
+def test_context_duplicate_pages_cannot_hide_behind_new_receipts():
+    calls = 0
+    def response(page=0, remaining=1, members=()):
+        return {'remaining_required': remaining,
+                'pages': [{'sha256': 'same-root', 'page': page, 'section': None}],
+                'context_receipt': {'receipt': {'sha256': str(calls), 'timestamp': calls},
+                                    'consumed_inputs': list(members)}}
+    def duplicate():
+        nonlocal calls
+        calls += 1
+        return response()
+    with pytest.raises(AssertionError, match='no semantic progress'):
+        consume_required_context(duplicate, response())
+    assert calls == 3
+    # Root counts need not decrease on every valid page, nor on each index child.
+    replies = iter([response(1), response(2), response(2, members=('child',)),
+                    response(2, 0, ('child', 'same-root'))])
+    final = consume_required_context(lambda: next(replies), response())
+    assert final['remaining_required'] == 0
+
+
+def test_nested_journeys_share_deadline_across_workspaces(tmp_path):
+    token = _JOURNEY_DEADLINE.set(time.monotonic() + .35)
+    started = time.monotonic()
+    try:
+        deadline = _JOURNEY_DEADLINE.get()
+        with journey_budget(100):
+            assert _JOURNEY_DEADLINE.get() == deadline
+            bounded_run([sys.executable, '-c', 'import time; time.sleep(.1)'], cwd=tmp_path)
+            other = tmp_path/'second-workspace'; other.mkdir()
+            with pytest.raises(AssertionError, match='timed out'):
+                bounded_run([sys.executable, '-c', 'import time; time.sleep(2)'], cwd=other)
+            with pytest.raises(AssertionError, match='Journey deadline exhausted'):
+                bounded_run([sys.executable, '-c', 'raise AssertionError("must not start")'])
+        assert time.monotonic() - started < 3
+    finally:
+        _JOURNEY_DEADLINE.reset(token)
+
+
+@pytest.mark.parametrize('parent_exits', [False, True], ids=['live-shell', 'exited-parent-held-pipes'])
+def test_subprocess_timeout_cleans_descendants_and_reports_output(tmp_path, parent_exits):
+    marker = tmp_path/'descendant-survived'
+    child = ('import pathlib,time; time.sleep(.8); '
+             f'pathlib.Path({str(marker)!r}).write_text("survived")')
+    parent = ('import subprocess,sys,time; '
+              f'subprocess.Popen([sys.executable,"-c",{child!r}]); '
+              'print("partial stdout",flush=True); print("partial stderr",file=sys.stderr,flush=True); '
+              + ('' if parent_exits else 'time.sleep(20)'))
+    argv = [sys.executable, '-u', '-c', parent]
+    command = argv if parent_exits else (subprocess.list2cmdline(argv) if os.name == 'nt' else shlex.join(argv))
+    started = time.monotonic()
+    with pytest.raises(AssertionError, match='timed out') as error:
+        bounded_run(command, shell=not parent_exits, cwd=tmp_path,
+                    capture_output=True, text=True, timeout=.4)
+    assert time.monotonic() - started < 3
+    assert all(text in str(error.value) for text in ('command=', str(tmp_path), 'partial stdout', 'partial stderr'))
+    time.sleep(.6)
+    assert not marker.exists(), 'Timed-out subprocess left a live descendant'

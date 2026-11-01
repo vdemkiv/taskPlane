@@ -1,5 +1,17 @@
 # taskplane changelog
 
+## v2.35.5 — reliable recovery, storage and verification
+
+- Recover measured usage after review attachments and large native compaction records, using bounded incremental parsing and proven run/visit intervals. Preserve incomplete-coverage reporting, counter validation and historical records.
+- Separate authorized repair transitions from successful phase acceptance; retain exact feedback bindings, effective materiality and causal obligations across revisions.
+- Publish context objects atomically with durable staging, preserve lock ownership, and share one lock-wait deadline across each guarded operation. Validate worker receipts without rewriting stored evidence.
+- Stream typed verification output into its declared bounded log, avoid duplicate output in result records, and preserve timeout, overflow and process-cleanup checks.
+- Reject option-shaped Git revision inputs, honor the configured Claude transcript root, and correlate failed tool completion through the shipped PostToolUseFailure hook.
+- Preserve graph coverage above 400 files and replace recursive strongly connected component traversal with an explicit stack.
+- Prevent stale Claude Mod replies from restoring freshness after detach, and show current verification even when no finding is selected.
+- Make generator verification non-mutating, defer test prompt parsing with explicit diagnostics, validate host-specific archive fixtures, and bound native test journeys without weakening assertions.
+- Complete the 18-finding remediation with current verification and preserved review provenance. Release CI verifies the integrated candidate; fixture checks do not claim live-host certification.
+
 ## v2.35.4 — collaborative phases and causal verification
 
 - Add collaborative phase refinement for new CLI runs, with durable holds, feedback bound to exact artifacts, and immutable supporting artifacts in the conversation and existing dashboard. Legacy runs keep their existing contract.

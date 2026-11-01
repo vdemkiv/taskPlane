@@ -175,17 +175,24 @@ class _PreviewStore(Store):
         super().__init__(workspace)
         self.objects: dict[str, bytes] = {}
 
+    def put(self, kind: str, value: Any, source_key: str = "") -> dict[str, Any]:
+        return self._put(kind, value, source_key)
+
     def _object(self, kind: str, data: Any, source_key: str, form: str) -> dict[str, Any]:
         raw = encode({"schema": "taskplane.context-object/v1", "kind": kind,
                       "source_key": source_key, "form": form, "data": data})
         w.require(len(raw) <= OBJECT_LIMIT, "context_overflow", "Canonical context node is oversized.")
         key = hashlib.sha256(raw).hexdigest()
+        if self.path(key).exists():
+            super()._bytes(key)  # Reconstruction must not conceal corrupt durable evidence.
         self.objects[key] = raw
         return {"schema": REFERENCE_SCHEMA, "kind": kind, "sha256": key,
                 "bytes": len(raw), "source_key": source_key}
 
     def _bytes(self, key: str) -> bytes:
-        return self.objects[key] if key in self.objects else super()._bytes(key)
+        if self.path(key).exists() or key not in self.objects:
+            return super()._bytes(key)
+        return self.objects[key]
 
     def register(self, binding: dict[str, Any], refs: list[dict[str, Any]]) -> None:
         return None

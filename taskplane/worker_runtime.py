@@ -88,7 +88,11 @@ def native_result_valid(workspace: Path, state: dict[str, Any], task_id: str,
             or row.get("dependency_results") != result.get("dependency_results")):
         return False
     try:
-        worker_session(workspace, state, row).validate(row.get("context_receipt"))
+        session = worker_session(workspace, state, row, persist=False)
+        durable = Store(workspace)
+        for ref in [session.view_ref, session.handoff_ref, *(item["ref"] for item in session.required)]:
+            durable.descendants(ref)
+        session.validate(row.get("context_receipt"))
         return True
     except w.Refusal:
         return False
@@ -363,12 +367,12 @@ def find(state: dict[str, Any], worker: str) -> dict[str, Any] | None:
     return max(found, key=lambda r: r["prepared_at"]) if found else None
 
 
-def worker_session(workspace: Path, state: dict[str, Any], row: dict[str, Any]) -> Session:
+def worker_session(workspace: Path, state: dict[str, Any], row: dict[str, Any], *, persist: bool = True) -> Session:
     current(state, row)
     w.require(row.get("worker_id"), "scope_violation", "Native worker identity is not bound.")
     consumer = {k: row[k] for k in ("worker_id", "grant_id", "attempt", "task_id", "task_generation")}
     return Session(workspace, state, row["task_id"], consumer=consumer,
-                   snapshot=Store(workspace).resolve(row["snapshot"]))
+                   snapshot=Store(workspace).resolve(row["snapshot"]), persist=persist)
 
 
 def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:

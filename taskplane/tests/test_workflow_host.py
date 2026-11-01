@@ -275,6 +275,100 @@ def test_collaborative_unsubmitted_transition_refuses_as_approval_without_mutati
     assert refused.value.reason == 'approval_required'
 
 
+def test_failed_evaluate_authorizes_repair_without_accepting_failure(tmp_path):
+    from taskplane import workflow_evidence as e
+    from taskplane.tests.test_workflow_evidence import collaborative_cause
+    from taskplane.tests.test_workflow_local import decide, decision, collaborative_output
+    c, state, _ = collaborative_repair_setup(tmp_path)
+    state, output, observation = collaborative_repair_evaluate(c, state)
+    from taskplane.tests.test_workflow_autonomy import set_policy, auto
+    state = set_policy(c, state)
+    output['criterion_results']['AC1']['status'] = 'fail'
+    for gate in output['phase_review']['dod']:
+        if gate['id'] in {'criterion:AC1', 'run-dod:DELIVERY'}: gate['outcome'] = 'unmet'
+    output['route_change'] = {'kind': 'repair', 'findings': ['AC1'],
+                             'reason': 'Correct failed acceptance scenario', 'proposed_paths': ['app.py']}
+    cause = collaborative_cause(tmp_path, observation)
+    cause.update(failure_id='AC1', state='investigating')
+    cause['verification'][0]['failure_id'] = 'AC1'
+    output['phase_review']['causes'] = [cause]
+    state = collaborative_repair_submit(c, state, output)
+    failed_packet = deepcopy(w.current(state)['packet'])
+    with pytest.raises(w.Refusal): auto(c, state)
+    state = decide(c, state, decision(state, event='authorize-repair'))
+    assert w.current(state)['decision'] == 'repair_authorized'
+    assert w.current(state)['packet'] == failed_packet
+    assert state['policy_suspension']
+    for defect in ('packet', 'hold', 'predecessor', 'approval'):
+        broken = deepcopy(state)
+        stage = broken['visits'][broken['index']]
+        if defect == 'packet': stage['packet']['output']['summary'] = 'tampered'
+        elif defect == 'hold': stage['hold'] = {'active': True}
+        elif defect == 'predecessor': broken['visits'][2]['packet']['output']['summary'] = 'tampered'
+        else: broken['decisions'].pop('authorize-repair')
+        with pytest.raises(w.Refusal): w.advance(broken, 'build')
+    assert not h.phase_readiness(tmp_path, state)['ready']
+    state = c.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
+    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
+    with pytest.raises(w.Refusal, match='scope'):
+        c.guard({'tool_name': 'Write', 'tool_input': {'path': 'outside.py'}}, state['run'])
+    (tmp_path / 'app.py').write_text('value = 2\n')
+    for phase in ('build', 'evaluate'):
+        _, output, _ = prepare(tmp_path, phase)
+        output.update(run=state['run'], visit=w.current(state)['id'])
+        collaborative_output(tmp_path, state, output)
+        gates = e.phase_review_gates(state, output, root=tmp_path)
+        assert not gates['ready'] and any('AC1' in b for b in gates['blockers'])
+        repaired = collaborative_cause(tmp_path, observation)
+        repaired['failure_id'] = repaired['verification'][0]['failure_id'] = 'AC1'
+        output['phase_review']['causes'] = [repaired]
+        weakened = deepcopy(output)
+        weakened['phase_review']['causes'][0]['affected_checks'] = []
+        with pytest.raises(w.Refusal, match='Causal'): e.phase_review_gates(state, weakened, root=tmp_path)
+        if phase == 'build':
+            output['build_checks'][0]['status'] = 'fail'
+            assert not e.phase_review_gates(state, output, root=tmp_path)['ready']
+            output['build_checks'][0]['status'] = 'pass'
+        assert e.phase_review_gates(state, output, root=tmp_path)['ready']
+        state = collaborative_repair_submit(c, state, output)
+        state = decide(c, state, decision(state, event='accept-repaired-' + phase))
+        if phase == 'build':
+            state = c.apply('advance', state['run'], expected_revision=state['revision'], phase='evaluate')
+    assert w.current(state)['decision'] == 'approved'
+    assert any(v.get('packet') == failed_packet and v['decision'] == 'repair_authorized' for v in state['visits'])
+
+
+@pytest.mark.parametrize('defect', ['hold', 'scope', 'dor', 'phase_output', 'unsupported', 'binding', 'foreign', 'predecessor', 'no_human', 'forged_cause'])
+def test_failed_evaluate_repair_keeps_authority_and_readiness_guards(tmp_path, defect):
+    from taskplane.tests.test_workflow_local import decide, decision, refine, refinement
+    c, state, _ = collaborative_repair_setup(tmp_path)
+    state, output, _ = collaborative_repair_evaluate(c, state)
+    output['criterion_results']['AC1']['status'] = 'fail'
+    for gate in output['phase_review']['dod']:
+        if gate['id'] in {'criterion:AC1', 'run-dod:DELIVERY'}: gate['outcome'] = 'unmet'
+    output['route_change'] = {'kind': 'repair', 'findings': ['AC1'],
+                             'reason': 'Correct failed scenario', 'proposed_paths': ['app.py']}
+    if defect == 'scope': output['route_change']['proposed_paths'] = ['outside.py']
+    if defect == 'dor': output['phase_review']['dor'][0]['outcome'] = 'unmet'
+    if defect == 'phase_output': output['phase_review']['dod'][0]['outcome'] = 'unmet'
+    if defect == 'unsupported': output['phase_review']['dod'][1]['evidence'] = []
+    if defect == 'forged_cause':
+        from taskplane.tests.test_workflow_evidence import collaborative_cause
+        cause = collaborative_cause(tmp_path, output['phase_review']['dor'][0]['evidence'][0])
+        cause['failure_id'] = cause['verification'][0]['failure_id'] = 'AC1'
+        cause['correction_evidence'] = []
+        output['phase_review']['causes'] = [cause]
+    state = collaborative_repair_submit(c, state, output)
+    if defect == 'hold': state = refine(c, state, refinement(state, 'hold', {'reason': 'Keep investigating'}))
+    response = decision(state, event='refused-repair')
+    if defect == 'binding': response['binding']['revision'] -= 1
+    if defect == 'foreign': response['binding']['visit'] = 'foreign'
+    if defect == 'no_human': response['source'].update(actor='assistant', automatic=True)
+    if defect == 'predecessor': (tmp_path / 'plan.json').write_text('{}')
+    with pytest.raises(w.Refusal): decide(c, state, response)
+    assert 'refused-repair' not in c.report()['decisions']
+
+
 def test_standalone_repair_refusal_preserves_protected_authorization(tmp_path):
     c, host, s = controller(tmp_path, {"entry": "engineering", "standalone": True})
     s = submit(c, s)
@@ -451,3 +545,29 @@ def test_protected_historical_finish_preserves_new_active_run(tmp_path):
     b = c.start({})
     assert b.pop('start_created') is True  # Start outcome is response-only, not persisted state.
     check_historical_finish_preserves_active(c, a, b)
+
+
+@pytest.mark.parametrize('entry,action', [('report', '_report'), ('hook', '_hook_action'),
+                                         ('_observe_hook', '_observe_hook_action'), ('main', '_main')])
+def test_flow_entrypoints_share_lock_wait_budget(tmp_path, monkeypatch, entry, action):
+    import errno
+    from taskplane import flow, primitives
+    fcntl = pytest.importorskip('fcntl')
+    now = [0.0]
+    monkeypatch.setattr(primitives._time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(primitives._time, 'sleep', lambda delay: now.__setitem__(0, now[0] + delay))
+    monkeypatch.setattr(flow.workspace_binding, 'resolve_workspace', lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(flow.workspace_binding, 'ensure', lambda *args, **kwargs: None)
+    def busy(*args):
+        raise BlockingIOError(errno.EAGAIN, 'busy')
+    monkeypatch.setattr(fcntl, 'flock', busy)
+    def operation(*args, **kwargs):
+        now[0] += 9
+        with (tmp_path/'entry.lock').open('w+b') as handle:
+            for _ in range(2):
+                with pytest.raises(primitives.StateError):
+                    primitives.lock_file(handle)
+        return 0 if entry == 'main' else {}
+    monkeypatch.setattr(flow, action, operation)
+    getattr(flow, entry)([] if entry == 'main' else tmp_path if entry == 'report' else {})
+    assert now[0] == pytest.approx(10)

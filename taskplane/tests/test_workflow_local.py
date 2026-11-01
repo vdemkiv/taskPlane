@@ -1272,3 +1272,83 @@ def test_every_worktree_destination_requires_identical_checkout_identity(tmp_pat
     observe_worktree(harness, event, s, payload)
     assert not harness.read().get('recovery_workspace')
     assert not harness.read().get('recovery_pending')
+
+
+@pytest.mark.parametrize('origin', ['draft', 'registry'])
+@pytest.mark.parametrize('material', [True, None])
+@pytest.mark.parametrize('change', ['material', 'criteria'])
+def test_feedback_original_obligations_cannot_be_weakened(tmp_path, origin, material, change):
+    from taskplane.context import Store
+    c, state, output = collaborative_setup(tmp_path)
+    (tmp_path / 'product.json').write_text(json.dumps(output))
+    state = refine(c, state, refinement(state, 'draft', {'output': 'product.json'}, human=False))
+    head = w.current(state)['phase_review']
+    body = Store(tmp_path).resolve(head['ref'])
+    request = refinement(state, 'feedback', {})
+    feedback = dict(id='FB1', criteria=['AC1'], source=local.refinement_source(state, request),
+                    target={'id': 'draft', 'revision': 1, 'digest': local.primitives.content_fingerprint(body['output'])}, disposition='open')
+    if material is not None: feedback['material'] = material
+    output['phase_review']['revision'] = 2
+    output['phase_review']['feedback'] = [feedback]
+    if origin == 'registry':
+        request['payload'] = feedback
+        state = refine(c, state, request)
+    else:
+        request.update(operation='draft', payload={'output': 'product.json'})
+        (tmp_path / 'product.json').write_text(json.dumps(output))
+        state = refine(c, state, request)
+    original = deepcopy(feedback)
+    output['phase_review']['revision'] = 3 if origin == 'draft' else 2
+    feedback['material' if change == 'material' else 'criteria'] = False if change == 'material' else []
+    (tmp_path / 'product.json').write_text(json.dumps(output))
+    with pytest.raises(w.Refusal):
+        refine(c, state, refinement(state, 'draft', {'output': 'product.json'}, human=False))
+    feedback.clear(); feedback.update(original)
+    # Explicit true and its omitted default represent the same obligation.
+    feedback['material'] = True
+    feedback.update(disposition='addressed', response='Updated the requested scenario', resulting_revision=output['phase_review']['revision'],
+                    evidence=output['phase_review']['dor'][0]['evidence'])
+    (tmp_path / 'product.json').write_text(json.dumps(output))
+    state = refine(c, state, refinement(state, 'draft', {'output': 'product.json'}, human=False))
+    assert w.current(state)['phase_review']['ready']
+
+
+def test_approved_checkpoint_reopens_only_for_fresh_bound_human_negative(tmp_path):
+    from taskplane.context import Store
+    c, state, output = collaborative_setup(tmp_path)
+    from taskplane.tests.test_workflow_autonomy import set_policy
+    state = set_policy(c, state)
+    state = collaborative_seal(c, state, output)
+    old_response = decision(state, event='first-acceptance')
+    state = decide(c, state, old_response)
+    original = deepcopy(w.current(state)['packet'])
+    original_decision = deepcopy(state['decisions']['first-acceptance'])
+    head = w.current(state)['phase_review']
+    body = Store(tmp_path).resolve(head['ref'])
+    request = refinement(state, 'feedback', {})
+    feedback = dict(id='FB1', criteria=['AC1'], source=local.refinement_source(state, request),
+                    target={'id': 'draft', 'revision': 1, 'digest': local.primitives.content_fingerprint(body['output'])}, disposition='open')
+    request['payload'] = feedback
+    state = refine(c, state, request)
+    with pytest.raises(w.Refusal): c.apply('advance', state['run'], expected_revision=state['revision'], phase='design')
+    negative = decision(state, text='Changes requested', event='revise-approved')
+    stale = deepcopy(negative); stale['binding']['revision'] -= 1
+    with pytest.raises(w.Refusal): decide(c, state, stale)
+    state = decide(c, state, negative)
+    assert w.current(state)['decision'] == 'changes_requested'
+    assert state['policy_suspension']
+    replay_conflict = deepcopy(negative); replay_conflict['excerpt'] = 'Rejected'; replay_conflict['choice'] = 'rejected'
+    with pytest.raises(w.Refusal): decide(c, state, replay_conflict)
+    assert state['decisions']['first-acceptance'] == original_decision
+    assert any(row.get('packet') == original and row.get('decision') == 'approved' for row in state['history'])
+    assert decide(c, state, old_response)['visits'] == state['visits']
+    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'product.json'}}, state['run'])
+    output['phase_review']['revision'] = 2
+    output['phase_review']['feedback'] = [{**feedback, 'material': True, 'disposition': 'addressed',
+        'resulting_revision': 2, 'response': 'Corrected scenario', 'evidence': output['phase_review']['dor'][0]['evidence']}]
+    output['summary'] = 'Revised after observed feedback'
+    state = collaborative_seal(c, state, output)
+    state = decide(c, state, decision(state, event='fresh-acceptance'))
+    assert state['decisions']['first-acceptance'] == original_decision
+    assert w.current(state)['packet'] != original
+    assert w.current(c.apply('advance', state['run'], expected_revision=state['revision'], phase='design'))['phase'] == 'design'

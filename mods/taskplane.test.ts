@@ -613,3 +613,109 @@ for (const surface of ['terminal','desktop'] as const) {
     await ui.unmount();
   });
 }
+
+for (const boundary of ['report', 'clock'] as const) {
+  test(`detach invalidates an in-flight ${boundary} result and blocks refreshes`, async () => {
+    const f = fixture(); await f.c.restore(undefined);
+    await f.c.edit('keep draft', binding);
+    await f.c.prepare('changes_requested', binding, 'keep draft');
+    const attempt = f.c.pending;
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let reports = 0;
+    f.io.report = async (run, generation) => { reports++; if (boundary === 'report') { entered(); await blocked; } return snapshot(generation, run); };
+    f.io.now = async () => { if (boundary === 'clock') { entered(); await blocked; } return 1000; };
+    const flight = f.c.refresh(); await started;
+    f.c.disconnect(); release(); await flight;
+    expect(f.c.stale).toBe(true);
+    expect(f.c.eligibility(binding)).toBeDefined();
+    await f.c.tick(); await f.c.refresh();
+    expect(reports).toBe(1);
+    expect(f.c.stale).toBe(true);
+    await f.c.confirm(attempt!, press(), 'session-1');
+    expect(f.calls.filter(x => x.operation === 'record_ui')).toHaveLength(0);
+    expect(f.c.pending).toBe(attempt); expect(f.c.draft(binding)).toBe('keep draft');
+  });
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: current checks are inspectable without findings`, async ($, on) => {
+    const s = snapshot(); s.findings = [];
+    s.current_checks = [{ id: 'current-pass', status: 'passed' }, { id: 'current-fail', status: 'failed' }];
+    const f = hostFixtures(on, s);
+    await $.session.start({ cwd: '/fixture', surface, isInteractive: true });
+    const ui = await $.ui.mount({ plugin: 'taskplane', surface, component: 'Pane', requestId: 'taskplane-checkpoint', props: pane(40) });
+    expect(await ui.find({ type: 'Text', text: 'No findings recorded' })).toBeDefined();
+    expect(await ui.find({ key: 'view-verification' })).toBeDefined();
+    await ui.press({ key: 'view-verification' });
+    for (const text of ['Current checks', 'current-pass', 'passed', 'current-fail', 'failed']) expect(await ui.find({ type: 'Text', text })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: 'Finding verification / historical records' })).toBeUndefined();
+    expect(f.calls).toHaveLength(0); await ui.unmount();
+  });
+  test(`${surface}: removing the last finding preserves current verification separately`, async ($, on) => {
+    const s = snapshot(); s.findings = [{ ...s.findings![0]!, checks: [{ id: 'old-check', status: 'passed', historical: true }] }];
+    const f = hostFixtures(on, s);
+    await $.session.start({ cwd: '/fixture', surface, isInteractive: true });
+    const ui = await $.ui.mount({ plugin: 'taskplane', surface, component: 'Pane', requestId: 'taskplane-checkpoint', props: pane(40) });
+    await ui.press({ key: 'view-verification' });
+    for (const text of ['Current checks', 'check-1', 'Finding verification / historical records', 'old-check']) expect(await ui.find({ type: 'Text', text })).toBeDefined();
+    f.state.value.findings = []; await ui.press({ key: 'refresh' });
+    expect(await ui.find({ type: 'Text', text: 'No findings recorded' })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: 'check-1' })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: 'old-check' })).toBeUndefined();
+    expect(f.calls).toHaveLength(0); await ui.unmount();
+  });
+}
+
+test('reattachment requires matching native identity and a new valid snapshot', async () => {
+  const f = fixture(); await f.c.restore(undefined); f.c.disconnect();
+  await f.c.attach({ ...f.io.identity, root: 'foreign-session' });
+  expect(f.c.stale).toBe(true); expect(f.c.eligibility(binding)).toBeDefined();
+  await f.c.attach({ ...f.io.identity, workspace: '/foreign' });
+  expect(f.c.stale).toBe(true);
+  const oldGeneration = f.c.generation; f.c.disconnect();
+  await f.c.attach(f.io.identity, oldGeneration);
+  expect(f.c.stale).toBe(true);
+  f.io.report = async (_, generation) => ({ ...snapshot(generation), selection: { ...snapshot(generation).selection, root: 'foreign-session' } });
+  await f.c.attach(f.io.identity); expect(f.c.stale).toBe(true); expect(f.c.eligibility(binding)).toBeDefined();
+  f.c.disconnect();
+  let release!: (s: Snapshot) => void;
+  let requested = -1;
+  f.io.report = async (_, generation) => { requested = generation; return new Promise<Snapshot>(resolve => { release = resolve; }); };
+  const attaching = f.c.attach(f.io.identity);
+  expect(f.c.stale).toBe(true); expect(f.c.eligibility(binding)).toBeDefined();
+  release(snapshot(requested)); await attaching;
+  expect(f.c.stale).toBe(false); expect(f.c.eligibility(binding)).toBeUndefined();
+});
+
+test('reattachment during an obsolete flight serially obtains fresh evidence', async () => {
+  const f = fixture(); await f.c.restore(undefined);
+  let release!: (s: Snapshot) => void;
+  const generations: number[] = [];
+  f.io.report = async (_, generation) => { generations.push(generation); return generations.length === 1 ? new Promise<Snapshot>(resolve => { release = resolve; }) : snapshot(generation); };
+  const flight = f.c.refresh(); f.c.disconnect();
+  const attaching = f.c.attach(f.io.identity);
+  expect(f.c.eligibility(binding)).toBeDefined();
+  release(snapshot(generations[0])); await Promise.all([flight, attaching]);
+  expect(generations).toEqual([0, 2]); expect(f.c.stale).toBe(false); expect(f.c.eligibility(binding)).toBeUndefined();
+});
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: native detach disables decisions until attach refreshes`, async ($, on) => {
+    const f = hostFixtures(on);
+    on('session.attach', (_$, e) => ({ clientId: e.clientId }));
+    on('session.detach', (_$, e) => ({ clientId: e.clientId }));
+    await $.session.start({ cwd: '/fixture', surface, isInteractive: true });
+    const ui = await $.ui.mount({ plugin: 'taskplane', surface, component: 'Pane', requestId: 'taskplane-checkpoint', props: pane(80) });
+    expect(await ui.find({ key: 'prepare-accept' })).toBeDefined();
+    await $.session.detach({ surface, clientId: 'fixture-client', reason: 'detach' });
+    await ui.press({ key: 'refresh' });
+    expect(await ui.find({ key: 'prepare-accept' })).toBeUndefined();
+    expect(await ui.find({ key: 'prepare-changes' })).toBeUndefined();
+    await $.session.attach({ surface, clientId: 'fixture-client' });
+    expect(await ui.find({ key: 'prepare-accept' })).toBeDefined();
+    expect(f.calls).toHaveLength(0); await ui.unmount();
+  });
+}

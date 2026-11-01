@@ -68,6 +68,7 @@ export class Coordinator {
   private flight?: Promise<void>;
   private queued = false;
   private busy = false;
+  private attached = true;
   constructor(readonly io: Transport, readonly preview = false) {}
   async restore(saved: unknown) {
     if (saved && typeof saved === 'object') {
@@ -94,6 +95,7 @@ export class Coordinator {
     await this.persist(); this.io.changed(); await this.refresh();
   }
   refresh(): Promise<void> {
+    if (!this.attached) return Promise.resolve();
     if (this.flight) { this.queued = true; return this.flight; }
     this.flight = this.refreshLoop().finally(() => { this.flight = undefined; });
     return this.flight;
@@ -105,7 +107,7 @@ export class Coordinator {
       this.refreshing = true;
       try {
         const s = await this.io.report(run, generation);
-        if (generation !== this.generation) { this.queued = true; continue; }
+        if (!this.attached || generation !== this.generation) { this.queued = this.attached; continue; }
         if (s.schema !== 'taskplane.claude-mods-snapshot/v1' || s.selection.generation !== generation || (run && s.selection.run !== run) || !s.capabilities?.snapshot) throw Error('Unsupported or mismatched snapshot contract');
         const expected = this.io.identity;
         if (!expected.root?.trim() || !expected.workspace?.trim()) throw Error('Native session identity unavailable');
@@ -119,27 +121,36 @@ export class Coordinator {
           || (s.status === 'selection_unavailable' && (!run || s.identity !== null))
           || (s.identity && (s.identity.workspace !== expected.workspace || s.identity.root !== s.selection.root || s.identity.run !== s.selection.run))) throw Error('Snapshot identity does not match its selection');
         const now = await this.io.now();
-        if (generation !== this.generation) { this.queued = true; continue; }
+        if (!this.attached || generation !== this.generation) { this.queued = this.attached; continue; }
         this.snapshot = freeze(s); this.now = now;
         const captured = Date.parse(s.confirmed_at);
         this.confirmed = Number.isFinite(captured) && captured <= this.now ? captured : 0;
         this.stale = !this.confirmed || this.now - this.confirmed >= 5000;
         if (!run && s.selection.run) { this.run = this.runInput = s.selection.run; await this.persist(); }
-        if (generation !== this.generation) { this.queued = true; continue; }
+        if (!this.attached || generation !== this.generation) { this.queued = this.attached; continue; }
         if (!this.finding && s.findings?.length) this.finding = findingKey(s.findings[0]!);
         if (this.stale) this.message = 'Stale — controller confirmation is old or invalid';
         else if (!this.pending) this.message = s.status === 'ready' ? 'Fresh' : s.status === 'no_run' ? 'No selected run' : 'Selected run unavailable';
       } catch (error) {
         if (generation === this.generation) { this.stale = true; this.message = `Stale — refresh failed: ${errorText(error)}`; }
       } finally { this.refreshing = false; this.io.changed(); }
-    } while (this.queued);
+    } while (this.attached && this.queued);
   }
   async age() {
     this.now = await this.io.now();
     if (!this.stale && this.now - this.confirmed >= 5000) { this.stale = true; this.message = 'Stale — last confirmation is over five seconds old'; this.io.changed(); }
   }
   async tick() { await this.age(); await this.refresh(); }
-  disconnect() { this.stale = true; this.message = 'Stale — host disconnected'; this.io.changed(); }
+  disconnect() {
+    this.attached = false; this.generation++; this.queued = false;
+    this.stale = true; this.message = 'Stale — host disconnected'; this.io.changed();
+  }
+  async attach(identity: Transport['identity'], generation = this.generation) {
+    if (generation !== this.generation) return;
+    if (!identity.root?.trim() || !identity.workspace?.trim() || identity.root !== this.io.identity.root || identity.workspace !== this.io.identity.workspace) { this.disconnect(); return; }
+    this.attached = true; this.generation++; this.stale = true;
+    await this.refresh();
+  }
   draft(binding = this.snapshot?.identity) { return this.drafts[bindingKey(binding)] ?? ''; }
   async edit(value: string, binding: Binding | null | undefined) {
     if (!binding) return;
@@ -148,7 +159,7 @@ export class Coordinator {
   eligibility(binding = this.snapshot?.identity, choice: Choice = 'approved'): string | undefined {
     if (this.preview || this.snapshot?.capabilities.preview) return 'Preview — decisions unavailable';
     if (!this.io.decide) return 'Decision transport unavailable; use the conversation';
-    if (this.stale || !this.snapshot || this.now - this.confirmed >= 5000) return 'Refresh and review the current checkpoint before deciding';
+    if (!this.attached || this.stale || !this.snapshot || this.now - this.confirmed >= 5000) return 'Refresh and review the current checkpoint before deciding';
     if (this.snapshot.status === 'no_run') return 'No selected run — checkpoint and findings unavailable';
     if (this.snapshot.status === 'selection_unavailable') return 'Selected run unavailable — choose another run';
     if (this.snapshot.selection.root !== this.io.identity.root) return 'Historical run belongs to another session — read only';
@@ -287,6 +298,15 @@ export const register: Register = (on, options) => {
     }
     return result;
   });
+  on('session.attach', async ($, e, next) => {
+    const coordinator = store, generation = coordinator?.generation;
+    const result = await next(e);
+    if (coordinator) {
+      try { await coordinator.attach({ workspace: await $.session.root(), root: await $.session.id() }, generation); }
+      catch { coordinator.disconnect(); }
+    }
+    return result;
+  });
   on('session.detach', async ($, e, next) => { store?.disconnect(); return next(e); });
   on('command.run', { command: 'taskplane-status' }, async ($) => { await openPane($); return { text: 'Taskplane checkpoint opened. Ctrl+X then Tab focuses the pane.' }; });
   // Observe the actual event, then let the host invoke the rendered closure. A
@@ -321,7 +341,7 @@ export const register: Register = (on, options) => {
     const changesReason = c.eligibility(binding, 'changes_requested');
     const finding = s?.findings?.find(x => findingKey(x) === c.finding);
     const index = s?.findings?.findIndex(x => findingKey(x) === c.finding) ?? -1;
-    const content = finding ? c.view === 'finding' ? lines(Object.fromEntries(Object.entries(finding).filter(([key]) => key !== 'sources' && key !== 'checks'))) : c.view === 'source' ? (finding.sources?.length ? finding.sources.map(source => `${lines(Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'text')))}\n${source.status === 'available' ? display(source.text ?? 'Evidence body unavailable') : 'Evidence unavailable'}${source.truncated ? '\n[Controller excerpt truncated]' : ''}`).join('\n\n') : 'Source evidence unavailable') : `Current checks\n${lines(s?.current_checks)}\nFinding verification / historical records\n${lines(finding.checks ?? finding.verification)}` : '';
+    const content = c.view === 'verification' ? `Current checks\n${lines(s?.current_checks)}${finding ? `\nFinding verification / historical records\n${lines(finding.checks ?? finding.verification)}` : ''}` : finding ? c.view === 'finding' ? lines(Object.fromEntries(Object.entries(finding).filter(([key]) => key !== 'sources' && key !== 'checks'))) : (finding.sources?.length ? finding.sources.map(source => `${lines(Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'text')))}\n${source.status === 'available' ? display(source.text ?? 'Evidence body unavailable') : 'Evidence unavailable'}${source.truncated ? '\n[Controller excerpt truncated]' : ''}`).join('\n\n') : 'Source evidence unavailable') : '';
     const previousDrafts = Object.entries(c.drafts).filter(([key,text]) => key !== bindingKey(binding) && text.length > 0);
     const oldDraft = previousDrafts.find(([key]) => key === c.historyKey) ?? previousDrafts.at(-1);
     const historyPages = Math.max(1, Math.ceil(Array.from(oldDraft?.[1] ?? '').length / 2400));
@@ -375,14 +395,16 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column">
           <Button key="view-finding" label="Finding" onPress={() => { c.view='finding'; c.page=0; $.ui.invalidate('ui.render'); }} />
           <Button key="view-source" label="Source evidence" onPress={() => { c.view='source'; c.page=0; $.ui.invalidate('ui.render'); }} />
-          <Button key="view-verification" label="Verification" onPress={() => { c.view='verification'; c.page=0; $.ui.invalidate('ui.render'); }} />
         </Box>
+      </Box>}
+      {s?.status === 'ready' ? <Button key="view-verification" label="Verification" onPress={() => { c.view='verification'; c.page=0; $.ui.invalidate('ui.render'); }} /> : null}
+      {s?.status === 'ready' && (finding || c.view === 'verification') ? <Box flexDirection="column">
         <Text wrap="wrap">{`${c.view} · Page ${c.page+1} of ${pages}\n${pageText(content,c.page)}`}</Text>
         {pages > 1 ? <Box flexDirection="column">
           <Button key="page-back" label="Previous evidence page" onPress={() => { c.page=Math.max(0,c.page-1); $.ui.invalidate('ui.render'); }} />
           <Button key="page-next" label="Next evidence page" onPress={() => { c.page=Math.min(pages-1,c.page+1); $.ui.invalidate('ui.render'); }} />
         </Box> : null}
-      </Box>}
+      </Box> : null}
     </Box>;
   });
 };

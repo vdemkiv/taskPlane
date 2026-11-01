@@ -74,7 +74,7 @@ def _review_source(source: Any) -> bool:
 def accepted_review_inputs(state: dict[str, Any]) -> list[dict[str, Any]]:
     stage = w.current(state)
     packet = stage.get("packet") or {}
-    if stage["superseded"] and stage["decision"] == "approved" and packet.get("route_change"):
+    if stage["superseded"] and stage["decision"] in {"approved", "repair_authorized"} and packet.get("route_change"):
         # Route acceptance supersedes its own implementation predecessors before
         # advance. Preserve the exact reviewed input set, bound to the recorded
         # approval, rather than interpreting that authorized change as drift.
@@ -134,7 +134,7 @@ def _causal_records(state: dict[str, Any], rows: list[dict[str, Any]], root: Pat
 
 
 def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
-                       root: Path | None = None) -> dict[str, Any]:
+                       root: Path | None = None, repair_route: bool = False) -> dict[str, Any]:
     """Common manual/policy gate. Structural errors refuse; honest gaps stay reviewable.
 
     root=None evaluates sealed metadata; Controller freshness checks protect its bytes.
@@ -182,6 +182,12 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
         phases = _strings(item.get("phases"), "Run DoD applicable phases")
         w.require(set(phases) <= set(w.PHASES), "invalid_evidence", "Run DoD names unknown phases.")
     obligations = review_obligations(state, review)
+    failed_criteria = {criterion for criterion, result in output.get("criterion_results", {}).items()
+                       if isinstance(result, dict) and result.get("status") == "fail"} if (
+                           repair_route and w.current(state)["phase"] == "evaluate"
+                           and isinstance(output.get("criterion_results"), dict)) else set()
+    passed_criteria = {criterion for criterion, result in output["criterion_results"].items()
+                       if isinstance(result, dict) and result.get("status") == "pass"} if failed_criteria else set()
     for group in ("dor", "dod"):
         indexed = {row["id"]: row for row in rows[group]}
         for item_id in obligations[group]:
@@ -201,7 +207,19 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
                 applicability = next((row.get("applicability") for row in baseline.get(group, [])
                                       if row.get("id") == item["id"]), None)
                 supported = bool(applicability and item.get("applicability") == applicability and supported)
-            if item["required"] and (item["outcome"] in {"unmet", "unknown"} or not supported):
+            # An unmet aggregate may include explicitly passing criteria, but
+            # must retain its accepted links and at least one actual failure.
+            # Entry, unknown and unsupported gates remain prerequisites; later
+            # visits evaluate every DoD gate normally.
+            failed_outcome = (group == "dod" and supported and item["outcome"] == "unmet"
+                              and bool(set(item["criteria"]) & failed_criteria)
+                              and set(item["criteria"]) <= failed_criteria | passed_criteria
+                              and (item["id"].startswith("criterion:") and item["id"].removeprefix("criterion:") in failed_criteria
+                                   or item["id"].startswith("run-dod:") and any(
+                                       item["id"] == "run-dod:" + row["id"]
+                                       and set(row["criteria"]) == set(item["criteria"])
+                                       for row in baseline.get("run_dod", []))))
+            if item["required"] and (item["outcome"] in {"unmet", "unknown"} and not failed_outcome or not supported):
                 blockers.append(f"Required {group} item is {item['outcome']} or unsupported: {item['id']}.")
     for item in rows["uncertainties"]:
         linked(item)
@@ -217,6 +235,7 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
                 blockers.append("Unresolved uncertainty: " + item["id"] + ".")
     for item in rows["feedback"]:
         linked(item)
+        w.require(type(item.get("material", True)) is bool, "invalid_evidence", "Feedback material flag must be boolean.")
         target = item.get("target", {})
         w.require(_review_source(item.get("source")) and isinstance(target, dict)
                   and isinstance(target.get("id"), str) and type(target.get("revision")) is int
@@ -274,7 +293,8 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
             prior = repeated_causal_attempt(attempts[:index], attempt)
             if prior is not None:
                 repeated_attempts.append({"cause": cause["id"], "attempt": index, "previous": prior})
-        if cause["state"] == "verified" and not valid or cause["state"] != "verified" and cause.get("required", True):
+        if (cause["state"] == "verified" and not valid
+                or not repair_route and cause["state"] != "verified" and cause.get("required", True)):
             blockers.append("Causal correction is not verified: " + cause["id"] + ".")
     failures = set()
     required_checks = {item["id"] for item in _plan(state).get("verification_strategy", {}).get("checks", [])
@@ -282,7 +302,8 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
     for check in output.get("build_checks", []):
         if (isinstance(check, dict) and (check.get("required", True) or check.get("check_id") in required_checks)
                 and check.get("status") != "pass"):
-            blockers.append("Required check is not passing: " + str(check.get("check_id", check.get("name"))) + ".")
+            if not repair_route:
+                blockers.append("Required check is not passing: " + str(check.get("check_id", check.get("name"))) + ".")
             if check.get("status") == "fail":
                 failures.add(str(check.get("check_id", check.get("name"))))
     if w.current(state)["phase"] == "evaluate":
@@ -290,11 +311,11 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
         w.require(isinstance(results, dict) and all(isinstance(result, dict) for result in results.values()),
                   "invalid_evidence", "Evaluate criterion results must be records.")
         for criterion, result in results.items():
-            if result.get("status") != "pass":
+            if result.get("status") != "pass" and not repair_route:
                 blockers.append("Evaluate criterion is not passing: " + criterion + ".")
             if result.get("status") == "fail":
                 failures.add(criterion)
-        if output.get("unknowns_and_failures"):
+        if output.get("unknowns_and_failures") and not repair_route:
             blockers.append("Evaluate has unresolved unknowns or failures.")
     for entry in state.get("history", []):
         if entry.get("visit") == w.current(state)["id"]:
@@ -305,15 +326,26 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
             if w.current(state)["phase"] == "evaluate":
                 failures.update(criterion for criterion, result in historical.get("criterion_results", {}).items()
                                 if result.get("status") == "fail")
-    for failure_id in sorted(failures - verified_failures):
-        blockers.append("Failure needs causal investigation: " + failure_id + ".")
+    inherited = w.current(state).get("repair_obligations", {})
+    failures.update(inherited.get("failures", []))
+    present_causes = {row["id"]: row for row in rows["causes"]}
+    for prior in inherited.get("causes", []):
+        revised = present_causes.get(prior["id"])
+        if revised is None:
+            blockers.append("Inherited causal obligation is missing: " + prior["id"] + ".")
+        else:
+            require_cause_continuity(prior, revised)
+    if not repair_route:
+        for failure_id in sorted(failures - verified_failures):
+            blockers.append("Failure needs causal investigation: " + failure_id + ".")
     active_hold = w.current(state).get("hold")
     if isinstance(active_hold, dict) and active_hold.get("active"):
         blockers.append("An explicit user hold is active.")
     return {"contract": w.PHASE_CONTRACT, "ready": not blockers, "blockers": blockers,
             "revision": review["revision"], "files": sorted(files),
             "dor": deepcopy(rows["dor"]), "dod": deepcopy(rows["dod"]),
-            "causes": deepcopy(rows["causes"]), "repeated_attempts": repeated_attempts}
+            "causes": deepcopy(rows["causes"]), "failures": sorted(failures),
+            "repeated_attempts": repeated_attempts}
 
 
 def validate_review_continuity(root: Path, state: dict[str, Any], review: dict[str, Any]) -> None:
@@ -337,20 +369,52 @@ def validate_review_continuity(root: Path, state: dict[str, Any], review: dict[s
         after = {row["id"]: row for row in revised}
         w.require(all(row["id"] in after for row in prior), "invalid_evidence",
                   f"Refinement cannot erase {field} history.")
-        immutable = {"uncertainties": ("question", "criteria"), "feedback": ("source", "target"),
+        immutable = {"uncertainties": ("question", "criteria"), "feedback": ("source", "target", "criteria"),
                      "causes": ("failure_id", "failure", "expected", "criteria")}[field]
         w.require(all(all(row.get(k) == after[row["id"]].get(k) for k in immutable) for row in prior),
                   "invalid_evidence", f"Original {field} identity and provenance are immutable.")
+        if field == "feedback":
+            w.require(all(row.get("material", True) == after[row["id"]].get("material", True) for row in prior),
+                      "invalid_evidence", "Original feedback materiality is immutable.")
         if field == "causes":
             for row in prior:
-                updated = after[row["id"]]
-                w.require(type(updated.get("required", True)) is bool, "invalid_evidence",
-                          "Causal obligations need a boolean required flag.")
-                affected = _strings(row.get("affected_checks", []), "Causal affected checks", nonempty=False)
-                retained = _strings(updated.get("affected_checks", []), "Causal affected checks", nonempty=False)
-                w.require((not row.get("required", True) or updated.get("required", True))
-                          and set(affected) <= set(retained), "invalid_evidence",
-                          "Causal obligations cannot weaken required corrections or affected checks.")
+                require_cause_continuity(row, after[row["id"]])
+
+
+def require_cause_continuity(prior: dict[str, Any], revised: dict[str, Any]) -> None:
+    w.require(all(prior.get(k) == revised.get(k) for k in ("failure_id", "failure", "expected", "criteria")),
+              "invalid_evidence", "Original causes identity and provenance are immutable.")
+    w.require(type(revised.get("required", True)) is bool, "invalid_evidence",
+              "Causal obligations need a boolean required flag.")
+    affected = _strings(prior.get("affected_checks", []), "Causal affected checks", nonempty=False)
+    retained = _strings(revised.get("affected_checks", []), "Causal affected checks", nonempty=False)
+    w.require((not prior.get("required", True) or revised.get("required", True))
+              and set(affected) <= set(retained), "invalid_evidence",
+              "Causal obligations cannot weaken required corrections or affected checks.")
+
+
+def repair_route(state: dict[str, Any]) -> bool:
+    stage = w.current(state)
+    return bool(w.phase_contract(state) and stage["phase"] in {"evaluate", "engineering"}
+                and ((stage.get("packet") or {}).get("route_change") or {}).get("kind") == "repair")
+
+
+def require_repair_route(state: dict[str, Any]) -> None:
+    """Validate authorization to repair, never successful implementation acceptance."""
+    w.require(repair_route(state), "invalid_evidence", "A submitted scoped repair route is required.")
+    stage = w.current(state)
+    change = stage["packet"]["route_change"]
+    plan = w.accepted_plan(state)
+    paths = _strings(change.get("proposed_paths"), "Repair proposed paths")
+    w.require(set(paths) <= set(plan["packet"]["output"]["write_scope"]), "scope_violation",
+              "Repair paths must remain within the accepted Plan scope.")
+    w.require(substantive(change.get("reason")) and substantive(change.get("findings")),
+              "invalid_evidence", "Repair requires findings and a reason.")
+    if stage["decision"] == "repair_authorized":
+        w.require(stage["superseded"] and any(d.get("human") is True and d.get("automatic") is False
+                  and d.get("choice") == "approved" and d.get("binding", {}).get("visit") == stage["id"]
+                  and d["binding"].get("manifest_digest") == content_fingerprint(stage["packet"])
+                  for d in state["decisions"].values()), "stale_checkpoint", "Repair authorization no longer matches its packet.")
 
 
 def causal_verified(cause: dict[str, Any], *, root: Path | None = None) -> bool:
@@ -399,12 +463,14 @@ def repeated_causal_attempt(previous: list[dict[str, Any]], attempt: dict[str, A
     return None
 
 
-def require_phase_ready(state: dict[str, Any], *, root: Path | None = None) -> dict[str, Any]:
+def require_phase_ready(state: dict[str, Any], *, root: Path | None = None, repair: bool = False) -> dict[str, Any]:
     if not w.phase_contract(state):
         return {"contract": "legacy", "ready": True, "blockers": []}
     packet = w.current(state).get("packet") or {}
     w.require(packet, "approval_required", "Submit the current phase before requesting acceptance or transition.")
-    gates = phase_review_gates(state, packet.get("output", {}), root=root)
+    if repair:
+        require_repair_route(state)
+    gates = phase_review_gates(state, packet.get("output", {}), root=root, repair_route=repair)
     w.require(gates["ready"], "phase_not_ready", "; ".join(gates["blockers"]))
     return gates
 
@@ -1588,7 +1654,9 @@ def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False) ->
         editable = stage["id"] == w.current(state)["id"] and (
             skip_current or state.get("profile") == "native_workflow"
             and stage["decision"] in ("changes_requested", "rejected"))
-        if stage["superseded"] or stage["decision"] == "stale" or not stage["packet"] or editable:
+        if (stage["superseded"] and not (stage["id"] == w.current(state)["id"]
+                                           and stage["decision"] == "repair_authorized")
+                or stage["decision"] == "stale" or not stage["packet"] or editable):
             continue
         packet = stage["packet"]
         for field in ("manifest", "source_manifest"):

@@ -40,6 +40,19 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -n \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}\" ]; then python3 \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/taskplane/tp.py\" tool-failure; else echo '{\"decision\":\"block\",\"reason\":\"Taskplane plugin root unavailable\"}'; exit 2; fi",
+            "commandWindows": "if defined CLAUDE_PLUGIN_ROOT (py -3 \"%CLAUDE_PLUGIN_ROOT%\\taskplane\\tp.py\" tool-failure) else if defined PLUGIN_ROOT (py -3 \"%PLUGIN_ROOT%\\taskplane\\tp.py\" tool-failure) else (echo {\"decision\":\"block\",\"reason\":\"Taskplane plugin root unavailable\"} & exit /b 2)",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "SubagentStart": [
       {
         "matcher": ".*",

@@ -34,3 +34,15 @@ def test_manifest_identity_is_selected_from_nearest_owned_package():
     assert graph.module_of("packages/api/service.py", manifests) == "@project/api"
     assert graph.module_of("packages/api/nested/service.py", manifests) == "@project/nested"
     assert "foreign" not in manifests.values()
+
+
+def test_deep_scc_chain_cycles_and_disconnected_nodes_are_deterministic():
+    import sys
+    nodes = [f'n{i:05}' for i in range(sys.getrecursionlimit() + 100)]
+    edges = list(zip(nodes, nodes[1:]))
+    assert graph.strongly_connected_components(nodes, edges) == [[node] for node in nodes]
+    edges += [(nodes[-1], nodes[0]), ('x', 'y'), ('y', 'x'), ('isolated', 'isolated')]
+    nodes += ['x', 'y', 'isolated']
+    expected = [['isolated'], nodes[:-3], ['x', 'y']]
+    assert graph.strongly_connected_components(nodes, edges) == expected
+    assert graph.strongly_connected_components(reversed(nodes), reversed(edges)) == expected

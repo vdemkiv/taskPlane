@@ -33,7 +33,7 @@ MAX_ENTRIES = 128
 MAX_VM_STEPS = 2_000_000
 ANCHOR_BYTES = 256
 MAX_RECOVERY_BYTES = 8 * 1024 * 1024
-SCHEMA = 1
+SCHEMA = 2
 
 
 @dataclass
@@ -310,6 +310,7 @@ def _consume(db: sqlite3.Connection, budget: Budget, meta: dict[str, Any], raw: 
         return
     mid = message.get('id') or row.get('requestId')
     if not mid:
+        meta['gaps']['invalid_message_identity'] = True
         return
     # Hash identifiers to bound index keys; never store content or arbitrary IDs.
     if not isinstance(mid, (str, int, float, bool)):

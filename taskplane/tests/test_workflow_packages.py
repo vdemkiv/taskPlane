@@ -7,7 +7,9 @@ import io
 import json
 from pathlib import Path
 import re
-import subprocess
+import ast
+import shutil
+from tempfile import TemporaryDirectory
 import sys
 import zipfile
 import pytest
@@ -20,10 +22,43 @@ from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, shi
 from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs, exercise_counter_freshness, exercise_dashboard_publication_order
 from taskplane.tests.test_workflow_local import task_observation_checkpoint, decision, decide, present
 from taskplane.tests.test_workflow_autonomy import exercise_autonomous, exercise_nonconsent_cli
-from taskplane.tests.test_native_workflow_cli import exercise_correction_cli
+from taskplane.tests.test_native_workflow_cli import (
+    exercise_correction_cli, bounded_run, native_journey_budget,
+)
 from taskplane.tests import test_harness_review_regressions as review_regressions
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def verify_generated_lenses(root):
+    """Generate from inputs only; compare full inventory without repairing source."""
+    source = root/'lenses'
+    catalog = json.loads((source/'catalog.json').read_text())
+    expected = {lens['id'] + '.md' for lens in catalog['lenses']}
+    generator = source/'_generate_lens_prompts.py'
+    module = ast.parse(generator.read_text())
+    hand_authored = next(ast.literal_eval(node.value) for node in module.body
+                        if isinstance(node, ast.Assign)
+                        and any(isinstance(target, ast.Name) and target.id == 'HAND_AUTHORED'
+                                for target in node.targets))
+    actual = {path.name for path in source.glob('*.md')}
+    assert actual == expected, (f'Generated lens inventory drift: '
+                                f'missing={sorted(expected-actual)} extra={sorted(actual-expected)}')
+    with TemporaryDirectory(prefix='taskplane-lenses-') as temp:
+        isolated = Path(temp)
+        for name in ('_generate_lens_prompts.py', '_guides_data.json', 'catalog.json'):
+            shutil.copyfile(source/name, isolated/name)
+        # Only these catalog members require their maintained prose as an input.
+        for name in hand_authored:
+            shutil.copyfile(source/(name+'.md'), isolated/(name+'.md'))
+        result = bounded_run([sys.executable, str(isolated/generator.name)],
+                             cwd=isolated, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        generated = {path.name: path.read_bytes() for path in isolated.glob('*.md')}
+        assert set(generated) == expected, 'Generator output inventory differs from catalog'
+        changed = sorted(name for name in expected if (source/name).read_bytes() != generated[name])
+        assert not changed, f'Generated lens policy drift: {changed}'
+    return sorted(source/name for name in expected)
 
 
 def test_source_instruction_contract():
@@ -43,11 +78,7 @@ def test_source_instruction_contract():
     for p in sources + [ROOT/'README.md', ROOT/'docs/cli-reference.md', shared]:
         for phrase in forbidden:
             assert phrase not in p.read_text(), (p, phrase)
-    before = {p: p.read_bytes() for p in ROOT.glob('lenses/*.md')}
-    result = subprocess.run([sys.executable, 'lenses/_generate_lens_prompts.py'], cwd=ROOT, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    assert before == {p: p.read_bytes() for p in before}, 'Generated lens policy drift'
-    for p in before:
+    for p in verify_generated_lenses(ROOT):
         footer = p.read_text().split('## How this lens runs')[1]
         assert 'shared-flow.md' in footer and 'human' in footer and 'source component' in footer
 
@@ -96,7 +127,7 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
             assert 'modules' not in hooks
         archive.extractall(extracted)
     # The ordinary shipped profile must work without the protected fixture.
-    version_check = subprocess.run([sys.executable, str(extracted/'taskplane/tp.py'), 'version', '--verify'],
+    version_check = bounded_run([sys.executable, str(extracted/'taskplane/tp.py'), 'version', '--verify'],
                                    cwd=tmp_path, capture_output=True, text=True)
     assert version_check.returncode == 0, version_check.stdout + version_check.stderr
     assert json.loads(version_check.stdout) == {'version': fresh['version'], 'ok': True}
@@ -106,7 +137,7 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
     for entry in ('product','design','engineering'):
         exercise_harness_entry((tmp_path/(host+'-entry-'+entry)).resolve(),
                                'claude' if host=='claude' else 'codex',entry,root=extracted)
-    for name,prompt,phase,standalone in shipped_execution_prompts():
+    for name,prompt,phase,standalone in shipped_execution_prompts(extracted):
         exercise_harness_entry((tmp_path/(host+'-shipped-'+name)).resolve(),
                                'claude' if host=='claude' else 'codex',phase,root=extracted,
                                prompt=prompt,standalone=standalone)
@@ -276,7 +307,7 @@ print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
 '''
     harness = tmp_path/(host+'-harness.py')
     harness.write_text(script)
-    result = subprocess.run([sys.executable, '-I', str(harness), str(extracted),
+    result = bounded_run([sys.executable, '-I', str(harness), str(extracted),
                              str(tmp_path/(host+'-behavior')), host],
                             cwd=tmp_path, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -290,7 +321,7 @@ print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
 
 def test_package_receipt_distinguishes_bytes_from_commit_and_unrelated_dirt(tmp_path, monkeypatch):
     def git(*args):
-        return subprocess.run(['git', *args], cwd=tmp_path, check=True,
+        return bounded_run(['git', *args], cwd=tmp_path, check=True,
                               capture_output=True, text=True).stdout.strip()
     git('init')
     git('config', 'user.email', 'fixture@example.invalid')
@@ -367,7 +398,7 @@ def test_mod_packages_exclude_generated_tooling_and_are_reproducible(tmp_path, m
 
 def test_package_receipt_verifies_only_declared_codex_transform(tmp_path, monkeypatch):
     def git(*args):
-        return subprocess.run(['git', *args], cwd=tmp_path, check=True,
+        return bounded_run(['git', *args], cwd=tmp_path, check=True,
                               capture_output=True, text=True).stdout.strip()
     git('init')
     git('config', 'user.email', 'fixture@example.invalid')
@@ -451,7 +482,7 @@ def test_packaging_reuses_validated_manifest_bytes_and_extracted_version(tmp_pat
         for name, data in seen.items():
             if name in archive.namelist(): assert archive.read(name) == data
         archive.extractall(tmp_path/'extracted')
-    check = subprocess.run([sys.executable, str(tmp_path/'extracted/taskplane/tp.py'), 'version', '--verify'],
+    check = bounded_run([sys.executable, str(tmp_path/'extracted/taskplane/tp.py'), 'version', '--verify'],
                            cwd=tmp_path, capture_output=True, text=True)
     assert check.returncode == 0, check.stdout + check.stderr
     assert json.loads(check.stdout) == {'version': result['version'], 'ok': True}
@@ -459,7 +490,7 @@ def test_packaging_reuses_validated_manifest_bytes_and_extracted_version(tmp_pat
 
 @pytest.mark.parametrize("host", ['openai', 'claude'])
 def test_direct_packaging_scripts_import_shared_contract_from_source(tmp_path, host):
-    check = subprocess.run([sys.executable, str(ROOT/f'scripts/package_{host}.py'), '--output-dir', str(tmp_path/'output')],
+    check = bounded_run([sys.executable, str(ROOT/f'scripts/package_{host}.py'), '--output-dir', str(tmp_path/'output')],
                            cwd=tmp_path, capture_output=True, text=True)
     assert check.returncode == 0, check.stdout + check.stderr
     assert Path(json.loads(check.stdout)['archive']).is_file()
@@ -498,3 +529,34 @@ def test_unsafe_version_precedes_mismatch_in_shared_contract(tmp_path, monkeypat
         with pytest.raises(ValueError, match='safe semantic version'):
             inspect_version()
     assert not (tmp_path/'output').exists()
+
+
+@pytest.mark.parametrize('damage', ['bytes', 'missing', 'extra', 'hand-authored-footer'])
+def test_generator_check_detects_drift_without_writing_source(tmp_path, damage):
+    root = tmp_path/'fixture'; root.mkdir()
+    shutil.copytree(ROOT/'lenses', root/'lenses')
+    target = root/'lenses/backend.md'
+    if damage == 'bytes':
+        target.write_bytes(b'DRIFT\n' + target.read_bytes())
+    elif damage == 'missing':
+        target.unlink()
+    elif damage == 'extra':
+        (root/'lenses/unexpected.md').write_text('unexpected output')
+    else:
+        target = root/'lenses/solution-design.md'
+        target.write_text(target.read_text().replace('## How this lens runs', '## How this lens runs\nDRIFT'))
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    with pytest.raises(AssertionError, match='drift'):
+        verify_generated_lenses(root)
+    after = {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    assert after == before
+
+
+def test_generator_check_preserves_hand_authored_body(tmp_path):
+    root = tmp_path/'fixture'; root.mkdir()
+    shutil.copytree(ROOT/'lenses', root/'lenses')
+    target = root/'lenses/solution-design.md'
+    target.write_bytes(b'Custom maintained prose\n\n' + target.read_bytes())
+    before = target.read_bytes()
+    assert target in verify_generated_lenses(root)
+    assert target.read_bytes() == before

@@ -27,7 +27,13 @@ def _git(workspace: str, *args: str) -> str:
     return result.stdout
 
 
+def _validate_base(base: str) -> None:
+    if base.startswith("-"):
+        raise ValueError("Git base must be a revision, not an option")
+
+
 def _changed(workspace: str, base: str) -> list[str]:
+    _validate_base(base)
     return sorted(set(_git_paths(workspace, "diff", "--name-only", "-z", base, "--")
                       + _git_paths(workspace, "ls-files", "-z", "--others", "--exclude-standard")))
 
@@ -104,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     lens.add_argument("--stage")
     args = parser.parse_args(arguments)
     try:
+        if hasattr(args, "base"):
+            _validate_base(args.base)
         if args.command == "help":
             if args.md:
                 print((ROOT / "docs/cli-reference.md").read_text(), end="")

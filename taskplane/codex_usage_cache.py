@@ -40,7 +40,7 @@ MAX_ENTRIES = 128
 MAX_VM_STEPS = 2_000_000
 MAX_RECOVERY_BYTES = 8 * 1024 * 1024
 ANCHOR_BYTES = 256
-SCHEMA = 1
+SCHEMA = 2
 
 
 class Exhausted(ValueError):
@@ -371,8 +371,16 @@ def _ingest(db: sqlite3.Connection, path: Path, session: str, budget: Budget) ->
                     'ino': st.st_ino, 'errors': [], 'discard': False, 'latest': None}
             if changed or prior_path and prior_path[0] != identity:
                 meta['errors'].append('source_generation_changed')
-        # The source cursor and normalized rows are one transaction. A record
-        # needs a complete-record allowance; fragments are never persisted.
+        # The cursor, syntax-only compaction progress and normalized rows are
+        # one transaction. No partial transcript fragments are persisted.
+        progress = meta.get('compaction')
+        validator = None
+        if progress is not None:
+            if (not isinstance(progress, dict) or set(progress) != {'offset', 'state'}
+                    or type(progress['offset']) is not int or progress['offset'] != meta['offset']
+                    or meta['discard']):
+                raise ValueError('invalid_compaction_state')
+            validator = meter._CompactionValidator(progress['state'])
         target = st.st_size
         stream.seek(meta['offset'])
         initial_bytes, initial_records = budget.source_bytes, budget.records
@@ -381,23 +389,49 @@ def _ingest(db: sqlite3.Connection, path: Path, session: str, budget: Budget) ->
         while (meta['offset'] < target and budget.records < budget.max_records
                and budget.source_bytes - initial_bytes < byte_share
                and budget.records - initial_records < record_share):
-            room = budget.remaining_bytes - 2 * ANCHOR_BYTES
+            room = budget.remaining_bytes - 3 * ANCHOR_BYTES
             if room <= 0:
                 break
             position = stream.tell()
             if meta['discard']:
-                raw = _read(stream, min(room, meter.MAX_RECORD_BYTES, target - position), budget, line=True)
+                raw = _read(stream, min(room, 65536, target - position), budget, line=True)
                 meta['offset'] = stream.tell()
                 meta['discard'] = not raw.endswith(b'\n')
+                if not meta['discard']:
+                    budget.take('records')
                 continue
-            limit = min(meter.MAX_RECORD_BYTES + 1, target - position)
-            if room < limit:
-                break
-            raw = _read(stream, limit, budget, line=True)
-            if len(raw) > meter.MAX_RECORD_BYTES:
-                meta['discard'] = not raw.endswith(b'\n')
-                meta['errors'] = sorted(set(meta['errors']) | {'oversized_record'})
+            if validator is None:
+                limit = min(meter.MAX_RECORD_BYTES + 1, target - position)
+                if room < limit:
+                    break
+                raw = _read(stream, limit, budget, line=True)
+                if len(raw) > meter.MAX_RECORD_BYTES:
+                    validator = meter._CompactionValidator()
+            else:
+                raw = _read(stream, min(room, 65536, target - position), budget, line=True)
+            if validator is not None:
+                ended = raw.endswith(b'\n')
+                try:
+                    # Feed the initial bounded prefix once as well as subsequent
+                    # chunks. The state retains no source text from either.
+                    for offset in range(0, len(raw), 65536):
+                        validator.feed(raw[offset:offset + 65536])
+                    if ended:
+                        validator.finish()
+                except ValueError as exc:
+                    code = str(exc) if str(exc) in {'oversized_record', 'compaction_state_limit',
+                        'ambiguous_compaction_record', 'invalid_compaction_record'} else 'invalid_compaction_record'
+                    meta['errors'] = sorted(set(meta['errors']) | {code})
+                    meta['discard'] = not ended
+                    validator = None
                 meta['offset'] = stream.tell()
+                if ended:
+                    budget.take('records')
+                    validator = None
+                if validator is None:
+                    meta.pop('compaction', None)
+                else:
+                    meta['compaction'] = {'offset': meta['offset'], 'state': validator.state}
                 continue
             if not raw.endswith(b'\n'):
                 break
@@ -425,7 +459,7 @@ def _ingest(db: sqlite3.Connection, path: Path, session: str, budget: Budget) ->
         meta['prefix'] = _anchor(stream, meta['prefix_size'], budget)
         meta['anchor'] = _anchor(stream, meta['offset'], budget)
         meta['size'] = target
-        meta['complete'] = meta['offset'] == target and not meta['discard']
+        meta['complete'] = meta['offset'] == target and not meta['discard'] and not meta.get('compaction')
         db.execute('INSERT OR REPLACE INTO sources VALUES(?,?)', (identity, _dump(meta)))
         db.execute('INSERT OR REPLACE INTO paths VALUES(?,?)', (str(path), identity))
         return meta

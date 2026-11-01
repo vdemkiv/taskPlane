@@ -1,8 +1,8 @@
 """Reconcile advisory usage with native session metadata, including unhooked lenses."""
 from __future__ import annotations
 
-from typing import Any
-from datetime import datetime
+from typing import Any, cast
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -28,6 +28,29 @@ def _time(value: Any) -> float | None:
         return datetime.fromisoformat(str(value).replace('Z', '+00:00')).timestamp()
     except (ValueError, TypeError):
         return None
+
+
+def _interval_proven(value: dict[str, Any], start: float | None, end: float | None) -> bool:
+    """Only a complete current reader result can replace an absent observation."""
+    if not isinstance(value, dict):
+        return False
+    measured = _time(value.get('measured_at'))
+    if (start is None or end is not None and end <= start
+            or value.get('interval') != {'start': start, 'end_exclusive': end}
+            or value.get('status') != 'measured' or value.get('replay_status') != 'complete'
+            or value.get('errors') or value.get('attribution_unknown') or value.get('source_unavailable')
+            or measured is None or measured < start or end is not None and measured >= end):
+        return False
+    vectors = [value.get(key) for key in ('usage', 'native_usage', 'baseline')]
+    if any(meter.starting_baseline({'usage': vector}) != vector or vector is None for vector in vectors):
+        return False
+    usage, native, baseline = [cast(dict[str, int], vector) for vector in vectors]
+    return all(native[k] - baseline[k] == usage[k] for k in meter.USAGE_KEYS)
+
+
+def _recovery_provenance(run: dict[str, Any], proof: dict[str, Any]) -> dict[str, Any]:
+    return {'basis': 'recovered owned native interval', 'run': run['run'], 'session': run['session'],
+            **proof['interval'], 'replay_status': proof['replay_status'], 'measured_at': proof['measured_at']}
 
 
 def _codex_sessions(run: dict[str, Any], cutoff: float | None,
@@ -56,8 +79,11 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
             meta = segments[0] if segments else {}
             role = ('orchestrator' if sid == root else 'host_approval_review'
                     if meta.get('thread_source') == 'guardian_review' else 'lens')
-            interval = meter.read_owned_interval([segment['path'] for segment in segments], sid,
-                start=started if sid != root and started is not None else 0, end=cutoff)
+            baseline = meter.starting_baseline(run) if sid == root else None
+            recovering = sid == root and baseline is None and started is not None
+            paths = [segment['path'] for segment in segments]
+            interval = meter.read_owned_interval(paths, sid,
+                start=started if (sid != root or recovering) and started is not None else 0, end=cutoff)
             native, usage = interval['native_usage'], interval['usage']
             errors = list(interval['errors'])
             attribution_unknown = interval.get('attribution_unknown', False)
@@ -65,9 +91,10 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
                 # Reconciled legacy lifetime sums support the observed root
                 # baseline even when no child interval baseline is provable.
                 errors = [e for e in errors if e != 'legacy_segment_boundaries_unknown']
-                baseline = meter.starting_baseline(run)
                 usage = None
-                if baseline is None:
+                if recovering and _interval_proven(interval, started, cutoff):
+                    usage = interval['usage']
+                elif baseline is None:
                     errors.append('run baseline is partial or unavailable; attribution is unknown')
                     attribution_unknown = True
                 elif native is not None:
@@ -88,19 +115,23 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
                 'interval': {'start': started, 'end_exclusive': cutoff},
                 'measured_at': interval.get('measured_at'), 'measurement_source': 'native_sample',
                 'attribution_schema': None if sid == root else 'taskplane.owned-interval/v1',
-                'attribution_unknown': attribution_unknown, 'errors': sorted(set(errors))})
+                'attribution_unknown': attribution_unknown, 'errors': sorted(set(errors)),
+                **({'_owned_interval_proof': interval, '_recovery_paths': paths}
+                   if recovering and usage is not None else {})})
         return sessions, len(failures)
 
 
 def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
               expected: list[str] | tuple[str, ...] = (), *,
               closing: dict[str, Any] | None = None,
-              workspace: str | Path | None = None) -> dict[str, Any]:
+              workspace: str | Path | None = None, phase_recovery: bool = False) -> dict[str, Any]:
     with cache.action_budget(workspace) as budget:
         result = _reconcile(run, events, expected, closing=closing)
         if run.get('host') != 'claude':
             result = cache.merge_report(run, result, budget)
             result['token_coverage'].update(budget.coverage())
+        if not phase_recovery:
+            result.pop('_root_recovery', None)
         return result
 
 
@@ -134,12 +165,34 @@ def _reconcile(run: dict[str, Any], events: list[dict[str, Any]],
                              and e.get('kind') == 'hook' and e.get('session') != run['session'])
         sessions, discovery_errors = _codex_sessions({**run, 'worker_sessions': sorted(known_workers)}, cutoff, diagnostics)
     start = meter.starting_baseline(run)
+    recovery: dict[str, Any] | None = None
     if start is None:
         for session in sessions:
             if session.get('session') == run['session']:
-                session.update(usage=None, status='partial', attribution_unknown=True)
+                proof = session.pop('_owned_interval_proof', {})
+                paths = session.pop('_recovery_paths', [])
+                if (run.get('host', 'codex') == 'codex' and paths
+                        and (boundary is None or boundary.get('host', 'codex') == 'codex')
+                        and _interval_proven(proof, started, cutoff)
+                        and session.get('usage') == proof['usage']
+                        and session.get('native_usage') == proof['native_usage']
+                        and not session.get('attribution_unknown') and not session.get('errors')):
+                    session.update(attribution_schema='taskplane.owned-interval/v1',
+                                   basis=proof['basis'], attribution_recovery=_recovery_provenance(run, proof))
+                    recovery = {'proof': proof, 'paths': paths, 'run': run['run'], 'session': run['session']}
+                else:
+                    session.pop('attribution_recovery', None)
+                    session.update(usage=None, status='partial', attribution_unknown=True)
+    observed_end = meter.starting_baseline(boundary) if boundary is not None else None
+    if recovery is not None and observed_end is not None and observed_end != recovery['proof']['native_usage']:
+        for session in sessions:
+            if session.get('session') == run['session']:
+                session.pop('attribution_recovery', None)
+                session.update(usage=None, status='partial', attribution_unknown=True,
+                               errors=['recovered interval conflicts with observed closing counter'])
+        recovery = None
     closing_end = meter.starting_baseline(closing) if closing is not None else None
-    if closing is not None and (closing_end is None or start is not None and any(
+    if closing is not None and recovery is None and (closing_end is None or start is not None and any(
             closing_end[k] < start[k] for k in start)):
         for session in sessions:
             if session.get('session') == run['session']:
@@ -193,6 +246,7 @@ def _reconcile(run: dict[str, Any], events: list[dict[str, Any]],
         return {k: sum(v.get(k, 0) for v in values) for k in values[0]} if values else None
     delivery = [s for s in sessions if s['role'] != 'host_approval_review']
     return {'sessions': sessions, 'tokens': total('usage', False),
+            **({'_root_recovery': recovery} if recovery is not None else {}),
             'ownership_interval': {'start': started, 'end_exclusive': cutoff},
             'native_tokens': total('native_usage', False),
             'host_approval_tokens': total('usage', True),
@@ -215,8 +269,72 @@ def _add(target: dict[str, int], value: dict[str, int]) -> None:
         target[key] = target.get(key, 0) + count
 
 
+def recover_selected_visit(points: list[dict[str, Any]], state: dict[str, Any],
+                           measurement: dict[str, Any], run: dict[str, Any]) -> dict[str, Any] | None:
+    """Prove one durable visit window using this report's freshly serviced root."""
+    recovery = measurement.get('_root_recovery')
+    if (not isinstance(recovery, dict) or run.get('host', 'codex') != 'codex'
+            or recovery.get('run') != state.get('run') or run.get('run') != state.get('run')
+            or recovery.get('session') != state.get('root') or run.get('session') != state.get('root')):
+        return None
+    root_proof = recovery['proof']
+    start, cutoff = _time(run.get('at')), measurement.get('ownership_interval', {}).get('end_exclusive')
+    if not _interval_proven(root_proof, start, cutoff):
+        return None
+    selected = state['visits'][state['index']]
+    visits = {visit['id']: visit['phase'] for visit in state['visits']}
+    entry, end, previous = None, cutoff, None
+    exited = False
+    for point in points:
+        stamp = _time(point.get('observed_at'))
+        revision = point.get('revision')
+        initial_anchor = previous is None and revision == 0
+        if (point.get('run') != run['run'] or point.get('session') != run['session']
+                or stamp is None or start is None or stamp < start and not initial_anchor
+                or point.get('phase') != visits.get(point.get('visit'))
+                or point.get('bucket') not in ('work', 'review', 'follow_up')
+                or cutoff is not None and stamp >= cutoff or type(revision) is not int
+                or previous is not None and (stamp < cast(float, _time(previous['observed_at']))
+                    or revision < previous['revision'])):
+            return None
+        same = previous is not None and point.get('visit') == previous.get('visit')
+        changed = previous is not None and (not same or
+            (point.get('bucket') == 'follow_up') != (previous.get('bucket') == 'follow_up'))
+        if changed and previous is not None and (revision <= previous['revision'] or point.get('previous_revision') != previous['revision']):
+            return None
+        belongs = (point.get('visit') == selected['id'] and point.get('phase') == selected['phase']
+                   and point.get('bucket') in ('work', 'review'))
+        if belongs:
+            if exited:
+                return None
+            if entry is None:
+                if not (previous is not None and not same and changed or
+                        initial_anchor and stamp <= start):
+                    return None
+                entry = max(stamp, start)
+        elif entry is not None and not exited:
+            if not changed:
+                return None
+            end, exited = stamp, True
+        previous = point
+    if entry is None or state.get('finished') and not exited:
+        return None
+    proof = meter.read_owned_interval(recovery['paths'], run['session'], start=entry, end=end)
+    if not _interval_proven(proof, entry, end):
+        return None
+    # Both queries must describe the same conserved native run, even when a
+    # source append occurs between them in one report.
+    if any(proof['baseline'][k] < root_proof['baseline'][k]
+           or proof['native_usage'][k] > root_proof['native_usage'][k]
+           or proof['usage'][k] > root_proof['usage'][k] for k in meter.USAGE_KEYS):
+        return None
+    return {'session': run['session'], 'visit': selected['id'], 'phase': selected['phase'],
+            'proof': proof, 'provenance': _recovery_provenance(run, proof)}
+
+
 def phase_accounting(points: list[dict[str, Any]], endpoint: dict[str, Any],
-                     state: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
+                     state: dict[str, Any], measurement: dict[str, Any], *,
+                     recovered_visit: dict[str, Any] | None = None) -> dict[str, Any]:
     """Account for known counters without inventing missing phase boundaries.
 
     A stable visit ID can recover phase ownership across a missing revision, but
@@ -247,6 +365,8 @@ def phase_accounting(points: list[dict[str, Any]], endpoint: dict[str, Any],
             seen.add(identity)
     bad_sessions: set[str] = {s['session'] for s in measurement.get('sessions', [])
                               if s.get('session') and s.get('attribution_unknown')}
+    recovered_root = measurement.get('_root_recovery', {}).get('session')
+    recovered_interval = measurement.get('_root_recovery', {}).get('proof', {}).get('interval', {})
     session_reasons: dict[str, set[str]] = {}
     for before, after in zip(unique, unique[1:]):
         old = {s['session']: s for s in before.get('sessions', []) if s.get('session')}
@@ -261,12 +381,16 @@ def phase_accounting(points: list[dict[str, Any]], endpoint: dict[str, Any],
                 continue
             start, end = a.get('native_usage'), b.get('native_usage')
             comparable = _counts(start) and _counts(end) and set(start) == set(end)
+            fresh = (a.get('status') == b.get('status') == 'measured'
+                     and not a.get('attribution_unknown') and not b.get('attribution_unknown'))
             reset = comparable and any(end[k] < start[k] for k in start)
+            if sid == recovered_root and not fresh:
+                reset = False
             if reset:
                 bad_sessions.add(sid)
             delta = {k: end[k] - start[k] for k in start} if comparable and not reset else None
-            fresh = (a.get('status') == b.get('status') == 'measured'
-                     and not a.get('attribution_unknown') and not b.get('attribution_unknown'))
+            if sid == recovered_root and not fresh:
+                delta = None
             role_known = a.get('role') == b.get('role') and bool(a.get('role'))
             visit = before.get('visit')
             phase = visits.get(visit)
@@ -288,6 +412,11 @@ def phase_accounting(points: list[dict[str, Any]], endpoint: dict[str, Any],
                 reason = 'unknown_visit_or_bucket'
             elif not transition and (before.get('bucket') == 'follow_up') != (after.get('bucket') == 'follow_up'):
                 reason = 'missing_finish_boundary'
+            if sid == recovered_root:
+                left, right = _time(before.get('observed_at')), _time(after.get('observed_at'))
+                if (left is None or right is None or left < recovered_interval['start']
+                        or recovered_interval['end_exclusive'] is not None and right > recovered_interval['end_exclusive']):
+                    delta, reason = None, 'outside_recovered_run_window'
             category = 'unresolved' if reason else 'non_phase' if bucket == 'follow_up' else 'phase'
             if not reason and not transition:
                 reason = 'missing_revision_within_visit'
@@ -308,6 +437,46 @@ def phase_accounting(points: list[dict[str, Any]], endpoint: dict[str, Any],
                               'coverage': 'measured' if not reason else 'phase_known' if category == 'phase' else 'partial'})
     if not points:
         gaps.append('No phase boundaries were recorded for this run; phase attribution is unavailable.')
+    if recovered_visit is not None:
+        sid = recovered_visit['session']
+        proof = recovered_visit['proof']
+        start, end = proof['interval']['start'], proof['interval']['end_exclusive']
+        overlapping = []
+        ambiguous = False
+        for item in intervals:
+            if item['session'] != sid or item['tokens'] is None:
+                continue
+            left, right = _time(item.get('from')), _time(item.get('to'))
+            if left is None or right is None or left > right:
+                ambiguous = True
+                break
+            if right <= start or end is not None and left >= end:
+                continue
+            if left < start or end is not None and right > end:
+                ambiguous = True
+                break
+            overlapping.append(item)
+        if not ambiguous and sid not in bad_sessions:
+            replaced: dict[str, int] = {}
+            for item in overlapping:
+                _add(replaced, item['tokens'])
+            if any(replaced.get(k, 0) > proof['usage'][k] for k in replaced):
+                bad_sessions.add(sid)
+                session_reasons.setdefault(sid, set()).add('recovered_interval_conflict')
+            else:
+                for item in overlapping:
+                    item.update(tokens=None, category='unresolved', visit=None, phase=None, bucket=None,
+                                reason='replaced_by_owned_interval', coverage='diagnostic')
+                intervals.append({'session': sid, 'role': 'orchestrator',
+                    'from': datetime.fromtimestamp(start, timezone.utc).isoformat(),
+                    'to': endpoint.get('observed_at') if end is None else datetime.fromtimestamp(end, timezone.utc).isoformat(),
+                    'visit': recovered_visit['visit'], 'phase': recovered_visit['phase'],
+                    'category': 'phase', 'bucket': 'unsegmented', 'reason': 'recovered_visit_unsegmented',
+                    'tokens': proof['usage'], 'coverage': 'phase_known',
+                    'attribution_recovery': recovered_visit['provenance']})
+                gaps.append('Selected root visit recovered from native evidence; work/review split is unknown.')
+        elif ambiguous:
+            gaps.append('Recovered visit overlaps an inseparable observed interval; retained original accounting.')
     delivery = [s for s in measurement.get('sessions', []) if s.get('role') != 'host_approval_review']
     # Reject a whole session's allocation if its counters reset or its intervals
     # exceed the separately measured run delta. Never silently cap a token count.
@@ -381,10 +550,18 @@ def phase_accounting(points: list[dict[str, Any]], endpoint: dict[str, Any],
             phase['status'] = 'partial'
     if any(unresolved.values()):
         gaps.append('Known run usage has explained unresolved attribution; see interval and session accounting.')
-    if measurement.get('token_coverage', {}).get('discovery_errors'):
+    coverage = measurement.get('token_coverage', {})
+    incomplete = (any(coverage.get(key, 'complete') != 'complete' for key in
+        ('discovery_status', 'replay_status', 'detail_status', 'aggregate_status', 'journal_status', 'journal_detail_status'))
+        or coverage.get('native_inventory_complete') is False or coverage.get('inventory_errors')
+        or coverage.get('unmeasured_sessions') or coverage.get('partial_sessions'))
+    if coverage.get('discovery_errors'):
         gaps.append('Native session discovery has errors; additional coverage is unknown.')
-    if any(s.get('usage') is None or s.get('status') != 'measured' for s in delivery):
+    if incomplete or any(s.get('usage') is None or s.get('status') != 'measured' for s in delivery):
         gaps.append('Measured subtotal has incomplete session coverage; missing usage is unknown, not zero.')
+        for group in (result['visits'], result['phases']):
+            for value in group.values():
+                value['status'] = 'partial'
     root: dict[str, Any] = next((s for s in delivery if s.get('session') == state['root']), {})
     native: Any = root.get('native_usage')
     run_usage: Any = root.get('usage')
