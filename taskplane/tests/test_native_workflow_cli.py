@@ -1336,6 +1336,6 @@ def test_subprocess_timeout_cleans_descendants_and_reports_output(tmp_path, pare
         bounded_run(command, shell=not parent_exits, cwd=tmp_path,
                     capture_output=True, text=True, timeout=.4)
     assert time.monotonic() - started < 3
-    assert all(text in str(error.value) for text in ('command=', str(tmp_path), 'partial stdout', 'partial stderr'))
+    assert all(text in str(error.value) for text in ('command=', f'cwd={str(tmp_path)!r}', 'partial stdout', 'partial stderr')), str(error.value)
     time.sleep(.6)
     assert not marker.exists(), 'Timed-out subprocess left a live descendant'

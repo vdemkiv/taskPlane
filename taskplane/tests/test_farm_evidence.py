@@ -2,7 +2,6 @@
 from copy import deepcopy
 import hashlib
 import json
-import subprocess
 import sys
 
 import pytest
@@ -229,12 +228,9 @@ def test_missing_historical_log_uses_pinned_body_and_stale_pass_is_unknown(tmp_p
 @pytest.mark.parametrize("failure", ["timeout", "launch"])
 def test_runtime_failures_append_unknown_attempt(tmp_path, monkeypatch, failure):
     state, _, check = contract(tmp_path)
-    def broken(*args, **kwargs):
-        if failure == "timeout":
-            raise subprocess.TimeoutExpired(args[0], 1, output=b"partial output")
-        raise FileNotFoundError(2, "missing executable")
-    monkeypatch.setattr(reuse.subprocess, "run", broken)
-    out, history, ref = attempt(tmp_path, monkeypatch, state, check, "check-1.log")
+    check["command"] = ([sys.executable, "-c", "import time; time.sleep(10)"]
+                        if failure == "timeout" else [str(tmp_path / "missing-executable")])
+    out, history, ref = attempt(tmp_path, monkeypatch, state, check, "check-1.log", timeout=.2)
     assert history["attempts"][0]["status"] == "unknown"
     result = Store(tmp_path).resolve(ref)["result"]
     assert result["reason"] == ("timeout" if failure == "timeout" else "launch_error")
@@ -247,7 +243,7 @@ def test_input_drift_is_recorded_without_running_command(tmp_path, monkeypatch):
     provenance = fake_key(tmp_path, paths=check["source_inputs"], tests=check["test_inputs"],
         criteria=check["criteria"], command=check["command"], tool="python", contract="assertion/v1")
     (tmp_path / "app.py").write_text("value = 3\n")
-    monkeypatch.setattr(reuse.subprocess, "run", lambda *a, **k: pytest.fail("stale command must not run"))
+    monkeypatch.setattr(reuse.subprocess, "Popen", lambda *a, **k: pytest.fail("stale command must not run"))
     ref = reuse.run_check(tmp_path, provenance, producer="root", history_path="history.json",
         run=state["run"], visit=w.current(state)["id"], check_id=check["id"], kind="unit", environment="local",
         log_path="check-1.log")
@@ -604,7 +600,7 @@ def test_runtime_resolution_rejects_missing_stale_failed_or_incompatible_proof(t
     if defect == "fail":
         (tmp_path / "app.py").write_text("value = 1\n")
     if defect == "unknown":
-        monkeypatch.setattr(reuse.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("unavailable")))
+        check["command"] = [str(tmp_path / "missing-executable")]
     if defect == "fixture":
         check["environment"] = "fixture"
     out, _, _ = attempt(tmp_path, monkeypatch, state, check, "check-1.log")
