@@ -231,10 +231,11 @@ def test_windows_cleanup_failure_is_bounded_and_never_complete(tmp_path, monkeyp
         process.stderr.close()
 
 
-def test_typed_output_is_visible_during_execution_without_duplicate_payload(tmp_path):
+@pytest.mark.parametrize('newline', [b'\n', b'\r\n'])
+def test_typed_output_is_visible_during_execution_without_duplicate_payload(tmp_path, newline):
     import json
-    command = '''import pathlib,time
-print('visible-before-exit', flush=True)
+    command = f'''import os,pathlib,time
+os.write(1, {b'visible-before-exit'!r} + {newline!r})
 p = pathlib.Path('.taskplane/checks/live.log')
 end = time.monotonic() + 1
 while time.monotonic() < end:
@@ -249,8 +250,9 @@ else:
         run='run', visit='visit', check_id='streaming', kind='unit', environment='local')
     assert row['status'] == 'pass'
     assert 'visible-before-exit' not in json.dumps(row['result'])
-    raw = (tmp_path/'.taskplane/checks/live.log').read_text()
+    raw = (tmp_path/'.taskplane/checks/live.log').read_bytes().decode('utf-8')
     assert 'visible-before-exit' in raw
+    assert raw.startswith('visible-before-exit' + newline.decode('ascii'))
     assert Store(tmp_path).resolve(row['log_ref'])['text'] == raw
 
 
