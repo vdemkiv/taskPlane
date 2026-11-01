@@ -933,3 +933,77 @@ def test_start_refuses_unscoped_reads_before_initializing(tmp_path):
     with pytest.raises(w.Refusal, match='read inputs'):
         controller.start({'scope':state['scope'], 'tasks':'tasks.json', 'request_reference':'fixture'})
     assert not controller.adapter.state_exists()
+
+
+def repair_gate_fixture(tmp_path, *, mixed_aggregate=False):
+    state, output, observation = collaborative_fixture(tmp_path)
+    state['scope']['criteria'].append('AC2')
+    baseline = deepcopy(output['phase_review'])
+    if mixed_aggregate:
+        baseline['run_dod'][0]['criteria'].append('AC2')
+    baseline['run_dod'].append({'id': 'OTHER', 'required': True, 'criteria': ['AC2'],
+                               'statement': 'Independent requirement', 'phases': ['evaluate']})
+    state['visits'][0].update(decision='approved', packet={'checkpoint': 'product',
+                              'output': {'phase_review': baseline}})
+    state['index'] = w.PHASES.index('evaluate')
+    review = collaborative_review(state, observation)
+    review['run_dod'] = baseline['run_dod']
+    for row in review['dod']:
+        if row['id'] in {'criterion:AC2', 'run-dod:OTHER'}:
+            row['criteria'] = ['AC2']
+        if row['id'] in {'criterion:AC1', 'run-dod:DELIVERY'}:
+            row['outcome'] = 'unmet'
+        if mixed_aggregate and row['id'] == 'run-dod:DELIVERY':
+            row['criteria'] = ['AC1', 'AC2']
+    output = {'phase_review': review, 'criterion_results': {'AC1': {'status': 'fail'}, 'AC2': {'status': 'pass'}}}
+    return state, output
+
+
+@pytest.mark.parametrize('mixed_aggregate', [False, True])
+def test_repair_defers_only_dod_linked_to_actual_failed_criteria(tmp_path, mixed_aggregate):
+    state, output = repair_gate_fixture(tmp_path, mixed_aggregate=mixed_aggregate)
+    assert e.phase_review_gates(state, output, root=tmp_path, repair_route=True)['ready']
+    assert not e.phase_review_gates(state, output, root=tmp_path)['ready']
+    for name in ('criterion:AC2', 'run-dod:OTHER', 'phase-output'):
+        broken = deepcopy(output)
+        next(row for row in broken['phase_review']['dod'] if row['id'] == name)['outcome'] = 'unmet'
+        assert not e.phase_review_gates(state, broken, root=tmp_path, repair_route=True)['ready']
+
+
+@pytest.mark.parametrize('defect', ['unknown_result', 'missing_result', 'no_failure', 'unknown_gate',
+                                  'unsupported', 'unrelated', 'changed_links', 'changed_baseline'])
+def test_mixed_aggregate_repair_keeps_unresolved_and_unrelated_gates_blocked(tmp_path, defect):
+    state, output = repair_gate_fixture(tmp_path, mixed_aggregate=True)
+    gate = next(row for row in output['phase_review']['dod'] if row['id'] == 'run-dod:DELIVERY')
+    if defect == 'unknown_result': output['criterion_results']['AC2']['status'] = 'unknown'
+    elif defect == 'missing_result': output['criterion_results'].pop('AC2')
+    elif defect == 'no_failure': output['criterion_results']['AC1']['status'] = 'pass'
+    elif defect == 'unknown_gate': gate['outcome'] = 'unknown'
+    elif defect == 'unsupported': gate['evidence'] = []
+    elif defect == 'unrelated': gate['id'] = 'unrelated'
+    elif defect == 'changed_links': gate['criteria'] = ['AC1']
+    else:
+        output['phase_review']['run_dod'] = deepcopy(output['phase_review']['run_dod'])
+        output['phase_review']['run_dod'][0]['criteria'] = ['AC1']
+    assert not e.phase_review_gates(state, output, root=tmp_path, repair_route=True)['ready']
+
+
+@pytest.mark.parametrize('defect', ['unrelated', 'unsupported', 'no_counterexample', 'stale', 'missing_rerun'])
+def test_repair_rejects_false_verified_claim_but_allows_honest_investigation(tmp_path, defect):
+    state, output = repair_gate_fixture(tmp_path, mixed_aggregate=True)
+    observation = output['phase_review']['dor'][0]['evidence'][0]
+    cause = collaborative_cause(tmp_path, observation)
+    cause['failure_id'] = cause['verification'][0]['failure_id'] = 'AC1'
+    output['phase_review']['causes'] = [cause]
+    assert e.phase_review_gates(state, output, root=tmp_path, repair_route=True)['ready']
+    if defect == 'unrelated': cause['verification'][0]['failure_id'] = 'OTHER'
+    elif defect == 'unsupported': cause['correction_evidence'] = []
+    elif defect == 'no_counterexample': cause['verification'][0]['before_status'] = 'unknown'
+    elif defect == 'stale': (tmp_path / 'app.py').write_text('changed = 2\n')
+    else: cause['affected_checks'].append('integration')
+    assert not e.causal_verified(cause, root=tmp_path)
+    assert not e.phase_review_gates(state, output, root=tmp_path, repair_route=True)['ready']
+    for honest_state in ('investigating', 'contained'):
+        cause['state'] = honest_state
+        assert e.phase_review_gates(state, output, root=tmp_path, repair_route=True)['ready']
+        assert not e.phase_review_gates(state, output, root=tmp_path)['ready']

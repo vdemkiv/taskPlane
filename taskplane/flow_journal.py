@@ -34,7 +34,7 @@ VM_STEPS = 4_000_000
 LOCK_SECONDS = .05
 RECOVERY_BYTES = 16 * 1024 * 1024
 ANCHOR_BYTES = 256
-SCHEMA = 3
+SCHEMA = 4
 REDUCER_BYTES = 128 * 1024 * 1024
 TOTAL_PARTS = ('last_at', 'first_phase', 'last_phase', 'finished_at', 'outcome')
 CHILD_PARTS = ('run', 'session', 'kind', 'child', 'agent_transcript_path')
@@ -85,6 +85,31 @@ def _counters(value: Any, limit: int | None = 32) -> bool:
             and all(type(v) is int and v >= 0 for v in value.values()))
 
 
+def review_groups(value: Any) -> list[tuple[str | None, list[dict[str, Any]]]]:
+    """Validate review containers, keeping envelope metadata out of review work."""
+    groups: list[tuple[str | None, list[dict[str, Any]]]]
+    if isinstance(value, list):
+        groups = [(None, value)]
+    elif isinstance(value, dict):
+        if 'reviews' in value:
+            if set(value) - {'reviews', 'coverage', 'status'}:
+                raise ValueError('invalid review envelope')
+            if 'status' in value and not isinstance(value['status'], str):
+                raise ValueError('invalid review status')
+            if 'coverage' in value and (not isinstance(value['coverage'], list)
+                    or any(not isinstance(row, dict) for row in value['coverage'])):
+                raise ValueError('invalid review coverage')
+            groups = [(None, value['reviews'])]
+        else:
+            groups = list(value.items())
+    else:
+        raise ValueError('invalid reviews')
+    if any(not isinstance(group, list) or any(not isinstance(row, dict) for row in group)
+           for _, group in groups):
+        raise ValueError('invalid review group')
+    return groups
+
+
 def _source(row: dict[str, Any]) -> None:
     """Validate nested containers before either reducers or readers use them."""
     if row.get('kind') == 'start' and 'run' not in row:
@@ -101,13 +126,7 @@ def _source(row: dict[str, Any]) -> None:
         raise ValueError('invalid artifact evidence')
     if 'evidence' in captured and not isinstance(captured['evidence'], dict):
         raise ValueError('invalid captured evidence')
-    reviews = captured.get('reviews', [])
-    if not isinstance(reviews, (list, dict)):
-        raise ValueError('invalid reviews')
-    groups = reviews.values() if isinstance(reviews, dict) else [reviews]
-    if any(not isinstance(group, list) or any(not isinstance(v, dict) for v in group)
-           for group in groups):
-        raise ValueError('invalid review group')
+    review_groups(captured.get('reviews', []))
     if row.get('usage') is not None and not _counters(row['usage']):
         raise ValueError('invalid counters')
 
@@ -508,8 +527,7 @@ class Projection:
                                     entries += len(evidence)
                         captures = row.get('captured') or {}
                         reviews = captures.get('reviews', []) if isinstance(captures, dict) else []
-                        groups = reviews.values() if isinstance(reviews, dict) else [reviews]
-                        entries += sum(len(group) for group in groups if isinstance(group, list))
+                        entries += sum(len(group) for _, group in review_groups(reviews))
                         work = 16 + 2 * min(entries, 258)
                         if self.budget.reducer_rows + work > REDUCER_ROWS:
                             break
@@ -721,16 +739,14 @@ class Projection:
         if kind == 'hook' and (row.get('admission') or {}).get('authority') == 'observation_only':
             representatives.append(('post-completion', str(pos), row))
         reviews = (row.get('captured') or {}).get('reviews', [])
-        groups = reviews.values() if isinstance(reviews, dict) else [reviews]
-        for group in groups:
-            if isinstance(group, list):
-                for review in group:
-                    entries += 1
-                    if entries > 256:
-                        raise ValueError('record_reducer_limit')
-                    if isinstance(review, dict) and review.get('agent'):
-                        representatives.append(('reviewer', _key(review['agent']),
-                            {'run':row.get('run'), 'captured':{'reviews':[{'agent':review['agent']}]}}))
+        for _, group in review_groups(reviews):
+            for review in group:
+                entries += 1
+                if entries > 256:
+                    raise ValueError('record_reducer_limit')
+                if review.get('agent'):
+                    representatives.append(('reviewer', _key(review['agent']),
+                        {'run':row.get('run'), 'captured':{'reviews':[{'agent':review['agent']}]}}))
         for family, key, value in representatives:
             if family == 'child':
                 old = self._reducer_query('SELECT @body@ FROM fields WHERE g=? AND run=? AND family=? AND key=?',

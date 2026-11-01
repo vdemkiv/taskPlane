@@ -6,6 +6,8 @@ so callers can retain existing content identities while sharing one writer.
 from __future__ import annotations
 import contextlib as _contextlib
 import copy
+from contextvars import ContextVar
+import errno
 import time as _time
 
 import hashlib
@@ -80,7 +82,28 @@ def atomic_json(path: str | os.PathLike[str], value: object, *,
             pass
 
 
-def lock_file(handle: BinaryIO) -> None:
+_LOCK_DEADLINE: ContextVar[float | None] = ContextVar("taskplane_lock_deadline", default=None)
+
+
+def _lock_deadline(timeout: float) -> float:
+    deadline = _time.monotonic() + max(0.0, timeout)
+    parent = _LOCK_DEADLINE.get()
+    return min(deadline, parent) if parent is not None else deadline
+
+
+@_contextlib.contextmanager
+def lock_budget(*, timeout: float = 10.0) -> Iterator[None]:
+    """Share one deadline across operation locks; nesting cannot extend it."""
+    token = _LOCK_DEADLINE.set(_lock_deadline(timeout))
+    try:
+        yield
+    finally:
+        _LOCK_DEADLINE.reset(token)
+
+
+def lock_file(handle: BinaryIO, *, timeout: float = 10.0) -> None:
+    """Acquire the native lock within a bounded monotonic wait, including direct callers."""
+    deadline = _lock_deadline(timeout)
     try:
         import fcntl
     except ImportError:  # Windows
@@ -90,9 +113,24 @@ def lock_file(handle: BinaryIO) -> None:
             handle.write(b"\0")
             handle.flush()
         handle.seek(0)
-        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+        def acquire() -> None:
+            handle.seek(0)
+            getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_NBLCK"), 1)
     else:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        def acquire() -> None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    while True:
+        try:
+            acquire()
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR):
+                raise
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                raise StateError(str(handle.name), "could not acquire state lock",
+                                 "another process holds it; retry after it releases the lock") from None
+            _time.sleep(min(0.05, remaining))
 
 
 def unlock_file(handle: BinaryIO) -> None:
@@ -105,8 +143,6 @@ def unlock_file(handle: BinaryIO) -> None:
     else:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
-
-_LOCK_STALE_S = 120.0
 
 class StateError(RuntimeError):
     """A governance state file is unreadable or unprotectable.
@@ -127,11 +163,11 @@ class StateError(RuntimeError):
 def file_lock(path: str, *, timeout: float = 10.0) -> Iterator[None]:
     """Advisory exclusive lock on <path>.lock — NEVER silently lock-free.
 
-    Primary: fcntl.flock. Where flock is unavailable or refused (Windows,
-    some FUSE/network mounts — exactly the hosts this plugin targets), fall
-    back to an atomic mkdir spin-lock with staleness recovery instead of
-    proceeding unlocked. If even that cannot be acquired within `timeout`,
+    Primary: bounded native locking. Only unavailable locking primitives use
+    an atomic mkdir fallback; contention never switches lock protocols.
+    Fallback ownership is never revoked on age alone. Within `timeout`,
     raise StateError: failing closed beats corrupting shared state."""
+    deadline = _lock_deadline(timeout)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     lock_path = path + ".lock"
     # ACQUISITION failures fall through to the mkdir lock; an exception
@@ -145,45 +181,59 @@ def file_lock(path: str, *, timeout: float = 10.0) -> Iterator[None]:
         lf = os.fdopen(descriptor, "a+b")
         if not stat.S_ISREG(os.fstat(lf.fileno()).st_mode):
             raise OSError("state lock must be a regular file")
-        lock_file(lf)
-    except (ImportError, OSError):
+        lock_file(lf, timeout=max(0.0, deadline - _time.monotonic()))
+    except (ImportError, OSError) as exc:
         if lf is not None:
             lf.close()
+        if isinstance(exc, OSError) and exc.errno not in (
+                errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOLCK):
+            raise StateError(lock_path, f"lock unavailable ({exc})") from None
         lf = None     # fall through to the mkdir lock — not to "no lock"
+    except BaseException:
+        if lf is not None:
+            lf.close()
+        raise
     if lf is not None:
+        body_failed = False
         try:
             yield
+        except BaseException:
+            body_failed = True
+            raise
         finally:
             try:
                 unlock_file(lf)
+            except OSError:
+                if not body_failed:
+                    raise
             finally:
                 lf.close()
         return
     lockdir = path + ".lockdir"
-    deadline = _time.monotonic() + max(0.1, timeout)
+    owner = secrets.token_hex(16)
+    marker = os.path.join(lockdir, owner)
     while True:
         try:
             os.mkdir(lockdir)
+            # A unique marker also prevents a late release from deleting a
+            # replacement directory, even if the filesystem reuses its inode.
+            with open(marker, "xb"):
+                pass
             break
         except FileExistsError:
-            try:  # steal a lock left behind by a dead process
-                if _time.time() - os.stat(lockdir).st_mtime > _LOCK_STALE_S:
-                    os.rmdir(lockdir)
-                    continue
-            except OSError:
-                pass
             if _time.monotonic() >= deadline:
                 raise StateError(
                     lockdir, "could not acquire state lock",
                     "another process holds it; if it is dead, remove the "
                     "lockdir") from None
-            _time.sleep(0.05)
+            _time.sleep(min(0.05, max(0.0, deadline - _time.monotonic())))
         except OSError as e:
             raise StateError(lockdir, f"lock unavailable ({e})") from None
     try:
         yield
     finally:
         try:
+            os.unlink(marker)
             os.rmdir(lockdir)
         except OSError:
             pass

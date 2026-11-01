@@ -18,20 +18,20 @@ from . import workspace_binding
 
 
 def phase_readiness(workspace: Path, state: dict[str, Any],
-                    output: dict[str, Any] | None = None) -> dict[str, Any]:
+                    output: dict[str, Any] | None = None, *, repair: bool = False) -> dict[str, Any]:
     """Read-only status shared by live acceptance and review presentation."""
     from .context import Store
     stage = w.current(state)
     packet = stage.get("packet") or {}
     selected = output if output is not None else packet.get("output", {})
-    gates = evidence.phase_review_gates(state, selected, root=workspace)
+    gates = evidence.phase_review_gates(state, selected, root=workspace, repair_route=repair)
     if not w.phase_contract(state):
         return gates
     blockers = list(gates["blockers"])
     failures = {row["check_id"] for row in packet.get("verification", {}).get("history", {}).get("attempts", [])
                 if row.get("status") == "fail"}
     verified = {row["failure_id"] for row in gates["causes"] if evidence.causal_verified(row, root=workspace)}
-    if failures - verified:
+    if failures - verified and not repair:
         blockers.append("Recorded failed checks need verified causal corrections: " + ", ".join(sorted(failures - verified)))
     accepted = {row["id"]: row for row in selected.get("phase_review", {}).get("feedback", [])}
     for ref in stage.get("review_feedback", {}).values():
@@ -807,14 +807,17 @@ class Controller:
         indexed = {row["id"]: row for row in review.get("feedback", [])}
         for row in self._feedback_rows(state):
             w.require(row["id"] in indexed and all(indexed[row["id"]].get(k) == row.get(k)
-                      for k in ("source", "target", "criteria", "material")), "invalid_evidence",
+                      for k in ("source", "target", "criteria"))
+                      and indexed[row["id"]].get("material", True) == row.get("material", True), "invalid_evidence",
                       "Draft cannot erase or retarget recorded feedback.")
 
-    def _phase_ready(self, state: dict[str, Any]) -> None:
+    def _phase_ready(self, state: dict[str, Any], *, repair: bool = False) -> None:
         if w.phase_contract(state):
             w.require(w.current(state).get("packet"), "approval_required",
                       "Submit the current phase before requesting acceptance or transition.")
-        gates = phase_readiness(self.workspace, state)
+        if repair:
+            evidence.require_repair_route(state)
+        gates = phase_readiness(self.workspace, state, repair=repair)
         w.require(gates["ready"], "phase_not_ready", "; ".join(gates["blockers"]))
 
     def refine(self, run: str, revision: int | None, raw: str) -> dict[str, Any]:
@@ -1038,7 +1041,10 @@ class Controller:
             if replay:
                 return w.decide(s, verified)
             if action in {"advance", "finish", "auto-decide"} or action == "decide" and verified.get("choice") == "approved":
-                self._phase_ready(s)
+                repair = (action == "decide" and verified.get("human") is True
+                          and verified.get("automatic") is False and evidence.repair_route(s)
+                          or action == "advance" and w.current(s)["decision"] == "repair_authorized")
+                self._phase_ready(s, repair=repair)
             if action in ("advance", "finish", "submit", "auto-decide"):
                 w.require(self.adapter.can_seal(s),
                           "scope_violation", "Live tool processes must stop before sealing or revoking a phase grant.")

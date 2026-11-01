@@ -1,5 +1,6 @@
 """Read native Codex counters and lineage without retaining conversation content."""
 from __future__ import annotations
+import codecs
 import hashlib
 import json
 import os
@@ -27,6 +28,237 @@ MAX_COUNTER_TAIL_BYTES = 4 * 1024 * 1024
 MAX_RECORD_BYTES = 2 * 1024 * 1024
 MAX_REPLAY_BYTES = 512 * 1024 * 1024
 MAX_REPLAY_RESPONSES = 250000
+
+# Only the oversized compaction path uses this validator. It retains syntax and
+# small envelope fields, never discarded strings or copied token counters.
+_COMPACTION_DEPTH = 128
+_COMPACTION_TOKEN = 512
+_COMPACTION_KEYS = 64
+_COMPACTION_STATE_BYTES = 8192
+_STRING_SPECIAL = re.compile(r'["\\\x00-\x1f]')
+_JSON_NUMBER = re.compile(r'-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z')
+
+
+class _CompactionValidator:
+    """Resumable JSON syntax validation with one deliberately narrow outcome."""
+
+    def __init__(self, saved: Any = None):
+        self.state: dict[str, Any] = {
+            'version': 1, 'stack': [], 'root': 'value', 'mode': '', 'token': '',
+            'capture': '', 'escape': 0, 'utf8': [], 'keys': [], 'key': '',
+            'type': '', 'payload': False,
+        }
+        if saved is not None:
+            self._restore(saved)
+
+    def _restore(self, saved: Any) -> None:
+        bad = 'invalid_compaction_state'
+        if not isinstance(saved, dict) or saved.keys() != self.state.keys():
+            raise ValueError(bad)
+        if len(json.dumps(saved, separators=(',', ':'))) > _COMPACTION_STATE_BYTES:
+            raise ValueError(bad)
+        if (saved['version'] != 1 or type(saved['version']) is not int
+                or saved['root'] not in ('value', 'active', 'done')
+                or saved['mode'] not in ('', 'string', 'primitive')
+                or saved['capture'] not in ('', 'key', 'type')
+                or type(saved['escape']) is not int or not 0 <= saved['escape'] <= 5
+                or type(saved['payload']) is not bool):
+            raise ValueError(bad)
+        for key in ('token', 'key', 'type'):
+            if not isinstance(saved[key], str) or len(saved[key]) > _COMPACTION_TOKEN:
+                raise ValueError(bad)
+        stack = saved['stack']
+        if not isinstance(stack, list) or len(stack) > _COMPACTION_DEPTH:
+            raise ValueError(bad)
+        for frame in stack:
+            if (not isinstance(frame, list) or len(frame) != 2
+                    or frame[0] not in ('object', 'array')
+                    or frame[1] not in ({'key_or_end', 'key', 'colon', 'value', 'comma_or_end'}
+                                       if frame[0] == 'object' else
+                                       {'value_or_end', 'value', 'comma_or_end'})):
+                raise ValueError(bad)
+        keys = saved['keys']
+        if (not isinstance(keys, list) or len(keys) > _COMPACTION_KEYS
+                or any(not isinstance(k, str) or len(k) > 128 for k in keys)
+                or sum(map(len, keys)) > 2048
+                or len(set(keys)) != len(keys)):
+            raise ValueError(bad)
+        utf8 = saved['utf8']
+        if (not isinstance(utf8, list) or len(utf8) > 3
+                or any(type(b) is not int or not 0 <= b <= 255 for b in utf8)):
+            raise ValueError(bad)
+        decoder = codecs.getincrementaldecoder('utf-8')()
+        try:
+            decoder.decode(bytes(utf8))
+        except UnicodeDecodeError as exc:
+            raise ValueError(bad) from exc
+        if decoder.getstate()[0] != bytes(utf8):
+            raise ValueError(bad)
+        if (bool(stack) != (saved['root'] == 'active')
+                or stack and stack[0][0] != 'object'
+                or saved['mode'] and not stack
+                or saved['mode'] != 'string' and (saved['escape'] or saved['capture'])
+                or not saved['mode'] and saved['token']
+                or saved['mode'] == 'string' and not saved['capture'] and saved['token']
+                or saved['root'] == 'done' and (utf8 or saved['mode'])
+                or saved['type'] not in ('', 'compacted')
+                or saved['type'] and 'type' not in keys
+                or saved['payload'] and 'payload' not in keys):
+            raise ValueError(bad)
+        if stack:
+            kind, expect = stack[-1]
+            if (saved['mode'] == 'primitive' and (expect not in ('value', 'value_or_end')
+                                                  or not saved['token'])
+                    or saved['mode'] == 'string' and expect not in ('key', 'key_or_end', 'value', 'value_or_end')
+                    or saved['capture'] == 'key' and (len(stack) != 1 or expect not in ('key', 'key_or_end'))
+                    or saved['capture'] == 'type' and (len(stack) != 1 or expect != 'value' or saved['key'] != 'type')
+                    or len(stack) == 1 and saved['mode'] == 'string' and expect in ('key', 'key_or_end')
+                    and saved['capture'] != 'key'
+                    or saved['key'] and saved['key'] not in keys):
+                raise ValueError(bad)
+        self.state = saved
+
+    def _token(self, text: str) -> None:
+        self.state['token'] += text
+        if len(self.state['token']) > _COMPACTION_TOKEN:
+            raise ValueError('compaction_state_limit')
+
+    def _value_done(self) -> None:
+        s = self.state
+        if s['stack']:
+            s['stack'][-1][1] = 'comma_or_end'
+        else:
+            s['root'] = 'done'
+
+    def _string_done(self) -> None:
+        s = self.state
+        frame = s['stack'][-1]
+        if frame[0] == 'object' and frame[1] in ('key', 'key_or_end'):
+            if s['capture']:
+                key = json.loads('"' + s['token'] + '"')
+                if key in s['keys']:
+                    raise ValueError('ambiguous_compaction_record')
+                if (len(key) > 128 or len(s['keys']) >= _COMPACTION_KEYS
+                        or sum(map(len, s['keys'])) + len(key) > 2048):
+                    raise ValueError('compaction_state_limit')
+                s['keys'].append(key)
+                s['key'] = key
+            frame[1] = 'colon'
+        else:
+            if s['capture'] == 'type':
+                if json.loads('"' + s['token'] + '"') != 'compacted':
+                    raise ValueError('oversized_record')
+                s['type'] = 'compacted'
+            self._value_done()
+        s.update(mode='', token='', capture='')
+
+    def feed(self, raw: bytes) -> None:
+        s = self.state
+        decoder = codecs.getincrementaldecoder('utf-8')()
+        decoder.setstate((bytes(s['utf8']), 0))
+        text = decoder.decode(raw)
+        s['utf8'] = list(decoder.getstate()[0])
+        i = 0
+        while i < len(text):
+            c = text[i]
+            if s['mode'] == 'string':
+                if s['escape']:
+                    if s['capture']:
+                        self._token(c)
+                    if s['escape'] == 5:
+                        if c == 'u':
+                            s['escape'] = 4
+                        elif c in '"\\/bfnrt':
+                            s['escape'] = 0
+                        else:
+                            raise ValueError('invalid_compaction_record')
+                    elif c in '0123456789abcdefABCDEF':
+                        s['escape'] -= 1
+                    else:
+                        raise ValueError('invalid_compaction_record')
+                    i += 1
+                    continue
+                match = _STRING_SPECIAL.search(text, i)
+                end = match.start() if match else len(text)
+                if s['capture']:
+                    self._token(text[i:end])
+                i = end
+                if not match:
+                    continue
+                c = text[i]
+                if c == '"':
+                    self._string_done()
+                elif c == '\\':
+                    if s['capture']:
+                        self._token(c)
+                    s['escape'] = 5
+                else:
+                    raise ValueError('invalid_compaction_record')
+                i += 1
+                continue
+            if s['mode'] == 'primitive':
+                if c not in ' \t\r\n,]}':
+                    self._token(c)
+                    i += 1
+                    continue
+                if s['token'] not in ('true', 'false', 'null') and not _JSON_NUMBER.fullmatch(s['token']):
+                    raise ValueError('invalid_compaction_record')
+                s.update(mode='', token='')
+                self._value_done()
+                continue
+            if c in ' \t\r\n':
+                i += 1
+                continue
+            stack = s['stack']
+            if not stack:
+                if s['root'] != 'value' or c != '{':
+                    raise ValueError('invalid_compaction_record')
+                s['root'] = 'active'
+                stack.append(['object', 'key_or_end'])
+                i += 1
+                continue
+            kind, expect = stack[-1]
+            close = '}' if kind == 'object' else ']'
+            if c == close and expect in ('key_or_end', 'value_or_end', 'comma_or_end'):
+                stack.pop()
+                self._value_done()
+            elif expect in ('key', 'key_or_end') and c == '"':
+                s.update(mode='string', capture='key' if len(stack) == 1 else '')
+            elif expect == 'colon' and c == ':':
+                stack[-1][1] = 'value'
+            elif expect == 'comma_or_end' and c == ',':
+                stack[-1][1] = 'key' if kind == 'object' else 'value'
+            elif expect in ('value', 'value_or_end'):
+                outer = len(stack) == 1
+                if outer and s['key'] == 'payload':
+                    if c != '{':
+                        raise ValueError('invalid_compaction_record')
+                    s['payload'] = True
+                if outer and s['key'] == 'type' and c != '"':
+                    raise ValueError('oversized_record')
+                if c in '{[':
+                    if len(stack) >= _COMPACTION_DEPTH:
+                        raise ValueError('compaction_state_limit')
+                    stack.append(['object', 'key_or_end'] if c == '{' else ['array', 'value_or_end'])
+                elif c == '"':
+                    s.update(mode='string', capture='type' if outer and s['key'] == 'type' else '')
+                elif c in '-0123456789tfn':
+                    s.update(mode='primitive', token=c)
+                else:
+                    raise ValueError('invalid_compaction_record')
+            else:
+                raise ValueError('invalid_compaction_record')
+            i += 1
+
+        if len(json.dumps(s, separators=(',', ':'))) > _COMPACTION_STATE_BYTES:
+            raise ValueError('compaction_state_limit')
+
+    def finish(self) -> None:
+        s = self.state
+        if s['root'] != 'done' or s['mode'] or s['utf8']:
+            raise ValueError('invalid_compaction_record')
+        if s['type'] != 'compacted' or not s['payload']:
+            raise ValueError('oversized_record')
 
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 USAGE_KEYS = ("input_tokens", "cached_input_tokens", "uncached_input_tokens",

@@ -2,6 +2,7 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 
@@ -43,7 +44,7 @@ def native_files(tmp_path, monkeypatch, state, records, headers):
     home = tmp_path / 'native-home'
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
     project = re.sub(r'[^A-Za-z0-9]', '-', state['workspace'])
-    parent = home / '.claude' / 'projects' / project / 'parent.jsonl'
+    parent = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'projects' / project / 'parent.jsonl'
     parent.parent.mkdir(parents=True)
     parent.write_text(''.join(json.dumps(row) + '\n' for row in records))
     children = parent.with_suffix('') / 'subagents'

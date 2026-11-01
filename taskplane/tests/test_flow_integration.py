@@ -241,3 +241,54 @@ def test_counter_reset_is_unknown_not_zero(tmp_path, monkeypatch):
     assert root['usage'] is None and root['status'] == 'partial'
     assert 'reset' in root['errors'][0]
     assert result['tokens'] is None
+
+
+# Reuse the real subprocess fixture; its protocol observations are not live-host proof.
+from taskplane.tests.test_claude_invocation import launched  # noqa: F401
+from taskplane.tests.test_farm_workers import requires_native_reader
+
+
+@requires_native_reader
+@pytest.mark.parametrize('completion', ['original', 'updated'])
+def test_registered_failure_hook_completes_only_exact_admission(launched, monkeypatch, completion):
+    import os
+    import subprocess
+    from copy import deepcopy
+    from taskplane.tests.test_claude_invocation import command_event, execute
+    controller, _, _, parent = launched
+    # The shared legacy fixture writes the default tree; select that exact fixture root.
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(parent.parents[2]))
+    event = command_event(launched, call='failed-call')
+    updated = flow.hook(event)['hookSpecificOutput']['updatedInput']
+    other_event = command_event(launched, call='unrelated-call')
+    other_updated = flow.hook(other_event)['hookSpecificOutput']['updatedInput']
+    initial = controller._read(controller._path())['admissions']
+    unrelated = next(row for row in initial.values() if row['call_id'] == 'unrelated-call')
+    root = Path(flow.__file__).resolve().parents[1]
+    hooks = json.loads((root / 'hooks/hooks.json').read_text())['hooks']
+    assert 'PostToolUseFailure' in hooks
+    registration = hooks['PostToolUseFailure'][0]['hooks'][0]
+    assert registration['timeout'] == hooks['PostToolUse'][0]['hooks'][0]['timeout']
+    assert 'tool-failure' in registration['commandWindows']
+    env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(root))
+    failure = {**event, 'tool_input': updated if completion == 'updated' else event['tool_input'],
+               'hook_event_name': 'PostToolUseFailure', 'error': 'fixture denial'}
+    def invoke(payload):
+        return subprocess.run(['sh', '-c', registration['command']], input=json.dumps(payload),
+            cwd=controller.workspace, env=env, text=True, capture_output=True, timeout=30)
+    # Same ID with changed inputs must not close either row.
+    bad = deepcopy(failure); bad['tool_input']['description'] = 'changed'
+    assert invoke(bad).returncode == 2
+    assert controller._read(controller._path())['admissions'] == initial
+    unknown = {**failure, 'tool_use_id': 'unknown-call'}
+    assert invoke(unknown).returncode == 0
+    assert controller._read(controller._path())['admissions'] == initial
+    result = invoke(failure)
+    assert result.returncode == 0, result.stdout + result.stderr
+    rows = controller._read(controller._path())['admissions']
+    failed = next(row for row in rows.values() if row['call_id'] == 'failed-call')
+    assert failed['state'] == 'completed'
+    assert next(row for row in rows.values() if row['call_id'] == 'unrelated-call') == unrelated
+    assert execute(updated, controller.workspace).returncode == 2
+    assert execute(other_updated, controller.workspace).returncode == 0
+    assert any(row.get('event') == 'PostToolUseFailure' for row in flow.read_events(controller.workspace))

@@ -779,3 +779,37 @@ class TestE4DocstringTruth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestModuleFileBoundary(unittest.TestCase):
+    def test_400_401_files_preserve_membership_and_reject_degraded_projection(self):
+        from pathlib import Path
+        from taskplane import graph_decomposition as decomposition
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            module = workspace / 'pkg'
+            module.mkdir()
+            for index in range(400):
+                (module / f'file_{index:03}.py').write_text('value = 1\n')
+            complete = dg.scan(directory, decompose=True)
+            self.assertEqual(complete['meta']['source_coverage']['status'], 'complete')
+            self.assertFalse(complete['meta']['graph_scan_quality']['degraded'])
+            self.assertEqual({f for c in complete['components'] for f in c['files']},
+                             set(complete['files']))
+            (module / 'file_400.py').write_text('value = 1\n')
+            overflow = dg.scan(directory, decompose=True)
+            self.assertEqual(overflow['meta']['source_coverage']['status'], 'complete')
+            self.assertEqual({f for c in overflow['components'] for f in c['files']},
+                             set(overflow['files']))
+            self.assertTrue(overflow['meta']['graph_scan_quality']['degraded'])
+            self.assertTrue(all(c.get('degraded') for c in overflow['components']))
+            with self.assertRaisesRegex(ValueError, 'degraded'):
+                decomposition.dependency_decomposition(overflow)
+            # An unchanged pre-repair cache must not perpetuate silent truncation.
+            stale = json.loads(json.dumps(overflow))
+            stale['components'][0]['files'] = stale['components'][0]['files'][:400]
+            stale['components'][0].pop('degraded', None)
+            stale['meta']['graph_scan_quality'] = {}
+            repaired, stats = decomposition.derive(directory, overflow, stale)
+            self.assertEqual({f for c in repaired for f in c['files']}, set(overflow['files']))
+            self.assertTrue(stats['degraded'])

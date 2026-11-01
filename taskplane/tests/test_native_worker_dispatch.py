@@ -1,5 +1,6 @@
 """Historical native shapes: a canonical name alone is not a session ID."""
 import json
+import os
 from pathlib import Path
 import sys
 import shlex
@@ -18,6 +19,7 @@ def accepted_status_worker(tmp_path):
     from taskplane.tests.test_worker_runtime import scoped, complete
     controller, state = setup(tmp_path, count=2, scoped_input=True, extra_inputs=['other.py'])
     state = scoped(controller, state, tmp_path)
+    (tmp_path / 'input.py').write_text('# indexed receipt input\n' * 1000)
     prepared = reserve(controller, state, 'T0')
     launch(controller, state, prepared)
     consume(controller, state, prepared['grant'], 'native-0')
@@ -79,6 +81,96 @@ def test_status_projection_memo_preserves_recursion_boundary(tmp_path, accepted_
     assert wr.result_valid(tmp_path, state, 'T0', _memo=memo)
     assert not wr.result_valid(tmp_path, state, 'T0', {'T0'}, _memo=memo)
     assert wr.result_valid(tmp_path, state, 'T0', _memo=memo)
+
+
+def test_status_validation_has_no_persistence(tmp_path, monkeypatch, accepted_status_worker):
+    from taskplane import context, primitives, snapshot_retention
+    import hashlib
+    import os
+    state, _ = accepted_status_worker
+    def inventory():
+        return {str(p.relative_to(tmp_path)): (p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
+                for p in tmp_path.rglob('*') if p.is_file()}
+    before = inventory()
+    def forbidden(*args, **kwargs):
+        pytest.fail('Status validation must not publish, register, lock or fsync')
+    monkeypatch.setattr(context.Store, '_object', forbidden)
+    monkeypatch.setattr(context.Store, 'register', forbidden)
+    monkeypatch.setattr(snapshot_retention, 'register_references', forbidden)
+    monkeypatch.setattr(primitives, 'file_lock', forbidden)
+    monkeypatch.setattr(os, 'fsync', forbidden)
+    for _ in range(2):
+        assert wr.result_valid(tmp_path, state, 'T0')
+        assert next(r for r in wr.summary(state, tmp_path)['scheduling'] if r['task'] == 'T0')['reason'] == 'accepted'
+    assert inventory() == before
+
+
+@pytest.mark.parametrize('proof', ['snapshot', 'leaf', 'index', 'view', 'handoff', 'receipt', 'ledger'])
+@pytest.mark.parametrize('damage', ['missing', 'corrupt'])
+def test_status_validation_requires_original_durable_proof(tmp_path, accepted_status_worker, proof, damage):
+    from taskplane.context import Store
+    state, grant = accepted_status_worker
+    row = state['workers'][grant]
+    session = wr.worker_session(tmp_path, state, row)
+    store = Store(tmp_path)
+    roots = {'snapshot': row['snapshot'], 'view': session.view_ref,
+             'handoff': session.handoff_ref, 'receipt': row['context_receipt']['receipt']}
+    if proof in {'leaf', 'index'}:
+        # Scoped source bodies are supporting inputs; the required frozen snapshot
+        # still contains their indexed trees and must validate every child.
+        keys = store.descendants(row['snapshot']) if proof == 'index' else {
+            key for item in session.required for key in store.descendants(item['ref'])}
+        key = next(k for k in sorted(keys) if bool(store.children(store.node(k))) == (proof == 'index'))
+        target = store.path(key)
+    else:
+        target = session.ledger_path if proof == 'ledger' else store.path(roots[proof]['sha256'])
+    original = target.read_bytes()
+    if damage == 'missing':
+        target.unlink()
+    else:
+        target.write_bytes(b'{"altered":true}')
+    assert not wr.native_result_valid(tmp_path, state, 'T0', state['task_results']['T0'])
+    assert not target.exists() if damage == 'missing' else target.read_bytes() == b'{"altered":true}'
+    target.write_bytes(original)
+    assert wr.result_valid(tmp_path, state, 'T0')
+
+
+@pytest.mark.parametrize('damage', ['symlink', 'directory'])
+def test_status_validation_refuses_nonregular_counterpart(tmp_path, accepted_status_worker, damage):
+    state, grant = accepted_status_worker
+    session = wr.worker_session(tmp_path, state, state['workers'][grant])
+    target = session.store.path(session.view_ref['sha256'])
+    raw = target.read_bytes()
+    target.unlink()
+    if damage == 'symlink':
+        other = tmp_path / 'counterpart.json'
+        other.write_bytes(raw)
+        target.symlink_to(other)
+    else:
+        target.mkdir()
+    assert not wr.native_result_valid(tmp_path, state, 'T0', state['task_results']['T0'])
+    assert target.is_symlink() if damage == 'symlink' else target.is_dir()
+
+
+def test_preview_store_does_not_register_or_mask_durable_corruption(tmp_path, monkeypatch):
+    from taskplane.context import Store
+    from taskplane.context_handoff import _PreviewStore
+    from taskplane import snapshot_retention
+    def forbidden(*args, **kwargs):
+        pytest.fail('Preview must not register references')
+    monkeypatch.setattr(snapshot_retention, 'register_references', forbidden)
+    preview = _PreviewStore(tmp_path)
+    ref = preview.put('example', {'body': 'read-only'})
+    assert preview.resolve(ref) == {'body': 'read-only'}
+    assert not (tmp_path / '.taskplane').exists()
+    target = Store(tmp_path).path(ref['sha256'])
+    target.parent.mkdir(parents=True)
+    target.write_text('corrupt existing counterpart')
+    with pytest.raises(w.Refusal):
+        preview.resolve(ref)
+    with pytest.raises(w.Refusal):
+        _PreviewStore(tmp_path).put('example', {'body': 'read-only'})
+    assert target.read_text() == 'corrupt existing counterpart'
 
 
 @pytest.mark.parametrize('words, expected', [
@@ -438,7 +530,7 @@ def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypa
     c.guard(event,s['run'])
     home=tmp_path/'native-home'
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
-    parent=home/'.claude/projects'/re.sub(r'[^A-Za-z0-9]', '-', str(tmp_path))/'root.jsonl'
+    parent=Path(os.environ['CLAUDE_CONFIG_DIR'])/'projects'/re.sub(r'[^A-Za-z0-9]', '-', str(tmp_path))/'root.jsonl'
     parent.parent.mkdir(parents=True)
     called=wr.now()
     header=dict(sessionId='root', agentId='claude-child', isSidechain=True, cwd=str(tmp_path), timestamp=wr.now())

@@ -707,3 +707,66 @@ def test_public_start_restart_preserves_original_or_unknown_baseline(
         assert [row['kind'] for row in rows] == ['start', 'usage_boundary']
         assert rows[0]['usage']['total_tokens'] == 100
         assert not any('cannot recapture' in error for error in result['evidence_errors'])
+
+
+@pytest.mark.parametrize('configured', [True, False])
+@pytest.mark.parametrize('supplied', [True, False])
+def test_worker_transcript_uses_exact_configured_root(monkeypatch, configured, supplied):
+    import tempfile
+    from taskplane import claude_worker_observations as observations
+    from taskplane.tests.test_farm_workers import fixture
+    if not observations.supported_reader(): pytest.skip('No native no-follow reader')
+    with tempfile.TemporaryDirectory(prefix='taskplane-claude-root-') as directory:
+        root = Path(directory).resolve()
+        state, attempt, records, headers = fixture(root)
+        config = root / 'custom-config' if configured else root / 'home' / '.claude'
+        monkeypatch.setattr(Path, 'home', classmethod(lambda cls: root / 'home'))
+        if configured: monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(config))
+        else: monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
+        import re
+        parent = config / 'projects' / re.sub(r'[^A-Za-z0-9]', '-', state['workspace']) / 'parent.jsonl'
+        parent.parent.mkdir(parents=True)
+        parent.write_text(''.join(json.dumps(row) + '\n' for row in records))
+        child = parent.with_suffix('') / 'subagents' / 'agent-child.jsonl'
+        child.parent.mkdir(parents=True)
+        child.write_text(json.dumps(headers[0]) + '\n')
+        answer = observations.observe('parent', attempt, {'transcript_path': str(parent)} if supplied else {})
+        assert answer['status'] == 'matched', answer
+        assert answer['worker_id'] == 'child'
+        assert [row['source'] for row in answer['references']] == [str(parent), str(child)]
+
+
+@pytest.mark.parametrize('defect', ['parent_path', 'project_path', 'foreign_root',
+    'parent_identity', 'child_identity', 'config_symlink', 'project_symlink',
+    'parent_symlink', 'child_symlink'])
+def test_configured_worker_transcript_preserves_exact_identity_and_no_follow(monkeypatch, defect):
+    import re
+    import tempfile
+    from taskplane import claude_worker_observations as observations
+    from taskplane.tests.test_farm_workers import fixture
+    if not observations.supported_reader(): pytest.skip('No native no-follow reader')
+    with tempfile.TemporaryDirectory(prefix='taskplane-claude-conflict-') as directory:
+        root = Path(directory).resolve()
+        state, attempt, records, headers = fixture(root)
+        config = root / 'custom-config'
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(config))
+        parent = config / 'projects' / re.sub(r'[^A-Za-z0-9]', '-', state['workspace']) / 'parent.jsonl'
+        parent.parent.mkdir(parents=True)
+        if defect == 'parent_identity': records[0]['sessionId'] = 'foreign'
+        if defect == 'child_identity': headers[0]['sessionId'] = 'foreign'
+        parent.write_text(''.join(json.dumps(row) + '\n' for row in records))
+        child = parent.with_suffix('') / 'subagents' / 'agent-child.jsonl'
+        child.parent.mkdir(parents=True)
+        child.write_text(json.dumps(headers[0]) + '\n')
+        supplied = parent
+        if defect == 'parent_path': supplied = parent.with_name('foreign.jsonl')
+        if defect == 'project_path': supplied = parent.parent.parent / 'other-project' / parent.name
+        if defect == 'foreign_root': supplied = root / 'foreign' / parent.name
+        if defect.endswith('_symlink'):
+            link = {'config_symlink': config, 'project_symlink': parent.parent,
+                    'parent_symlink': parent, 'child_symlink': child}[defect]
+            real = link.with_name(link.name + '-real')
+            link.rename(real)
+            link.symlink_to(real, target_is_directory=real.is_dir())
+        answer = observations.observe('parent', attempt, {'transcript_path': str(supplied)})
+        assert answer['status'] == 'conflict', answer

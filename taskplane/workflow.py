@@ -129,7 +129,7 @@ def validate_state(state: dict[str, Any]) -> None:
                 and stage["id"] not in ids and stage.get("phase") in PHASES
                 and stage.get("work") in ("working", "ready", "evidence_blocked")
                 and stage.get("decision") in ("not_requested", "awaiting_human_approval", "approved",
-                                              "changes_requested", "rejected", "cancelled", "stale")
+                                              "changes_requested", "rejected", "cancelled", "stale", "repair_authorized")
                 and type(stage.get("superseded")) is bool and "packet" in stage,
                 "state_unavailable", "Invalid protected visit.")
         ids.add(stage["id"])
@@ -141,9 +141,9 @@ def validate_state(state: dict[str, Any]) -> None:
                 and packet.get("visit") == stage["id"] and isinstance(packet.get("checkpoint"), str)
                 and all(isinstance(packet.get(k), dict) for k in ("manifest", "source_manifest", "context", "output")),
                 "state_unavailable", "Invalid protected packet.")
-        if stage["decision"] in ("approved", "changes_requested", "rejected", "cancelled"):
+        if stage["decision"] in ("approved", "changes_requested", "rejected", "cancelled", "repair_authorized"):
             require(any(isinstance(d, dict) and approval.decision_authorized(state, d)
-                        and d.get("choice") == stage["decision"] and isinstance(d.get("binding"), dict)
+                        and d.get("choice") == ("approved" if stage["decision"] == "repair_authorized" else stage["decision"]) and isinstance(d.get("binding"), dict)
                         and d["binding"].get("visit") == stage["id"]
                         and d["binding"].get("manifest_digest") == content_fingerprint(packet)
                         for d in state["decisions"].values()),
@@ -202,7 +202,10 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
         require(state["decisions"][event_id] == verified, "stale_checkpoint", "Conflicting native event replay.")
         return deepcopy(state)
     stage = current(state)
-    require(stage["decision"] == "awaiting_human_approval" and stage["packet"],
+    negative = (verified.get("human") is True and verified.get("automatic") is False
+                and verified.get("choice") in {"changes_requested", "rejected", "cancelled"})
+    reopening = stage["decision"] == "approved" and negative and not state["finished"] and not stage["superseded"]
+    require((stage["decision"] == "awaiting_human_approval" or reopening) and stage["packet"],
             "approval_required", "Submit the current stage's evidence before requesting a decision.")
     expected = binding(state, stage["packet"])
     require(verified.get("binding") == expected, "stale_checkpoint",
@@ -210,12 +213,18 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
     choice = verified.get("choice")
     require(choice in ("approved", "changes_requested", "rejected", "cancelled"),
             "invalid_evidence", "Unknown human decision.")
+    from . import workflow_evidence as evidence
+    repair = choice == "approved" and evidence.repair_route(state)
     if choice == "approved":
-        from .workflow_evidence import require_phase_ready
-        require_phase_ready(state)
+        if stage["packet"].get("route_change"):
+            require(verified.get("human") is True and verified.get("automatic") is False,
+                    "unsupported_authority", "Route changes require explicit human authorization.")
+        evidence.require_phase_ready(state, repair=repair)
     s = deepcopy(state)
     stage = s["visits"][s["index"]]
-    stage["decision"] = choice
+    if reopening:
+        s["history"].append({"visit": stage["id"], "packet": deepcopy(stage["packet"]), "decision": stage["decision"]})
+    stage["decision"] = "repair_authorized" if repair else choice
     stage["work"] = "ready" if choice == "approved" else "working"
     s["decisions"][event_id] = deepcopy(verified)
     if choice != "approved" or stage["packet"].get("route_change"):
@@ -256,18 +265,26 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
                 if old["phase"] in PHASES[3:]:
                     old["superseded"] = True
         s["history"].append({"route_change": deepcopy(change), "event_id": event_id})
-        s["visits"].extend({**visit(p), **({"phase_contract": PHASE_CONTRACT} if phase_contract(state) else {})}
-                           for p in stages)
+        obligations = {}
+        if repair:
+            gates = evidence.phase_review_gates(state, current(state)["packet"]["output"])
+            failures = set(gates["failures"])
+            for old in s["visits"][plan_index + 1:s["index"] + 1]:
+                failures.update(row["check_id"] for row in (old.get("packet") or {}).get("verification", {})
+                                .get("history", {}).get("attempts", []) if row.get("status") == "fail")
+            obligations = {"repair_obligations": {"failures": sorted(failures), "causes": gates["causes"]}}
+        s["visits"].extend({**visit(p), **deepcopy(obligations),
+                           **({"phase_contract": PHASE_CONTRACT} if phase_contract(state) else {})} for p in stages)
     s["revision"] += 1
     return s
 
 
 def advance(state: dict[str, Any], phase: str) -> dict[str, Any]:
     from .workflow_evidence import require_phase_ready
-    require_phase_ready(state)
+    require_phase_ready(state, repair=current(state)["decision"] == "repair_authorized")
     require(not state["finished"], "approval_required", "The accepted route cannot be reopened by progress.")
     stage = current(state)
-    require(stage["decision"] == "approved", "approval_required", f"Human or authorized policy approval for {stage['phase']} is required.")
+    require(stage["decision"] in {"approved", "repair_authorized"}, "approval_required", f"Human or authorized policy approval for {stage['phase']} is required.")
     next_index = next((i for i in range(state["index"] + 1, len(state["visits"]))
                        if not state["visits"][i]["superseded"]), None)
     require(next_index is not None, "approval_required", "No next phase is authorized; finish the accepted scope.")

@@ -851,7 +851,12 @@ def _derive_module(
 ):
     """Derive the module's raw components (no lens maps yet). Returns
     (components, floor_folded). Raises _DerivationError on any failure."""
-    files = sorted(files)[:MAX_MODULE_FILES]
+    if len(files) > MAX_MODULE_FILES:
+        raise _DerivationError(
+            f"module file limit exceeded: {len(files)} > {MAX_MODULE_FILES}",
+            error_class="ModuleFileLimit",
+        )
+    files = sorted(files)
     texts = {f: _read_text(workspace, f) for f in files}
     for f, t in texts.items():
         if t is None:
@@ -1223,6 +1228,7 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
             cached_failure_rows = previous_failures.get(module) or []
             if (
                 module in prev_comps
+                and len(files) <= MAX_MODULE_FILES
                 and prev_fhash == fhash
                 and prev_gsig_ok
                 and material == prev_material

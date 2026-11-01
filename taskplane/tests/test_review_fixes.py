@@ -350,3 +350,226 @@ def test_journal_cannot_mask_failed_discovery_after_cache_loss(tmp_path, monkeyp
         assert result['token_coverage']['discovery_errors']
         row = next(s for s in result['sessions'] if s['session'] == 'child')
         assert row['usage'] is None and row['status'] == 'unavailable'
+
+
+def test_native_lock_contention_obeys_timeout_without_fallback(tmp_path):
+    from taskplane import primitives
+    path = str(tmp_path / 'state')
+    script = '''import sys,time
+from taskplane.primitives import file_lock,StateError
+start=time.monotonic()
+try:
+    with file_lock(sys.argv[1], timeout=.1):
+        raise AssertionError("overlapping owner")
+except StateError:
+    print(time.monotonic()-start,flush=True)
+'''
+    with primitives.file_lock(path):
+        child = subprocess.Popen([sys.executable, '-B', '-c', script, path],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            output, error = child.communicate(timeout=2)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
+        assert child.returncode == 0, error
+        assert .08 <= float(output) < 1.5
+        assert not Path(path + '.lockdir').exists()
+
+
+def test_direct_lock_file_default_is_bounded(tmp_path, monkeypatch):
+    import errno
+    fcntl = pytest.importorskip('fcntl')
+    from taskplane import primitives
+    attempts = []
+    now = [0.0]
+    monkeypatch.setattr(primitives._time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(primitives._time, 'sleep', lambda delay: now.__setitem__(0, now[0] + delay))
+    def busy(fd, flags):
+        attempts.append(flags)
+        raise BlockingIOError(errno.EAGAIN, 'busy')
+    monkeypatch.setattr(fcntl, 'flock', busy)
+    with (tmp_path / 'lock').open('w+b') as stream:
+        with pytest.raises(primitives.StateError, match='acquire'):
+            primitives.lock_file(stream)
+    assert attempts and all(flags & fcntl.LOCK_NB for flags in attempts)
+    assert 0 < now[0] <= 10.1
+
+
+def test_fallback_never_steals_aged_live_owner(tmp_path, monkeypatch):
+    import errno
+    import os
+    import time
+    from taskplane import primitives
+    def unsupported(*args, **kwargs):
+        raise OSError(errno.ENOSYS, 'unsupported')
+    monkeypatch.setattr(primitives, 'lock_file', unsupported)
+    path = str(tmp_path / 'state')
+    with primitives.file_lock(path):
+        lockdir = Path(path + '.lockdir')
+        old = time.time() - 1000
+        os.utime(lockdir, (old, old))
+        with pytest.raises(primitives.StateError, match='another process'):
+            with primitives.file_lock(path, timeout=.05):
+                pytest.fail('overlapping owner')
+        assert lockdir.exists()
+    assert not lockdir.exists()
+
+
+def test_fallback_old_owner_does_not_remove_successor(tmp_path, monkeypatch):
+    import errno
+    from taskplane import primitives
+    def unsupported(*args, **kwargs):
+        raise OSError(errno.ENOSYS, 'unsupported')
+    monkeypatch.setattr(primitives, 'lock_file', unsupported)
+    path = str(tmp_path / 'state')
+    lockdir = Path(path + '.lockdir')
+    with primitives.file_lock(path):
+        lockdir.rename(tmp_path / 'displaced')
+        lockdir.mkdir()
+    assert lockdir.is_dir()
+
+
+@pytest.mark.parametrize('fallback', [False, True])
+def test_lock_body_exception_propagates_once(tmp_path, monkeypatch, fallback):
+    import errno
+    from taskplane import primitives
+    if fallback:
+        def unsupported(*args, **kwargs):
+            raise OSError(errno.ENOSYS, 'unsupported')
+        monkeypatch.setattr(primitives, 'lock_file', unsupported)
+    error = OSError('body error')
+    visits = []
+    with pytest.raises(OSError) as caught:
+        with primitives.file_lock(str(tmp_path / 'state')):
+            visits.append(1)
+            raise error
+    assert caught.value is error and visits == [1]
+
+
+@pytest.mark.parametrize('timeout', [None, .1])
+def test_windows_lock_adapter_uses_nonblocking_attempts(tmp_path, monkeypatch, timeout):
+    import builtins
+    import errno
+    from types import SimpleNamespace
+    from taskplane import primitives
+
+    real_import = builtins.__import__
+    calls = []
+    now = [0.0]
+    def locking(fd, mode, count):
+        calls.append((mode, count))
+        if mode == 2:
+            raise OSError(errno.EACCES, 'busy')
+    adapter = SimpleNamespace(locking=locking, LK_NBLCK=2, LK_UNLCK=0)
+    def imports(name, *args, **kwargs):
+        if name == 'fcntl':
+            raise ImportError('Windows fixture')
+        if name == 'msvcrt':
+            return adapter
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', imports)
+    monkeypatch.setattr(primitives._time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(primitives._time, 'sleep', lambda delay: now.__setitem__(0, now[0] + delay))
+    with (tmp_path / 'lock').open('w+b') as stream:
+        with pytest.raises(primitives.StateError):
+            if timeout is None:
+                primitives.lock_file(stream)
+            else:
+                primitives.lock_file(stream, timeout=timeout)
+        assert stream.tell() == 0
+        primitives.unlock_file(stream)
+    assert calls[-1] == (0, 1)
+    assert len(calls) > 2 and all(call == (2, 1) for call in calls[:-1])
+    assert now[0] == (10.0 if timeout is None else timeout)
+
+
+def test_fallback_shares_native_acquisition_deadline(tmp_path, monkeypatch):
+    import errno
+    from taskplane import primitives
+    now = [0.0]
+    received = []
+    def unsupported(handle, *, timeout):
+        received.append(timeout)
+        now[0] += .08
+        raise OSError(errno.ENOSYS, 'unsupported')
+    monkeypatch.setattr(primitives, 'lock_file', unsupported)
+    monkeypatch.setattr(primitives._time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(primitives._time, 'sleep', lambda delay: now.__setitem__(0, now[0] + delay))
+    path = str(tmp_path / 'state')
+    Path(path + '.lockdir').mkdir()
+    with pytest.raises(primitives.StateError):
+        with primitives.file_lock(path, timeout=.1):
+            pytest.fail('overlapping owner')
+    assert received == [.1] and now[0] == .1
+
+
+def test_native_lock_operational_failure_does_not_fallback(tmp_path, monkeypatch):
+    import errno
+    from taskplane import primitives
+    def unavailable(*args, **kwargs):
+        raise OSError(errno.EIO, 'broken mount')
+    monkeypatch.setattr(primitives, 'lock_file', unavailable)
+    path = str(tmp_path / 'state')
+    with pytest.raises(primitives.StateError, match='broken mount'):
+        with primitives.file_lock(path):
+            pytest.fail('unavailable native lock')
+    assert not Path(path + '.lockdir').exists()
+
+
+@pytest.mark.parametrize('fallback', [False, True])
+def test_operation_lock_budget_is_shared_and_restored(tmp_path, monkeypatch, fallback):
+    import errno
+    from taskplane import primitives
+    now = [0.0]
+    monkeypatch.setattr(primitives._time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(primitives._time, 'sleep', lambda delay: now.__setitem__(0, now[0] + delay))
+    if fallback:
+        def unsupported(*args, **kwargs):
+            raise OSError(errno.ENOSYS, 'unsupported')
+        monkeypatch.setattr(primitives, 'lock_file', unsupported)
+        Path(str(tmp_path/'state') + '.lockdir').mkdir()
+    else:
+        fcntl = pytest.importorskip('fcntl')
+        def busy(*args):
+            raise BlockingIOError(errno.EAGAIN, 'busy')
+        monkeypatch.setattr(fcntl, 'flock', busy)
+    with primitives.lock_budget(timeout=.1):
+        now[0] = .08  # Earlier work/locks consumed most of the operation budget.
+        with primitives.lock_budget(timeout=10):
+            with pytest.raises(primitives.StateError):
+                with primitives.file_lock(str(tmp_path/'state')):
+                    pytest.fail('overlapping owner')
+        assert now[0] == pytest.approx(.1)
+        with pytest.raises(primitives.StateError):
+            with primitives.file_lock(str(tmp_path/'state')):
+                pytest.fail('overlapping owner')
+        assert now[0] == pytest.approx(.1)
+    with pytest.raises(ValueError), primitives.lock_budget(timeout=.01):
+        raise ValueError('body')
+    with primitives.lock_budget(timeout=.2):
+        with pytest.raises(primitives.StateError):
+            with primitives.file_lock(str(tmp_path/'state')):
+                pytest.fail('overlapping owner')
+    assert now[0] == pytest.approx(.3)
+
+
+def test_nested_shorter_lock_budget_restores_parent_for_direct_callers(tmp_path, monkeypatch):
+    import errno
+    fcntl = pytest.importorskip('fcntl')
+    from taskplane import primitives
+    now = [0.0]
+    monkeypatch.setattr(primitives._time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(primitives._time, 'sleep', lambda delay: now.__setitem__(0, now[0] + delay))
+    def busy(*args):
+        raise BlockingIOError(errno.EAGAIN, 'busy')
+    monkeypatch.setattr(fcntl, 'flock', busy)
+    with (tmp_path/'lock').open('w+b') as handle, primitives.lock_budget(timeout=.2):
+        with primitives.lock_budget(timeout=.05):
+            with pytest.raises(primitives.StateError):
+                primitives.lock_file(handle)
+        assert now[0] == pytest.approx(.05)
+        with pytest.raises(primitives.StateError):
+            primitives.lock_file(handle)
+        assert now[0] == pytest.approx(.2)

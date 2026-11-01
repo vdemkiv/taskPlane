@@ -6,6 +6,7 @@ component lens engine so direct graph APIs need no higher-layer activation.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import os
 import posixpath
@@ -232,32 +233,40 @@ def strongly_connected_components(nodes, edges) -> list[list[str]]:
     on_stack: set[str] = set()
     components: list[list[str]] = []
 
-    def visit(node: str) -> None:
+    def enter(node: str) -> tuple[str, Iterator[str]]:
         nonlocal index
         indexes[node] = lowlinks[node] = index
         index += 1
         stack.append(node)
         on_stack.add(node)
-        for target in sorted(adjacency[node]):
-            if target not in indexes:
-                visit(target)
-                lowlinks[node] = min(lowlinks[node], lowlinks[target])
-            elif target in on_stack:
-                lowlinks[node] = min(lowlinks[node], indexes[target])
-        if lowlinks[node] != indexes[node]:
-            return
-        component = []
-        while stack:
-            member = stack.pop()
-            on_stack.remove(member)
-            component.append(member)
-            if member == node:
-                break
-        components.append(sorted(component))
+        return node, iter(sorted(adjacency[node]))
 
-    for node in ordered:
-        if node not in indexes:
-            visit(node)
+    for root in ordered:
+        if root in indexes:
+            continue
+        frames = [enter(root)]
+        while frames:
+            node, neighbors = frames[-1]
+            target = next(neighbors, None)
+            if target is not None:
+                if target not in indexes:
+                    frames.append(enter(target))
+                elif target in on_stack:
+                    lowlinks[node] = min(lowlinks[node], indexes[target])
+                continue
+            frames.pop()
+            if lowlinks[node] == indexes[node]:
+                component = []
+                while True:
+                    member = stack.pop()
+                    on_stack.remove(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                components.append(sorted(component))
+            if frames:
+                parent = frames[-1][0]
+                lowlinks[parent] = min(lowlinks[parent], lowlinks[node])
     return sorted(components, key=lambda component: tuple(component))
 
 

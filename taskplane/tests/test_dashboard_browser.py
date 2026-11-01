@@ -24,6 +24,8 @@ import time
 from typing import Any, Mapping
 import urllib.request
 
+import pytest
+
 
 TASKPLANE = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).with_name("fixtures") / "dashboard-browser"
@@ -311,7 +313,18 @@ class _RealBrowser:
             ) from exc
         active = profile / "DevToolsActivePort"
         deadline = time.monotonic() + 12
-        while time.monotonic() < deadline and not active.exists():
+        port_line = None
+        while time.monotonic() < deadline:
+            try:
+                content = active.read_text(encoding="utf-8") if active.exists() else ""
+            except (OSError, UnicodeError) as exc:
+                self._stop_process()
+                raise BrowserInfrastructureError(
+                    f"infrastructure failure: DevTools discovery failed: {exc}"
+                ) from exc
+            if "\n" in content:
+                port_line = content.splitlines()[0]
+                break
             if self.process.poll() is not None:
                 stderr = (self.process.stderr.read() if self.process.stderr
                           else "").strip()
@@ -320,14 +333,14 @@ class _RealBrowser:
                     f"DevTools was ready: {stderr[-1000:]}"
                 )
             time.sleep(0.05)
-        if not active.exists():
+        if port_line is None:
             self._stop_process()
             raise BrowserEnvironmentError(
                 "environment failure: declared browser did not expose "
                 "DevTools within 12 seconds"
             )
         try:
-            port = int(active.read_text(encoding="utf-8").splitlines()[0])
+            port = int(port_line)
             with urllib.request.urlopen(
                     f"http://127.0.0.1:{port}/json/list", timeout=5) as response:
                 targets = json.load(response)
@@ -461,6 +474,115 @@ class _RealBrowser:
             self.ws.close()
             self.ws = None
         self._stop_process()
+
+
+def _devtools_startup_fixture(tmp_path, monkeypatch, initial):
+    """Exercise real startup/cleanup with controlled publication and a child double."""
+    import io
+    from types import SimpleNamespace
+
+    module = sys.modules[__name__]
+    active = tmp_path / "chrome-profile" / "DevToolsActivePort"
+    elapsed, requests, lifecycle = [0.0], [], []
+    child = SimpleNamespace(returncode=None, stderr=io.StringIO("fixture exit"))
+    child.poll = lambda: child.returncode
+
+    def terminate():
+        lifecycle.append("terminate")
+        child.returncode = -15
+
+    def wait(*, timeout):
+        lifecycle.append(("wait", timeout))
+        return child.returncode
+
+    child.terminate, child.wait = terminate, wait
+
+    def launch(*args, **kwargs):
+        active.write_text("" if initial == "never-ready" else initial)
+        return child
+
+    def sleep(seconds):
+        elapsed[0] += seconds
+        if initial != "never-ready":
+            active.write_text("12345\n/devtools/browser/fixture\n")
+
+    def endpoint(url, **kwargs):
+        requests.append(url)
+        return io.StringIO('[{"type":"page","webSocketDebuggerUrl":"ws://fixture"}]')
+
+    monkeypatch.setattr(module, "_declared_browser", lambda _: ("fixture", "fixture", "fixture"))
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+    monkeypatch.setattr(module, "_WebSocket", lambda _: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(_RealBrowser, "call", lambda *args, **kwargs: {})
+    return _RealBrowser(tmp_path, {"flags": []}), active, elapsed, requests, lifecycle, child
+
+
+@pytest.mark.parametrize("initial", ["", "12", "never-ready"])
+def test_devtools_port_file_requires_complete_line(tmp_path, monkeypatch, initial):
+    instance, _, elapsed, requests, lifecycle, _ = _devtools_startup_fixture(
+        tmp_path, monkeypatch, initial)
+    if initial == "never-ready":
+        with pytest.raises(BrowserEnvironmentError, match="within 12 seconds"):
+            instance.__enter__()
+        assert 12 <= elapsed[0] < 12.1
+        assert lifecycle == ["terminate", ("wait", 5)]
+        assert not requests
+    else:
+        with instance as browser:
+            assert browser is instance
+            assert elapsed[0] == 0.05
+            assert requests == ["http://127.0.0.1:12345/json/list"]
+            assert not lifecycle
+        assert lifecycle == ["terminate", ("wait", 5)]
+
+
+@pytest.mark.parametrize("error", [OSError("fixture read error"),
+    UnicodeDecodeError("utf-8", b"\xff", 0, 1, "fixture decode error")],
+    ids=["read-error", "decode-error"])
+def test_devtools_port_read_failure_cleans_up(tmp_path, monkeypatch, error):
+    instance, active, elapsed, requests, lifecycle, _ = _devtools_startup_fixture(
+        tmp_path, monkeypatch, "12345\n")
+    original = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path == active:
+            raise error
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    with pytest.raises(BrowserInfrastructureError, match="DevTools discovery failed") as caught:
+        instance.__enter__()
+    assert caught.value.__cause__ is error
+    assert lifecycle == ["terminate", ("wait", 5)]
+    assert elapsed[0] == 0
+    assert not requests
+
+
+def test_devtools_early_exit_remains_environment_failure(tmp_path, monkeypatch):
+    instance, _, elapsed, requests, _, child = _devtools_startup_fixture(
+        tmp_path, monkeypatch, "")
+    child.returncode = 1
+    with pytest.raises(BrowserEnvironmentError, match="exited before DevTools was ready: fixture exit"):
+        instance.__enter__()
+    assert elapsed[0] == 0
+    assert not requests
+
+
+@pytest.mark.parametrize("failure", ["empty-line", "invalid-port", "endpoint"])
+def test_devtools_complete_line_failure_cleans_up(tmp_path, monkeypatch, failure):
+    instance, _, elapsed, _, lifecycle, _ = _devtools_startup_fixture(
+        tmp_path, monkeypatch, {"empty-line": "\n", "invalid-port": "invalid\n", "endpoint": "12345\n"}[failure])
+    if failure == "endpoint":
+        def endpoint(*args, **kwargs):
+            raise OSError("fixture endpoint error")
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+    with pytest.raises(BrowserInfrastructureError, match="DevTools discovery failed"):
+        instance.__enter__()
+    assert lifecycle == ["terminate", ("wait", 5)]
+    assert elapsed[0] == 0
 
 
 class _DocumentCounter(HTMLParser):

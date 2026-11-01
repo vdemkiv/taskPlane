@@ -45,6 +45,7 @@ HOOK_NAMES = {
     "context": "SessionStart", "host-native-check": "SessionStart",
     "subagent-start": "SubagentStart", "subagent-stop": "SubagentStop",
     "tool-observe": "PostToolUse", "human-input": "UserPromptSubmit",
+    "tool-failure": "PostToolUseFailure",
     "session-verify": "Stop",
 }
 
@@ -380,11 +381,15 @@ def usage_measurement(measurement: dict[str, Any], attempted_at: str) -> dict[st
             "oldest_at": known[0] if known else None, "newest_at": known[-1] if known else None}
 
 def phase_usage(rows: list[dict[str, Any]], state: dict[str, Any],
-                measurement: dict[str, Any]) -> dict[str, Any]:
+                measurement: dict[str, Any], *, run: dict[str, Any] | None = None) -> dict[str, Any]:
     """Derived, reconciled attribution; native evidence and approval stay unchanged."""
     points = [r for r in rows if r.get("run") == state["run"] and r.get("kind") == "usage_boundary"]
     endpoint = usage_point(state, measurement, previous_revision=state["revision"])
-    return flow_usage.phase_accounting(points, endpoint, state, measurement)
+    cutoff = measurement.get('ownership_interval', {}).get('end_exclusive')
+    if cutoff is not None:
+        endpoint['observed_at'] = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+    recovered = flow_usage.recover_selected_visit(points, state, measurement, run) if run is not None else None
+    return flow_usage.phase_accounting(points, endpoint, state, measurement, recovered_visit=recovered)
 
 
 def record_scan(workspace: Path, graph: dict[str, Any]) -> None:
@@ -453,7 +458,8 @@ def graph_view(workspace: Path, state: dict[str, Any], historical: bool) -> dict
 
 def reconcile_usage(run: dict[str, Any], rows: list[dict[str, Any]], state: dict[str, Any],
                     expected: list[str] | tuple[str, ...] = (), *,
-                    closing: dict[str, Any] | None = None, workspace: Path | None = None) -> dict[str, Any]:
+                    closing: dict[str, Any] | None = None, workspace: Path | None = None,
+                    phase_recovery: bool = False) -> dict[str, Any]:
     """Keep the same participant coverage in live and committed observations."""
     workers = {r['worker_id'] for r in state.get('workers', {}).values() if r.get('worker_id')}
     declared = set(expected) | workers
@@ -463,18 +469,15 @@ def reconcile_usage(run: dict[str, Any], rows: list[dict[str, Any]], state: dict
         if row.get('child'):
             declared.add(str(row['child']))
         reviews = (row.get('captured') or {}).get('reviews', [])
-        groups = reviews.values() if isinstance(reviews, dict) else [reviews]
-        for group in groups:
-            if isinstance(group, list):
-                declared.update(str(review['agent']) for review in group
-                                if isinstance(review, dict) and review.get('agent'))
+        for _, group in flow_journal.review_groups(reviews):
+            declared.update(str(review['agent']) for review in group if review.get('agent'))
     return flow_usage.reconcile({**run, 'worker_sessions': sorted(workers)}, rows,
-                                sorted(declared), closing=closing, workspace=workspace)
+                                sorted(declared), closing=closing, workspace=workspace, phase_recovery=phase_recovery)
 
 
 def report(workspace: Path, run_id: str | None = None, *,
            governor: workflow_host.Controller | None = None) -> dict[str, Any] | None:
-    with (flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
+    with (primitives.lock_budget(), flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
           codex_cache.action_budget(workspace)):
         return _report(workspace, run_id, governor=governor)
 
@@ -545,12 +548,8 @@ def _report(workspace: Path, run_id: str | None = None, *,
             if key == "tasks":
                 result[key] = data.get("tasks", []) if isinstance(data, dict) else data
             else:
-                if isinstance(data, list):
-                    result[key] = data
-                else:
-                    result[key] = [dict(r, phase=phase) for phase, group in data.items()
-                                   if isinstance(group, list) for r in group
-                                   if isinstance(r, dict) and r.get("agent")]
+                result[key] = [dict(review, phase=phase) if phase is not None else dict(review)
+                               for phase, group in flow_journal.review_groups(data) for review in group]
             if not isinstance(result[key], list) or any(not isinstance(r, dict) for r in result[key]):
                 raise ValueError("invalid evidence rows")
         except (OSError, ValueError, TypeError, AttributeError):
@@ -562,7 +561,7 @@ def _report(workspace: Path, run_id: str | None = None, *,
     try:
         if not journal.usage_complete:
             raise ValueError('Journal usage inputs pending')
-        result.update(reconcile_usage(run, rows, governed, expected, workspace=workspace))
+        result.update(reconcile_usage(run, rows, governed, expected, workspace=workspace, phase_recovery=True))
     except (OSError, ValueError, TypeError, KeyError):
         result["evidence_errors"].append("Native session reconciliation unavailable; showing hook observations")
     measured_at = datetime.now(timezone.utc).isoformat()
@@ -572,7 +571,8 @@ def _report(workspace: Path, run_id: str | None = None, *,
             measured["measured_at"] = measurement_time(measured.get("measured_at"))
         else:
             measured["measured_at"] = measured_at if measured.get("usage") and measured.get("native_usage") else None
-        if measured.get("session") == run["session"] and run.get("usage") and measured.get("native_usage"):
+        if (measured.get("session") == run["session"] and native_session_meter.starting_baseline(run)
+                and measured.get("native_usage")):
             if any(measured["native_usage"].get(k, -1) < v for k,v in run["usage"].items()):
                 measured.update(usage=None, measured_at=None, status="partial; counters reset below run baseline")
     coverage = result.get("token_coverage", {})
@@ -615,7 +615,7 @@ def _report(workspace: Path, run_id: str | None = None, *,
                 elif visit["packet"]:
                     task["status"] = "ready_for_review" if visit["decision"] == "awaiting_human_approval" else visit["decision"]
         boundaries = journal.page(run['run'], kind='usage_boundary')['rows']
-        result["phase_usage"] = phase_usage(boundaries if not journal.detail_partial and journal.coverage()['caught_up'] else [], governed, result)
+        result["phase_usage"] = phase_usage(boundaries if not journal.detail_partial and journal.coverage()['caught_up'] else [], governed, result, run=run)
         if journal.detail_partial or not journal.coverage()['caught_up']:
             result["phase_usage"].update(status="partial", journal_detail_pending=True)
         result["historical"] = historical
@@ -639,6 +639,10 @@ def _report(workspace: Path, run_id: str | None = None, *,
         result["graph"] = graph_view(workspace, {}, False)
         result["graph"]["status"] = "legacy unverified"
         result["graph"]["detail"] = "Advisory journal only; no captured workflow provenance."
+    result.pop('_root_recovery', None)  # Current reader proof is call-local, never a historical authority record.
+    if run.get('host', 'codex') == 'codex':
+        with codex_cache.action_budget(workspace) as budget:
+            result['token_coverage'].update(budget.coverage())
     result['journal_coverage'] = journal.coverage()
     result['journal_detail'] = {'page_size': 256, 'continuation': 'flow_journal.Projection.page(run, after=offset)',
                                 'partial': journal.detail_partial}
@@ -747,7 +751,7 @@ def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: s
         workspace_binding.ensure(workspace)
     except workflow.Refusal:
         return {}  # A denied selection must not create a competing journal or session export.
-    with (flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
+    with (primitives.lock_budget(), flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
           codex_cache.action_budget(workspace)):
         return _observe_hook_action(workspace, event, outcome=outcome, reason=reason)
 
@@ -1066,7 +1070,7 @@ def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = N
         workspace = workspace_binding.resolve_workspace(None, event=event)
     except (workflow.Refusal, OSError, ValueError):
         workspace = None
-    with (flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
+    with (primitives.lock_budget(), flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
           codex_cache.action_budget(workspace)):
         return _hook_action(event, governor=governor)
 
@@ -1230,7 +1234,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         workspace = workspace_binding.resolve_workspace(selected)
     except (workflow.Refusal, OSError, ValueError):
         workspace = None
-    with (flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
+    with (primitives.lock_budget(), flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
           codex_cache.action_budget(workspace)):
         return _main(arguments, compact=compact, prepare=prepare, governor=governor)
 

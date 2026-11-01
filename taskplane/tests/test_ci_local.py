@@ -2,12 +2,13 @@
 import json
 from pathlib import Path
 import shutil
-import subprocess
+import os
 import sys
 import xml.etree.ElementTree as ET
 
 import pytest
 from scripts import ci_local
+from taskplane.tests.test_native_workflow_cli import bounded_run, native_journey_budget
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,7 +19,7 @@ def collect(tmp_path, suite='all', host=None):
             '--ignore=taskplane/tests/test_dashboard_browser.py', '--collect-only', '-q',
             '--taskplane-suite', suite, '--taskplane-collection-report', str(target)]
     if host: args += ['--taskplane-host', host]
-    result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
+    result = bounded_run(args, cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout+result.stderr
     return json.loads(target.read_text())
 
@@ -70,10 +71,11 @@ def test_runner_preserves_failure_and_writes_junit(tmp_path, monkeypatch, fail):
     shutil.copyfile(ROOT/'taskplane/tests/conftest.py', tests/'conftest.py')
     (tests/'test_probe.py').write_text('import os\ndef test_probe():\n    assert "CODEX_THREAD_ID" not in os.environ\n    assert '+str(not fail)+'\n')
     target = tmp_path/'reports/probe.xml'
-    monkeypatch.setattr(ci_local, 'ROOT', tmp_path)
     monkeypatch.setenv('CODEX_THREAD_ID', 'must-not-leak')
-    monkeypatch.setattr(sys, 'argv', ['ci_local', '--check', 'tests', '--junitxml', str(target)])
-    assert ci_local.main() == (1 if fail else 0)
+    result = bounded_run([sys.executable, str(scripts/'ci_local.py'), '--check', 'tests',
+                          '--junitxml', str(target)], cwd=tmp_path, env=dict(os.environ),
+                         capture_output=True, text=True)
+    assert result.returncode == (1 if fail else 0), result.stdout + result.stderr
     suite = ET.parse(target).getroot().find('testsuite')
     assert suite.attrib['tests'] == '1'
     assert suite.attrib['failures'] == ('1' if fail else '0')

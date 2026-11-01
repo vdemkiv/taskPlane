@@ -21,6 +21,7 @@ from taskplane.context import digest
 @pytest.fixture
 def launched(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(tmp_path.parent / (tmp_path.name + '-home')))
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path.parent / (tmp_path.name + '-claude')))
     monkeypatch.setenv('CLAUDE_SESSION_ID', 'root')
     monkeypatch.setenv('CLAUDECODE', '1')
     monkeypatch.chdir(tmp_path)
@@ -30,7 +31,7 @@ def launched(tmp_path, monkeypatch):
     event = dict(hook_event_name='PreToolUse', tool_name='Agent', tool_use_id='launch',
                  tool_input=dict(prompt=item['message'], description='review', subagent_type='general-purpose'))
     controller.guard(event, state['run'])
-    parent = Path.home() / '.claude/projects' / re.sub(r'[^A-Za-z0-9]', '-', str(tmp_path)) / 'root.jsonl'
+    parent = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'projects' / re.sub(r'[^A-Za-z0-9]', '-', str(tmp_path)) / 'root.jsonl'
     parent.parent.mkdir(parents=True)
     called = workers.now()
     header = dict(sessionId='root', agentId='child', isSidechain=True, cwd=str(tmp_path), timestamp=workers.now())

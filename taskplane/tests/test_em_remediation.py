@@ -19,6 +19,77 @@ import io
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize('chunk', [1, 7, 65536])
+@pytest.mark.parametrize('raw,valid', [
+    (b'{"type":"compacted","payload":{}}\n', True),
+    ('{"payload":{"x":[null,true,false,-12.5e+2,"é😀\\u1234\\\\\\\"{}"]},'
+     '"type":"compacted"}\n'.encode(), True),
+    (b'{"type":"compacted","payload":{"type":"token_usage_record","usage":999}}\n', True),
+    (b'{"payload":{"nested":{"type":"compacted"}},"type":"event_msg"}\n', False),
+    (b'{"type":"compacted","type":"compacted","payload":{}}\n', False),
+    (b'{"type":"compacted","payload":{},"payload":{}}\n', False),
+    (b'{"ty\\u0070e":"compacted","type":"compacted","payload":{}}\n', False),
+    (b'{"type":"compacted","payload":[]}\n', False),
+    (b'{"type":"compacted","payload":{"x":[1,]}}\n', False),
+    (b'{"type":"compacted","payload":{"x":01}}\n', False),
+    (b'{"type":"compacted","payload":{"x":1.}}\n', False),
+    (b'{"type":"compacted","payload":{"x":NaN}}\n', False),
+    (b'{"type":"compacted","payload":{"x":"\\q"}}\n', False),
+    (b'{"type":"compacted","payload":{"x":"\\u12z4"}}\n', False),
+    (b'{"type":"compacted","payload":{"x":"\xff"}}\n', False),
+    (b'{"type":"compacted","payload":{"x":"\x01"}}\n', False),
+    (b'{"type":"compacted","payload":{}} true\n', False),
+    (b'{"type":"compacted","payload":{', False),
+])
+def test_compaction_validator_chunked_syntax(raw, valid, chunk):
+    parser = meter._CompactionValidator()
+    try:
+        for offset in range(0, len(raw), chunk):
+            parser.feed(raw[offset:offset + chunk])
+            # A restart must preserve escapes, UTF-8 bytes and nested syntax.
+            encoded = json.dumps(parser.state)
+            assert len(encoded) < 16384
+            parser = meter._CompactionValidator(json.loads(encoded))
+        parser.finish()
+    except ValueError:
+        assert not valid
+    else:
+        assert valid
+        assert json.loads(raw)['type'] == 'compacted'
+
+
+@pytest.mark.parametrize('body', [
+    b'[' * 129 + b']' * 129,
+    b'1' * 513,
+])
+def test_compaction_validator_limits_are_explicit(body):
+    parser = meter._CompactionValidator()
+    raw = (b'{"type":"compacted","payload":{},"other":' + body + b'}\n')
+    with pytest.raises(ValueError, match='compaction_state_limit'):
+        parser.feed(raw)
+
+
+def test_compaction_validator_outer_key_and_envelope_state_limit():
+    for raw in (b'{"' + b'k' * 513 + b'":0}',
+                json.dumps({str(i): 0 for i in range(65)}).encode(),
+                json.dumps({str(i) + 'k' * 100: 0 for i in range(30)}).encode()):
+        with pytest.raises(ValueError, match='compaction_state_limit'):
+            meter._CompactionValidator().feed(raw)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('version', 2), ('stack', [['object', 'bogus']]), ('root', 'done'),
+    ('escape', 6), ('utf8', [65]), ('token', 'x' * 513), ('keys', ['x', 'x']),
+    ('payload', 1), ('capture', 'body'),
+])
+def test_compaction_validator_rejects_corrupt_progress(field, value):
+    parser = meter._CompactionValidator()
+    parser.feed(b'{"type":"compacted","payload":{"text":"prefix')
+    parser.state[field] = value
+    with pytest.raises(ValueError, match='invalid_compaction_state'):
+        meter._CompactionValidator(parser.state)
+
+
 def cli(ws, *args, root=ROOT):
     result = subprocess.run([sys.executable, str(root / "taskplane/tp.py"), *args],
                             cwd=ws, capture_output=True, text=True, encoding="utf-8")
@@ -270,6 +341,142 @@ def journal_read(workspace, run='r'):
         result = view.summary(start) if start else None
         return result, view.coverage(), dict(source=budget.source_bytes, records=budget.records,
                                             queries=budget.query_rows, output=budget.output_bytes, reducers=budget.reducer_rows)
+
+
+@pytest.mark.parametrize('reviews', [
+    [], {'engineering': [], 'build': [{'agent': 'reviewer'}, {'agent': 'reviewer'}]},
+    [{'agent': 'reviewer', 'phase': 'engineering'}],
+    {'reviews': [{'agent': 'reviewer', 'phase': 'engineering'}, {'agent': 'reviewer'}],
+     'coverage': [{'agent': 'metadata-only', 'phase': 'coverage', 'status': 'missing'}],
+     'status': 'incomplete'},
+])
+def test_review_container_index_preserves_body_and_real_participants(tmp_path, reviews):
+    from taskplane import flow_journal as journal
+    rows = [dict(kind='start', run='r', session='root'),
+            dict(kind='attach', run='r', captured={'reviews': reviews})]
+    path = journal_fixture(tmp_path, rows)
+    original = path.read_bytes()
+    with journal.action_budget():
+        view = journal.projection(tmp_path)
+        assert view.coverage()['status'] == 'complete'
+        assert view.attachments('r')[1]['reviews'] == reviews
+        usage = view.usage_rows(rows[0])
+        agents = [review['agent'] for row in usage for review in
+                  row.get('captured', {}).get('reviews', [])]
+        assert agents == ([] if not reviews else ['reviewer'])
+        assert view.usage_complete
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('reviews', [
+    None, ['invalid'], {'engineering': 'invalid'}, {'engineering': [None]},
+    {'reviews': 'invalid', 'status': 'incomplete'},
+    {'reviews': [None], 'coverage': [], 'status': 'incomplete'},
+    {'reviews': [], 'coverage': {}}, {'reviews': [], 'coverage': ['invalid']},
+    {'reviews': [], 'status': []}, {'reviews': [], 'unexpected': []},
+])
+def test_review_container_malformed_input_keeps_usage_conservative(tmp_path, reviews):
+    from taskplane import flow_journal as journal
+    start = dict(kind='start', run='r', session='root')
+    journal_fixture(tmp_path, [start, dict(kind='attach', run='r', captured={'reviews': reviews})])
+    with journal.action_budget():
+        view = journal.projection(tmp_path)
+        assert view.coverage()['status'] == 'partial'
+        assert view.coverage()['errors'] == ['invalid_record']
+        assert view.attachments('r')[1] == {}
+        view.usage_rows(start)
+        assert not view.usage_complete
+
+
+def test_review_container_metadata_does_not_reserve_reviewer_work(tmp_path, monkeypatch):
+    from taskplane import flow_journal as journal
+    envelope = {'reviews': [{'agent': 'reviewer'}],
+                'coverage': [{'agent': 'metadata-only'}] * 300, 'status': 'incomplete'}
+    journal_fixture(tmp_path, [dict(kind='attach', run='r', captured={'reviews': envelope})])
+    monkeypatch.setattr(journal, 'REDUCER_ROWS', 32)
+    with journal.action_budget() as budget:
+        view = journal.projection(tmp_path)
+        assert view.coverage()['status'] == 'complete'
+        assert budget.reducer_rows <= 32
+        assert view.attachments('r')[1]['reviews'] == envelope
+
+
+def test_review_container_schema3_poison_rebuilds_bounded_without_history_edits(tmp_path, monkeypatch):
+    import sqlite3
+    from taskplane import flow_journal as journal
+    envelope = {'reviews': [{'agent': 'reviewer'}], 'coverage': [], 'status': 'incomplete'}
+    rows = [dict(kind='start', run='r', session='root', usage={'n': 1}),
+            dict(kind='attach', run='r', captured={'reviews': envelope}),
+            dict(kind='hook', run='r', session='root', call_id='one', usage={'n': 5})]
+    path = journal_fixture(tmp_path, rows)
+    original = path.read_bytes()
+    validate = journal._source
+
+    def schema3_source(row):
+        reviews = (row.get('captured') or {}).get('reviews', [])
+        if isinstance(reviews, dict) and 'status' in reviews:
+            raise ValueError('invalid review group')
+        validate(row)
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr(journal, 'SCHEMA', 3)
+        legacy.setattr(journal, '_source', schema3_source)
+        assert journal_read(tmp_path)[1]['errors'] == ['invalid_record']
+    with closing(sqlite3.connect(path.parent / journal.CACHE)) as db:
+        old = json.loads(db.execute('SELECT body FROM meta').fetchone()[0])
+    assert old['schema'] == 3 and old['offset'] == len(original)
+    monkeypatch.setattr(journal, 'RECORDS', 1)
+    offsets = []
+    for index in range(len(rows)):
+        if index == 1:
+            # Restart while replay is incomplete, not just after the final offset.
+            script = '''import json,sys
+from taskplane import flow_journal as j
+j.RECORDS=1
+with j.action_budget() as budget:
+ view=j.projection(sys.argv[1])
+ print(json.dumps([view.coverage(),view.generation,budget.records,budget.reducer_rows,budget.source_bytes]))
+'''
+            restarted = subprocess.run([sys.executable, '-B', '-c', script, str(tmp_path)], cwd=ROOT,
+                                       capture_output=True, text=True)
+            assert restarted.returncode == 0, restarted.stderr
+            coverage, generation, records, reducers, source = json.loads(restarted.stdout)
+            offsets.append(coverage['offset'])
+            assert records == 1 and generation != old['generation']
+            assert reducers <= journal.REDUCER_ROWS and source <= journal.SOURCE_BYTES
+            assert coverage['errors'] == [] and coverage['status'] == 'partial'
+            continue
+        with journal.action_budget() as budget:
+            view = journal.projection(tmp_path)
+            coverage = view.coverage()
+            offsets.append(coverage['offset'])
+            assert budget.records == 1
+            assert view.generation != old['generation']
+            assert coverage['errors'] == []
+            assert coverage['status'] == ('complete' if index == len(rows) - 1 else 'partial')
+            assert_journal_storage_closed(view)
+    assert offsets == sorted(set(offsets)) and offsets[-1] == len(original)
+    # A fresh process resumes the repaired generation without replaying it.
+    script = '''import json,sys
+from taskplane import flow_journal as j
+with j.action_budget() as budget:
+ view=j.projection(sys.argv[1]); start=view.start(run='r')
+ print(json.dumps([view.summary(start)['tokens'],view.attachments('r')[1],view.coverage(),budget.records]))
+'''
+    result = subprocess.run([sys.executable, '-B', '-c', script, str(tmp_path)], cwd=ROOT,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    tokens, captured, coverage, records = json.loads(result.stdout)
+    assert tokens == {'n': 4} and captured['reviews'] == envelope
+    assert coverage['status'] == 'complete' and records == 0
+    assert path.read_bytes() == original
+    flow.append(tmp_path, {**rows[-1], 'call_id': 'two', 'usage': {'n': 8}})
+    result, coverage, cost = journal_read(tmp_path)
+    assert result['tokens'] == {'n': 7} and cost['records'] == 1
+    assert coverage['status'] == 'complete'
+    assert journal_read(tmp_path)[2]['records'] == 0
+    assert path.read_bytes().startswith(original)
+    assert not list(path.parent.glob(journal.CACHE + '.corrupt-*'))
 
 
 def test_journal_bounded_cold_warm_append_restart_and_late_duplicate(tmp_path, monkeypatch):

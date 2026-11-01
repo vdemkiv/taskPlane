@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import tempfile
 from typing import Any
 
 from . import primitives, workflow as w, workflow_evidence as evidence
@@ -66,17 +67,28 @@ class Store:
             if target.exists():
                 w.require(self._bytes(key) == raw, "invalid_context", "Immutable context was altered.")
             else:
-                # Exclusive create avoids replacing a concurrent immutable object.
-                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                # A killed writer may strand staging bytes, never a partial digest path.
+                fd, temporary = tempfile.mkstemp(prefix=f".{key}.", suffix=".tmp",
+                                                  dir=target.parent)
                 try:
                     with os.fdopen(fd, "wb") as stream:
                         stream.write(raw)
                         stream.flush()
                         os.fsync(stream.fileno())
-                except BaseException:
-                    target.unlink(missing_ok=True)
-                    raise
+                    try:
+                        os.link(temporary, target)
+                    except FileExistsError:
+                        w.require(self._bytes(key) == raw, "invalid_context", "Immutable context was altered.")
+                finally:
+                    os.unlink(temporary)
+            # Sync the object entry and all containing entries, including new
+            # ancestry left by an interrupted or concurrent directory creator.
+            directory = target.parent
+            while True:
+                primitives._fsync_directory(str(directory))
+                if directory == self.workspace:
+                    break
+                directory = directory.parent
         return {"schema": REFERENCE_SCHEMA, "kind": kind, "sha256": key,
                 "bytes": len(raw), "source_key": source_key}
 

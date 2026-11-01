@@ -118,3 +118,105 @@ def test_summary_preserves_legacy_and_graph_coverage(tmp_path):
     assert result['status'] == 'legacy_unverified' and result['phase'] == 'product'
     assert result['coverage']['graph'] == 'legacy unverified'
     assert 'Initialize' in result['next_action']
+
+
+@pytest.mark.parametrize('crash_point', ['create', 'synced'])
+def test_interrupted_object_write_can_retry(tmp_path, crash_point):
+    import os
+    import subprocess
+    import sys
+
+    script = '''import os,sys
+from pathlib import Path
+from taskplane.context import Store
+real_open=os.open
+real_sync=os.fsync
+def crash(path, flags, *args, **kwargs):
+    fd=real_open(path, flags, *args, **kwargs)
+    if sys.argv[2]=="create" and flags & os.O_EXCL and Path(path).parent.parts[-2:] == ("context-v1", "objects"):
+        os._exit(73)
+    return fd
+def crash_sync(fd):
+    real_sync(fd)
+    if sys.argv[2]=="synced": os._exit(73)
+os.fsync=crash_sync
+os.open=crash
+Store(Path(sys.argv[1]))._put("crash", {"value": "complete"})
+'''
+    result = subprocess.run([sys.executable, '-B', '-c', script, str(tmp_path), crash_point],
+                            timeout=10, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+    assert result.returncode == 73
+    store = Store(tmp_path)
+    ref = store._put('crash', {'value': 'complete'})
+    assert store.resolve(ref) == {'value': 'complete'}
+    assert all(path.stat().st_size for path in store.path(ref['sha256']).parent.glob('*.json'))
+
+
+def test_object_publication_syncs_bytes_and_directory_ancestry(tmp_path, monkeypatch):
+    import os
+    from taskplane import primitives
+
+    events = []
+    original_fsync, original_link = os.fsync, os.link
+    monkeypatch.setattr(os, 'fsync', lambda fd: (events.append('file-sync'), original_fsync(fd))[1])
+    def link(source, target, **kwargs):
+        assert Path(source).read_bytes()
+        assert 'file-sync' in events
+        events.append('publish')
+        return original_link(source, target, **kwargs)
+    monkeypatch.setattr(os, 'link', link)
+    monkeypatch.setattr(primitives, '_fsync_directory', lambda path: events.append(Path(path)))
+    store = Store(tmp_path)
+    ref = store._put('sync', {'complete': True})
+    parent = store.path(ref['sha256']).parent
+    assert events == ['file-sync', 'publish', parent, parent.parent, parent.parent.parent, tmp_path]
+
+
+def test_object_concurrent_winner_is_validated(tmp_path, monkeypatch):
+    import os
+
+    real_link = os.link
+    def winner(source, target, **kwargs):
+        real_link(source, target, **kwargs)
+        raise FileExistsError(str(target))
+    monkeypatch.setattr(os, 'link', winner)
+    store = Store(tmp_path)
+    ref = store._put('winner', {'value': 1})
+    assert store.resolve(ref) == {'value': 1}
+    store.path(ref['sha256']).write_bytes(b'corrupt')
+    with pytest.raises(Refusal, match='digest'):
+        store._put('winner', {'value': 1})
+
+
+def test_object_publish_failure_never_exposes_partial_digest(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    def unsupported(*args, **kwargs):
+        raise OSError(errno.ENOTSUP, 'atomic publication unsupported')
+    store = Store(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'link', unsupported)
+        with pytest.raises(OSError, match='publication unsupported'):
+            store._put('unsupported', {'value': 1})
+    assert not list((store.root / 'objects').glob('*.json'))
+    assert not list((store.root / 'objects').glob('*.tmp'))
+    ref = store._put('unsupported', {'value': 1})
+    assert store.resolve(ref) == {'value': 1}
+
+
+def test_object_existing_publication_retries_directory_sync(tmp_path, monkeypatch):
+    from taskplane import primitives
+
+    store = Store(tmp_path)
+    with monkeypatch.context() as patch:
+        def fail(path):
+            raise OSError('directory sync interrupted')
+        patch.setattr(primitives, '_fsync_directory', fail)
+        with pytest.raises(OSError, match='directory sync interrupted'):
+            store._put('retry-sync', {'value': 1})
+    paths = []
+    monkeypatch.setattr(primitives, '_fsync_directory', lambda path: paths.append(Path(path)))
+    ref = store._put('retry-sync', {'value': 1})
+    assert store.resolve(ref) == {'value': 1}
+    assert paths == [store.root / 'objects', store.root, store.root.parent, tmp_path]

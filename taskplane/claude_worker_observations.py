@@ -205,7 +205,8 @@ def observe(parent: str, attempt: Mapping[str, Any], event: Mapping[str, Any]) -
             or not isinstance(workspace, str) or not Path(workspace).is_absolute()):
         return _answer("conflict", "Invalid native parent or workspace")
     project = re.sub(r"[^A-Za-z0-9]", "-", workspace)
-    path = Path.home() / ".claude" / "projects" / project / (parent + ".jsonl")
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
+    path = config / "projects" / project / (parent + ".jsonl")
     supplied = event.get("transcript_path") or event.get("transcript")
     if supplied is not None and str(path) != supplied:
         return _answer("conflict", "Hook transcript differs from selected native parent")

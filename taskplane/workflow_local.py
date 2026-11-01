@@ -304,7 +304,7 @@ class LocalWorkflow:
         w.require(not changed - allowed, "scope_violation",
                   "Source changed outside this phase scope: " + ", ".join(sorted(changed - allowed)[:10]))
         if not state.get("finished") and (action == "auto-decide" or (action in {"advance", "finish"}
-                                       and w.current(state)["decision"] == "approved")):
+                                       and w.current(state)["decision"] in {"approved", "repair_authorized"})):
             w.require(Harness(self.workspace, self.root).presentation_valid(state), "approval_required",
                       "Current checkpoint needs a native dashboard handoff before continuation. "
                       "Regenerate/link the dashboard and record flow present with its actual outcome.")
@@ -1107,7 +1107,7 @@ class Harness:
             if binding != expected:
                 # Only the approval of this exact, previously shown packet may
                 # increment the revision without another presentation.
-                if (w.current(state)['decision'] != 'approved'
+                if (w.current(state)['decision'] not in {'approved', 'repair_authorized'}
                         or binding != {**expected, 'revision': state['revision'] - 1}
                         or not any(d.get('choice') == 'approved' and
                             all(d.get('binding', {}).get(k) == v for k, v in binding.items()) and
