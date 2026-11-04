@@ -14,6 +14,141 @@ from taskplane.tests.test_farm_workers import requires_native_reader
 from taskplane.tests.test_claude_invocation import launched, command_event, execute  # noqa: F401
 
 
+@pytest.mark.parametrize('destination', ['product.json', './product.json', 'alias.json'])
+def test_prepare_preserves_earlier_approved_packet(tmp_path, destination):
+    from taskplane import workflow_evidence as evidence, workflow_host
+    from taskplane.tests.test_workflow_evidence import prepare
+    from taskplane.tests.test_workflow_local import decide, submit
+
+    fixture, _, _ = prepare(tmp_path)
+    scope = fixture['scope']
+    scope['paths']['design'].append(destination)
+    scope['verification_inputs'].append('product.json')
+    controller = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('codex'))
+    state = controller.start({'scope': scope, 'request_reference': 'fixture/sealed-output'})
+    approved = decide(controller, submit(controller, state))
+    prior = w.current(approved)
+    original = (tmp_path / 'product.json').read_bytes()
+    state = controller.apply('advance', approved['run'], expected_revision=approved['revision'], phase='design')
+    if destination == 'alias.json':
+        os.link(tmp_path / 'product.json', tmp_path / destination)
+    rows = [{'id': key, 'phase': 'design', 'owner': 'designer', 'paths': [path], 'read_inputs': ['product.json'],
+             'criteria': ['AC1'], 'dependencies': [], 'verification': 'Compare the accepted Product bytes'}
+            for key, path in [('COLLISION', destination), ('FRESH', 'design.md')]]
+    (tmp_path / '.taskplane/design-tasks.json').write_text(json.dumps({'tasks': rows}))
+    state = controller.update_tasks(state['run'], state['revision'], '.taskplane/design-tasks.json')
+    with pytest.raises(w.Refusal, match='sealed') as refusal:
+        reserve(controller, state, 'COLLISION')
+    assert prior['id'] in str(refusal.value) and 'product.json' in str(refusal.value)
+    assert not controller.report().get('workers')
+    fresh = reserve(controller, state, 'FRESH')
+    assert 'product.json' in fresh['grant']['input_manifest']
+    launch(controller, state, fresh)
+    worker = consume(controller, state, fresh['grant'], 'native-0')
+    worker.guard({'tool_name': 'Write', 'tool_input': {'path': 'design.md'}}, state['run'])
+    (tmp_path / 'design.md').write_text('Design based on the approved Product.')
+    after = controller.report()
+    assert (tmp_path / 'product.json').read_bytes() == original
+    assert after['visits'][0] == prior and after['decisions'] == approved['decisions']
+    assert evidence.changed(tmp_path, after) is None
+
+
+@pytest.mark.parametrize(('proposed_paths', 'blocked'), [
+    (['app.py', 'build.json'], None),
+    (['app.py'], 'build.json'),
+    (['build.json'], 'app.py'),
+], ids=['both', 'source-only', 'packet-only'])
+def test_engineering_worker_may_modify_build_input_only_after_repair_route(tmp_path, proposed_paths, blocked):
+    from taskplane import workflow_host
+    from taskplane.tests.test_workflow_evidence import prepare
+    from taskplane.tests.test_workflow_host import collaborative_repair_evaluate, collaborative_repair_submit
+    from taskplane.tests.test_workflow_local import collaborative_output, decide, decision
+
+    prepare(tmp_path, 'build')
+    fixture, _, _ = prepare(tmp_path, 'evaluate')
+    fixture['scope']['paths']['engineering'].append('app.py')
+    controller = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('codex'))
+    state = controller.start({'scope': fixture['scope'], 'request_reference': 'fixture/repair'},
+                             phase_contract=w.PHASE_CONTRACT)
+    state, output, _ = collaborative_repair_evaluate(controller, state)
+    state = collaborative_repair_submit(controller, state, output)
+    state = decide(controller, state, decision(state, event='accept-evaluate'))
+    state = controller.apply('advance', state['run'], expected_revision=state['revision'], phase='engineering')
+    build = next(visit for visit in state['visits'] if visit['phase'] == 'build')
+    assert 'app.py' in build['packet']['source_manifest'] and 'app.py' not in build['packet']['manifest']
+    _, output, tasks = prepare(tmp_path, 'engineering')
+    review = {**tasks['tasks'][0], 'id': 'REVIEW', 'phase': 'engineering', 'paths': ['app.py']}
+    (tmp_path / '.taskplane/review-tasks.json').write_text(json.dumps({'tasks': [review]}))
+    state = controller.update_tasks(state['run'], state['revision'], '.taskplane/review-tasks.json')
+    with pytest.raises(w.Refusal, match='sealed') as refusal:
+        reserve(controller, state, 'REVIEW')
+    assert build['id'] in str(refusal.value) and 'app.py' in str(refusal.value)
+    assert not controller.report().get('workers')
+
+    state = controller.update_tasks(state['run'], state['revision'], 'tasks.json')
+    output.update(run=state['run'], visit=w.current(state)['id'])
+    collaborative_output(tmp_path, state, output)
+    report = '.taskplane/engineering-findings.md'
+    (tmp_path / report).write_text('Original Engineering observations.')
+    output['artifacts'] = [{'phase': 'engineering', 'visit': output['visit'], 'kind': 'report',
+                            'schema': 'fixture/findings', 'path': report, 'criteria': ['AC1'], 'tasks': []}]
+    output['route_change'] = {'kind': 'repair', 'findings': ['fixture'],
+                              'reason': 'Repair the observed defect',
+                              'proposed_paths': proposed_paths}
+    state = collaborative_repair_submit(controller, state, output)
+    state = decide(controller, state, decision(state, event='accept-repair'))
+    state = controller.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
+    assert state['visits'][w.PHASES.index('build')]['superseded']
+    with pytest.raises(w.Refusal, match=output['visit']):
+        wr.require_unsealed_destinations(tmp_path, state, [report])
+    wr.require_unsealed_destinations(tmp_path, state, proposed_paths)
+    if blocked:
+        original = (tmp_path / blocked).read_bytes()
+        with pytest.raises(w.Refusal, match=blocked) as refusal:
+            reserve(controller, state, 'T1')
+        assert refusal.value.reason == 'scope_violation'
+        assert not controller.report().get('workers')
+        assert (tmp_path / blocked).read_bytes() == original
+    else:
+        prepared = reserve(controller, state, 'T1')
+        assert set(prepared['grant']['paths']) == set(proposed_paths)
+        launch(controller, state, prepared)
+        worker = consume(controller, state, prepared['grant'], 'native-0')
+        worker.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
+        (tmp_path / 'app.py').write_text('value = 2\n')
+        assert (tmp_path / report).read_text() == 'Original Engineering observations.'
+
+
+def test_successive_repair_uses_latest_paths_across_superseded_packets():
+    plan = {**w.visit('plan'), 'decision': 'approved', 'packet': {
+        'manifest': {'contract.md': 'digest'},
+        'output': {'write_scope': ['app.py', 'contract.md', 'build.json'],
+                   'build_outputs': [{'path': 'build.json'}]}}}
+    build = {**w.visit('build'), 'superseded': True, 'decision': 'approved', 'packet': {
+        'manifest': {'build.json': 'digest'}, 'source_manifest': {'app.py': 'digest'}}}
+    old_packet = {'manifest': {'original.md': 'digest'}, 'source_manifest': {'old.py': 'digest'}}
+    state = {'visits': [plan, build], 'history': [{'visit': build['id'], 'packet': old_packet}]}
+    # The Build write set includes the Plan's contract; its independent seal must win.
+    for proposed_paths in (['app.py', 'contract.md'], ['contract.md'], ['app.py', 'contract.md'], None):
+        change = {'kind': 'repair'}
+        if proposed_paths is not None:
+            change['proposed_paths'] = proposed_paths
+        review = {**w.visit('engineering'), 'superseded': True, 'decision': 'repair_authorized',
+                  'packet': {'manifest': {}, 'route_change': change}}
+        current_build = w.visit('build')
+        state['visits'].extend([review, current_build])
+        state['index'] = len(state['visits']) - 1
+        sealed = wr.sealed_destinations(state)
+        expected = {'contract.md': plan['id'], 'original.md': build['id']}
+        if proposed_paths is not None:
+            expected['old.py'] = build['id']
+            if 'app.py' not in proposed_paths:
+                expected['app.py'] = build['id']
+        assert sealed == expected
+        # Complete this Build before accepting the next repair of the same Plan.
+        current_build.update(superseded=True, decision='approved', packet=deepcopy(build['packet']))
+
+
 @pytest.fixture
 def accepted_status_worker(tmp_path):
     from taskplane.tests.test_worker_runtime import scoped, complete

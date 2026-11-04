@@ -207,6 +207,73 @@ def path_conflict(candidate: dict[str, Any], other: dict[str, Any]) -> bool:
     return bool(writes & (other_writes | other_reads) or reads & other_writes)
 
 
+def sealed_destinations(state: dict[str, Any]) -> dict[str, str]:
+    """Map protected evidence paths to the earlier visit that sealed them."""
+    earlier = state["visits"][:state["index"]]
+    plan: dict[str, Any] = {}
+    repair_visits: set[str] = set()
+    reuse: set[str] = set()
+    scoped_repair = False
+    if w.current(state)["phase"] == "build":
+        for visit in earlier:
+            packet = visit.get("packet") or {}
+            if visit["phase"] == "plan" and visit["decision"] == "approved" and not visit["superseded"]:
+                plan = packet["output"]
+                repair_visits.clear()
+                reuse.clear()
+                scoped_repair = False
+            elif plan and visit["superseded"]:
+                repair_visits.add(visit["id"])
+                change = packet.get("route_change") or {}
+                if change.get("kind") == "repair" and visit["decision"] in {"approved", "repair_authorized"}:
+                    # Legacy routes authorized the Plan scope. New routes name the
+                    # repair paths, and typed Plans also mandate exact Build outputs.
+                    scoped_repair = "proposed_paths" in change
+                    reuse = set(change.get("proposed_paths", plan["write_scope"]))
+                    reuse.update(row["path"] for row in plan.get("build_outputs", []))
+    sealed: dict[str, str] = {}
+    earlier_ids = {visit["id"] for visit in earlier}
+    archived = [(row["visit"], row["packet"]) for row in state.get("history", [])
+                if row.get("packet") and row.get("visit") in earlier_ids]
+    for visit in earlier:
+        packet = visit.get("packet")
+        if not packet:
+            continue
+        if visit["superseded"] or visit["decision"] == "stale":
+            archived.append((visit["id"], packet))
+        else:
+            for relative in packet["manifest"].keys() | packet.get("source_manifest", {}).keys():
+                sealed.setdefault(relative, visit["id"])
+    for visit_id, packet in archived:
+        paths = packet["manifest"].keys()
+        if scoped_repair and visit_id in repair_visits:
+            # Supersession alone cannot release a source excluded from this repair.
+            paths = paths | packet.get("source_manifest", {}).keys()
+        for relative in paths:
+            if visit_id not in repair_visits or relative not in reuse:
+                sealed.setdefault(relative, visit_id)
+    return sealed
+
+
+def require_unsealed_destinations(workspace: Path, state: dict[str, Any], paths: list[str]) -> None:
+    workspace = workspace.resolve()
+    destinations = {e.path(workspace, p) for p in paths}
+    # Account for hard links and aliases on case-insensitive filesystems.
+    identities = set()
+    for target in destinations:
+        if target.exists():
+            info = target.stat()
+            identities.add((info.st_dev, info.st_ino))
+    for relative, visit_id in sealed_destinations(state).items():
+        sealed = workspace / relative
+        collision = sealed in destinations
+        if not collision and identities and sealed.exists():
+            info = sealed.stat()
+            collision = (info.st_dev, info.st_ino) in identities
+        w.require(not collision, "scope_violation",
+                  f"Destination overlaps {relative}, sealed by visit {visit_id}. Select a fresh output path.")
+
+
 def readiness(row: dict[str, Any]) -> dict[str, Any]:
     """Observed startup evidence, not a protected-host attestation."""
     proof = row.get("hook_readiness", {})
@@ -293,8 +360,7 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     paths = definition["paths"]
     w.require(paths and set(paths) <= set(state["scope"]["paths"][stage["phase"]]),
               "scope_violation", "Worker task exceeds accepted phase paths.")
-    for p in paths:
-        e.path(workspace, p)
+    require_unsealed_destinations(workspace, state, paths)
     rows = records(state)
     w.require(not startup_blockers(state, definition), "worker_readiness",
               "Cohort startup needs the declared child's current claim, complete context and matching automatic hooks.")
