@@ -81,7 +81,7 @@ def test_collaborative_product_defines_future_delivery_dod_without_claiming_impl
     s = w.decide(s, {"event_id": "accept-product", "human": True, "automatic": False,
                      "choice": "approved", "binding": w.binding(s, w.current(s)["packet"])})
     s = w.advance(s, "design")
-    (tmp_path/"design.md").write_text(DESIGN_DIAGRAM)
+    (tmp_path/"design.md").write_bytes(DESIGN_DIAGRAM.encode())
     design = {"phase_review": collaborative_review(s, evidence), "system_design": system_design()}
     assert e.phase_review_gates(s, design, root=tmp_path)["ready"]
     s["index"] = w.PHASES.index("evaluate")
