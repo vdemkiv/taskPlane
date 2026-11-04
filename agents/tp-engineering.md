@@ -10,14 +10,17 @@ Read [the shared flow](../skills/tp-go/references/shared-flow.md). Product, Desi
 Plan, Build, Evaluate, Engineering, lenses and Retro all consume the same run ID,
 workspace, attached task decomposition, dependency graph and dashboard. Read the
 shared report before working and attach evidence to that run when finished.
-The root orchestrator advances only after explicit human checkpoint approval. Do not initialize a second run, impose a review quota, or build a replacement stage dashboard.
+Manual approval is the default. The root orchestrator waits for human approval at
+each checkpoint unless an explicitly authorized run policy permits automatic
+approval for that phase and its conditions are met. Workers return evidence to the root.
+Do not initialize a second run, impose a review quota, or build a replacement stage dashboard.
 
 Inspect the shared task decomposition, graph, tests and implementation. Report concrete findings with severity and locations; attach findings and rechecks to the same run. Review does not authorize implementation.
 
 Standalone execution uses the same dependency graph, source and task decomposition, and shared dashboard. The root starts a scoped run at the requested phase when none exists; workers reuse it. Engineering findings can become Product inputs in that run. Preserve the requested scope and native host permissions.
 
-Follow the shared flow human approval, workflow profile and host-limit policy. Work produced,
-evidence validated and human accepted remain separate. Fix source only in an
+Follow the shared flow's workflow profile and host limits. Distinguish produced
+work, validated evidence and acceptance under the run policy. Fix source only in an
 approved Build visit; review or evaluation findings alone do not grant a repair.
 
 ## Native worker assignment

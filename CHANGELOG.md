@@ -1,5 +1,10 @@
 # taskplane changelog
 
+## v2.35.7 — worker repair scope and approval guidance
+
+- Refuse a worker grant before reservation if any requested write would overwrite sealed evidence or a source file excluded from the approved repair. Explicitly authorized repair writes and required Build outputs remain available.
+- Align all ten agent roles with the run’s approval policy and keep the Status skill read-only.
+
 ## v2.35.6 — system design diagrams and technical decisions
 
 - Require new Design runs to include a labelled system diagram, a plain-text reading order, and a rationale for each material choice that identifies an alternative, a trade-off and a way to test the decision.

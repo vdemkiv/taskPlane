@@ -15,7 +15,8 @@ request. Explain the precise next step; do not repeat folder selection if alread
 A status-only invocation still does not initialize or resume work by itself.
 
 Use current task context first. For recorded delivery, invoke the installed
-`taskplane/tp.py flow report --workspace <checkout>` once. Show the orchestrator
+`taskplane/tp.py flow report --workspace <checkout>` once, adding `--run <run>`
+when the current task identifies its run. Show the orchestrator
 as owner, the latest meaningful milestone, actual verification, remaining work,
 and useful token or waste observations. An advisory is not a blocking gate.
 Missing usage means unknown, not zero. A recorded milestone is not proof that
@@ -29,47 +30,14 @@ explicit protected_host request without a verified integration.
 
 ## Shared delivery state
 
-For an active delivery, follow [the shared flow](../tp-go/references/shared-flow.md).
-Use its existing run, task decomposition, dependency graph and dashboard. Return
-evidence to that run; the root orchestrator owns stage advancement.
+Read the existing run, task decomposition, dependency graph and dashboard as needed
+to explain progress. Use the [shared flow](../tp-go/references/shared-flow.md)
+to interpret recorded decisions.
 
 Show native discovery separately from protected storage, human origin, tool
 containment and process revocation. A plugin version or observed hook is not
 proof of those capabilities; an unavailable native owner stays unverified.
 
-Select the current task’s run explicitly when available. Report approval mode, policy
+Report approval mode, policy
 version and pause reason, current visit versus run tokens, unknown/unallocated usage,
 snapshot timestamp and graph freshness. Never equate old tab contents with current state.
-
-## Consume bounded context
-
-After activation, start, advancement or resumption, use the installed runtime's
-`flow context --workspace <checkout> --run <run>` and consume the returned
-handoff with `--consume <handoff-ref-sha256>`. Use `--task <current-task-id>` for
-focused work. Read every omitted required input using `--read <ref-sha256>`;
-follow index children and page cursors until all required bodies are returned.
-A fresh consumer receives these bodies, scoped source and relevant findings;
-do not copy the predecessor conversation or tool history into its instructions.
-No context operation authorizes dispatch or a phase transition.
-
-For phase submission, obtain a current whole-phase receipt (without `--task`)
-and include the returned `context_receipt` object in the phase output. Renew it
-after source, scope, revision or accepted input changes. New bounded/v1 runs
-reject missing, partial, foreign or stale receipts. Legacy runs keep their
-original evidence contract. A receipt proves returned data, not model attention.
-
-Routine command summaries preserve the current gate and reference full details.
-Expand specific references when needed; request `--full` only for a consumer that
-requires the complete legacy report. Native dashboards retain complete evidence.
-Reuse a prior passing check only when its verification record matches current
-source/dependency, tests, runtime, environment, command and criteria fingerprints.
-Retain failed/unknown results and findings; reuse never transfers approval.
-
-## Scoped native workers
-
-When authorized, use the installed native dispatch protocol: root prepares a run-bound
-task grant, the observed worker claims its identity and consumes its own task context,
-and root verifies the joined result before satisfying dependencies. Fill observed
-capacity with useful independent work; two is only the minimum live acceptance test.
-Workers return evidence and cannot operate root phase controls or publish task definitions.
-Require actual loaded-runtime and native execution evidence for live claims.
