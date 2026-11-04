@@ -1313,6 +1313,10 @@ def test_nested_journeys_share_deadline_across_workspaces(tmp_path):
             other = tmp_path/'second-workspace'; other.mkdir()
             with pytest.raises(AssertionError, match='timed out'):
                 bounded_run([sys.executable, '-c', 'import time; time.sleep(2)'], cwd=other)
+            # A Windows child wait can time out just before the monotonic deadline.
+            # Exercise the no-launch case only once that same deadline has passed.
+            while (remaining := deadline - time.monotonic()) > 0:
+                time.sleep(remaining)
             with pytest.raises(AssertionError, match='Journey deadline exhausted'):
                 bounded_run([sys.executable, '-c', 'raise AssertionError("must not start")'])
         assert time.monotonic() - started < 3
