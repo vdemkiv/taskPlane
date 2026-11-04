@@ -156,7 +156,14 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
     helpers += '\n\n' + '\n\n'.join(inspect.getsource(getattr(review_regressions, name)) for name in (
         'setup', 'submit', 'authorization', 'set_policy', 'refused', 'exercise_correction',
         'exercise_handles', 'exercise_child_lineage', 'exercise_routing'))
-    script = '''import sys, json, io, shlex
+    script = '''import sys, json, io, shlex, time, faulthandler
+started = time.monotonic()
+def stage(name):
+    print(f'{time.monotonic() - started:.2f}s {name}', file=sys.stderr, flush=True)
+
+# Keep stacks and the last stage available if the parent hits its 120s deadline.
+faulthandler.dump_traceback_later(35, repeat=True)
+stage('import extracted runtime')
 from datetime import datetime, timezone
 from pathlib import Path
 from copy import deepcopy
@@ -190,6 +197,7 @@ for hook_command in ('screen', 'session-verify'):
         assert result.get('systemMessage') and 'decision' not in result
 assert host.store.read_bytes() == before
 for i, phase in enumerate(w.PHASES):
+    stage(phase)
     s = c.report()
     target = output(c, s)
     before = host.store.read_bytes()
@@ -255,6 +263,7 @@ assert command('finish', '--expected-revision', str(s['revision'])) == 0
 assert c.report(initial['run'])['status'] == 'accepted'
 assert len(c.report(initial['run'])['decisions']) == 7
 # Standalone review cannot label a new delivery as repair to obtain Build writes.
+stage('standalone review')
 standalone = temp/'standalone'; standalone.mkdir()
 c, host, s = controller(standalone, {'entry': 'engineering', 'standalone': True})
 target = output(c, s)
@@ -280,6 +289,7 @@ os.environ['TASKPLANE_TEST_APPROVAL'] = 'approved'
 with redirect_stdout(io.StringIO()):
     assert flow.main(['start', '--workspace', str(c.workspace)]) == 2
 # EV-F02: exercise the extracted native adapter with progress and normative edits.
+stage('task observations')
 task_ws = temp/'task-observations'; task_ws.mkdir()
 c, task_state, task_relative = task_observation_checkpoint(task_ws, host='claude' if sys.argv[3]=='claude' else 'codex')
 task_file=task_ws/task_relative
@@ -287,12 +297,14 @@ task_data=json.loads(task_file.read_text());task_data['tasks'][0]['status']='wor
 assert not c.report().get('invalidation_pending')
 task_data['tasks'][0]['owner']='different';task_file.write_text(json.dumps(task_data))
 assert c.report().get('invalidation_pending')
+stage('legacy task observations')
 legacy_ws = temp/'legacy-task-observations'; legacy_ws.mkdir()
 c, task_state, task_relative = task_observation_checkpoint(legacy_ws, legacy=True, host='claude' if sys.argv[3]=='claude' else 'codex')
 assert not c.report().get('invalidation_pending')
 task_file=legacy_ws/task_relative;task_data=json.loads(task_file.read_text());task_data['tasks'][0]['status']='working';task_file.write_text(json.dumps(task_data))
 assert c.report().get('invalidation_pending')
 print('EV-F02 progress, normative and legacy packet regressions passed')
+stage('dashboard publication')
 publication_ws = temp/'publication-order'; publication_ws.mkdir()
 c, publication_state, _ = task_observation_checkpoint(publication_ws, host='claude' if sys.argv[3]=='claude' else 'codex')
 for select in (False, True):
@@ -302,8 +314,12 @@ print('seven accepted fixture checkpoints; production authority refused')
 print('EV-F01 EV-F02 EV-F03 archive regressions passed')
 print('EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed')
 for exercise_review in (exercise_correction, exercise_handles, exercise_child_lineage):
+    stage(exercise_review.__name__)
     exercise_review(temp/exercise_review.__name__)
+stage('routing')
 exercise_routing()
+stage('complete')
+faulthandler.cancel_dump_traceback_later()
 print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
 '''
     harness = tmp_path/(host+'-harness.py')
@@ -311,6 +327,7 @@ print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
     result = bounded_run([sys.executable, '-I', str(harness), str(extracted),
                              str(tmp_path/(host+'-behavior')), host],
                             cwd=tmp_path, capture_output=True, text=True)
+    request.node.user_properties.append(('isolated_harness_diagnostics', result.stderr))
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'EV-F02 progress, normative and legacy packet regressions passed' in result.stdout
     assert 'ENG-F01 concurrent publication regressions passed' in result.stdout
