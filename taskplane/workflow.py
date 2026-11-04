@@ -9,7 +9,8 @@ import uuid
 from .primitives import content_fingerprint
 
 PHASES = ("product", "design", "plan", "build", "evaluate", "engineering", "retro")
-PHASE_CONTRACT = "collaborative/v1"
+PHASE_CONTRACT = "collaborative/v2"
+PHASE_CONTRACTS = ("collaborative/v1", PHASE_CONTRACT)
 ENTRY_PHASES = ("product", "design", "engineering")
 OUTPUT_FIELDS = {
     "product": ("scope", "acceptance_criteria", "non_goals", "dependencies", "task_outline", "finding_references"),
@@ -73,7 +74,7 @@ def new_state(workspace: str, root: str, run: str, scope: dict[str, Any], *,
     require(entry in ENTRY_PHASES and (standalone or entry == "product"),
             "approval_required", "Full delivery begins at Product; standalone entry cannot grant Build.")
     validate_scope(scope)
-    require(phase_contract in (None, PHASE_CONTRACT), "invalid_evidence", "Unknown phase contract.")
+    require(phase_contract is None or phase_contract in PHASE_CONTRACTS, "invalid_evidence", "Unknown phase contract.")
     result: dict[str, Any] = {"schema": "taskplane.workflow/v1", "workspace": workspace, "root": root,
             "run": run, "revision": 0, "scope": deepcopy(scope),
             "visits": [visit(p) for p in ((entry,) if standalone else PHASES)],
@@ -93,7 +94,7 @@ def phase_contract(state: dict[str, Any]) -> str | None:
     visits = state.get("visits", [])
     if marker is None and frozen is None and not any("phase_contract" in v for v in visits):
         return None
-    require(marker == PHASE_CONTRACT and frozen == {"run": state.get("run"), "phase_contract": marker}
+    require(marker in PHASE_CONTRACTS and frozen == {"run": state.get("run"), "phase_contract": marker}
             and all(v.get("phase_contract") == marker for v in visits),
             "invalid_evidence", "Unknown, removed or changed frozen phase contract.")
     return str(marker)
@@ -273,8 +274,9 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
                 failures.update(row["check_id"] for row in (old.get("packet") or {}).get("verification", {})
                                 .get("history", {}).get("attempts", []) if row.get("status") == "fail")
             obligations = {"repair_obligations": {"failures": sorted(failures), "causes": gates["causes"]}}
-        s["visits"].extend({**visit(p), **deepcopy(obligations),
-                           **({"phase_contract": PHASE_CONTRACT} if phase_contract(state) else {})} for p in stages)
+        if state.get("phase_contract"):
+            obligations["phase_contract"] = state["phase_contract"]
+        s["visits"].extend({**visit(p), **deepcopy(obligations)} for p in stages)
     s["revision"] += 1
     return s
 

@@ -221,7 +221,7 @@ hooks or reopen the old checkpoint merely to start the run they requested.
 | Phase | Definition of Ready (DoR) | Definition of Done (DoD) and useful artifacts |
 | --- | --- | --- |
 | Product | Goal and intended user are clear enough to investigate; gaps are visible | Refined scenarios, functional/relevant nonfunctional criteria, scope/non-goals, dependencies, task outline, finding references and run DoD; every identified uncertainty resolved with its evidence or actual decision |
-| Design | Current accepted Product with all identified uncertainties resolved; standalone Design records its actual inputs without invented predecessors | Approach, meaningful alternatives, interfaces/state, authority boundaries, failure/recovery, graph impact and criterion test map; settled material design questions; mockups, diagrams or prototypes when useful |
+| Design | Current accepted Product with all identified uncertainties resolved. Standalone Design records its actual inputs. | Approach, alternatives, interfaces and state, authority boundaries, failure and recovery, graph impact and criterion test map. Under `collaborative/v2`, a scoped system diagram with a readable fallback and justified decisions linked to criteria and views. |
 | Plan | Accepted Design and resolved implementation prerequisites | Owned task DAG, exact read/write scope, dependencies, criterion/run-DoD coverage, proportionate verification strategy and integration order |
 | Build | Accepted Plan, satisfied task prerequisites and required permissions | Exact change inventory, task/criterion map, current required passing checks, verified causal corrections and explicit gaps; demos and reproduction results where useful |
 | Evaluate | Candidate source and evidence match accepted Build | Each criterion's pass/fail/unknown result, evidence and explanation; applicable run DoD, source/test fingerprints, discriminating regressions and affected reruns; unknowns/failures remain explicit |
@@ -236,11 +236,14 @@ blocks submission; optional usage failures do not erase a valid human decision.
 
 ## Collaborative refinement and readiness
 
-New CLI-created runs freeze `phase_contract: "collaborative/v1"`. Existing runs
-without it retain their original contract and approvals; never backfill gate
-outcomes or remove/change the marker to bypass readiness. The phase output adds
-one `phase_review` object; [CLI contracts](../../../docs/cli-reference.md#collaborative-refinement)
-define its fields and the root-only `flow refine` envelope.
+New CLI-created runs freeze `phase_contract: "collaborative/v2"`. Existing
+unmarked and `collaborative/v1` runs retain their original obligations on resume
+or repair. Both collaborative versions use the same `phase_review` envelope.
+The v2 Design index binds each diagram to the review artifact's exact bytes and
+links each decision to the views that explain it. Reviewers assess the trade-off
+and its proposed test. Manual and authorized automatic decisions use the same
+readiness checks. Plan consumes the accepted Design revision. See the
+[CLI evidence example](../../../docs/cli-reference.md#system-design-evidence).
 
 Work within the current scope until the result is reviewable. A blocked draft can
 be published while criteria, evidence or decisions are incomplete; readiness gates

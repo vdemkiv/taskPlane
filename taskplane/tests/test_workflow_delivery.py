@@ -308,3 +308,166 @@ def test_named_screen_command_keeps_its_contract_when_payload_names_stop(tmp_pat
     result = json.loads(capsys.readouterr().out)
     assert result['hookSpecificOutput']['permissionDecision'] == 'deny'
     assert host.store.read_bytes() == before
+
+
+def test_revision_bound_design_feedback_and_plan_handoff(tmp_path):
+    import base64
+    import hashlib
+    from taskplane import workflow_local, workflow_evidence as evidence
+    from taskplane.context import Store
+    from taskplane.primitives import content_fingerprint
+    from taskplane.tests.test_workflow_host import collaborative_repair_submit
+    from taskplane.tests.test_workflow_local import (
+        collaborative_setup, collaborative_output, decide, decision, refine, refinement)
+
+    c, state, product = collaborative_setup(tmp_path)
+    state = collaborative_repair_submit(c, state, product)
+    state = decide(c, state, decision(state, event="accept-product"))
+    state = c.apply("advance", state["run"], expected_revision=state["revision"], phase="design")
+    _, design, _ = prepare(tmp_path, "design")
+    design.update(run=state["run"], visit=w.current(state)["id"])
+    collaborative_output(tmp_path, state, design)
+    (tmp_path/"design.json").write_text(json.dumps(design))
+    state = refine(c, state, refinement(state, "draft", {"output": "design.json"}, human=False))
+    head = w.current(state)["phase_review"]["ref"]
+    store = Store(tmp_path)
+    first = store.resolve(head)["artifacts"][0]
+    request = refinement(state, "feedback", {})
+    request["excerpt"] = "Please label the stored decision with its revision."
+    feedback = {"id": "revision-label", "criteria": ["AC1"], "disposition": "open",
+                "target": {"id": first["id"], "revision": 1, "digest": first["sha256"]},
+                "source": workflow_local.refinement_source(state, request)}
+    request["payload"] = feedback
+    state = refine(c, state, request)
+
+    original = (tmp_path/"design.md").read_bytes()
+    updated = original.replace(b"persist decision", b"persist decision and revision")
+    (tmp_path/"design.md").write_bytes(updated)
+    artifact = design["phase_review"]["artifacts"][0]
+    artifact.update(revision=2, sha256=hashlib.sha256(updated).hexdigest())
+    design["phase_review"].update(revision=2, feedback=[{**feedback, "disposition": "addressed",
+        "resulting_revision": 2, "response": "Labelled the revision stored with each decision.",
+        "evidence": [{"path": artifact["path"], "sha256": artifact["sha256"]}]}])
+    state = collaborative_repair_submit(c, state, design)
+    state = decide(c, state, decision(state, event="accept-design"))
+    packet = w.current(state)["packet"]
+    plan = c.apply("advance", state["run"], expected_revision=state["revision"], phase="plan")
+    assert evidence.accepted_review_inputs(plan)[-1] == {
+        "checkpoint": packet["checkpoint"], "digest": content_fingerprint(packet)}
+    from taskplane.context_handoff import Session, consume_required
+    session = Session(tmp_path, plan)
+    receipt, _ = consume_required(session)
+    assert receipt["consumed_inputs"]
+    received = {item["id"]: session.store.resolve(item["ref"]) for item in session.required}
+    predecessor = received["accepted/" + packet["visit"]]
+    assert predecessor["phase_review"]["revision"] == 2
+    assert predecessor["system_design"] == design["system_design"]
+    assert received["artifact/design.md"]["text"].encode() == updated
+    second = packet["review_artifacts"][0]
+    for pinned, expected in [(first, original), (second, updated)]:
+        assert base64.b64decode(store.resolve(pinned["body_ref"])["data"]) == expected
+        assert "Reviewer" in pinned["fallback"]
+    assert packet["output"]["phase_review"]["feedback"][0]["target"]["digest"] == first["sha256"]
+    (tmp_path/"design.md").write_bytes(original)
+    assert evidence.changed(tmp_path, plan)[0] == packet["visit"]
+
+
+def test_plan_handoff_concurrent_edit_uses_approved_view(tmp_path):
+    import base64
+    import hashlib
+    from copy import deepcopy
+    from taskplane import context_handoff as handoff
+    from taskplane.context import Store
+    from taskplane.tests.test_workflow_evidence import DESIGN_DIAGRAM, png_container
+    from taskplane.tests.test_workflow_host import collaborative_repair_submit
+    from taskplane.tests.test_workflow_local import collaborative_output, decide, decision
+
+    initial, product, _ = prepare(tmp_path)
+    initial["scope"]["paths"]["product"].append("design.md")
+    initial["scope"]["paths"]["design"].append("design.png")
+    approved = {"design.md": DESIGN_DIAGRAM.encode(), "design.png": png_container()}
+    for path, raw in approved.items():
+        (tmp_path/path).write_bytes(raw)
+    c = h.Controller(tmp_path, "root", h.installed_adapter("codex"))
+    state = c.start({"scope": initial["scope"], "request_reference": "fixture/diagram-handoff"},
+                    phase_contract=w.PHASE_CONTRACT)
+    product.update(run=state["run"], visit=w.current(state)["id"])
+    product["artifacts"] = [{"path": "design.md", "kind": "supporting", "schema": "markdown",
+                             "phase": "product", "visit": product["visit"], "criteria": ["AC1"], "tasks": []}]
+    state = collaborative_repair_submit(c, state, collaborative_output(tmp_path, state, product))
+    state = decide(c, state, decision(state, event="accept-product"))
+    state = c.apply("advance", state["run"], expected_revision=state["revision"], phase="design")
+    _, design, _ = prepare(tmp_path, "design")
+    design.update(run=state["run"], visit=w.current(state)["id"])
+    collaborative_output(tmp_path, state, design)
+    artifacts = design["phase_review"]["artifacts"]
+    artifacts.append({**artifacts[0], "id": "image", "path": "design.png", "media_type": "image/png",
+                      "sha256": hashlib.sha256(approved["design.png"]).hexdigest()})
+    design["system_design"]["views"].append({"id": "picture", "criteria": ["AC1"],
+                                             "artifact": "image", "format": "png"})
+    state = collaborative_repair_submit(c, state, design)
+    state = decide(c, state, decision(state, event="accept-design"))
+    plan = c.apply("advance", state["run"], expected_revision=state["revision"], phase="plan")
+    store = Store(tmp_path)
+    assemble = handoff.inputs
+
+    def edit_after_freshness_check(workspace, state, task):
+        try:
+            for path in approved:
+                (workspace/path).write_bytes(b"UNREVIEWED DIAGRAM\n")
+            return assemble(workspace, state, task)
+        finally:
+            for path, raw in approved.items():
+                (workspace/path).write_bytes(raw)
+
+    def read_views():
+        view = store.resolve(c.context(plan["run"])["view_ref"])
+        rows = store.resolve(view["references"]["details"])
+        return {path: c.context(plan["run"], read=row["ref"]["sha256"])["page"]["data"]
+                for path in approved for row in rows if row["id"] == "artifact/" + path}
+
+    expected = {"design.md": {"path": "design.md", "encoding": "utf-8", "text": DESIGN_DIAGRAM},
+                "design.png": {"path": "design.png", "encoding": "base64",
+                               "text": base64.b64encode(approved["design.png"]).decode("ascii")}}
+    assert read_views() == expected
+    with patch.object(handoff, "inputs", edit_after_freshness_check):
+        assert read_views() == expected
+    required = {row["id"] for row in handoff.Session(tmp_path, plan).required}
+    assert {"artifact/design.md", "artifact/design.png"} <= required
+
+    packet = plan["visits"][1]["packet"]
+    pins = packet["review_artifacts"]
+    pin = pins[0]
+    body = store.resolve(pin["body_ref"])
+    for broken in ([], [dict(pin, body_ref=None)], [dict(pin, body_ref=pins[1]["body_ref"])],
+                   [dict(pin, body_ref={**pin["body_ref"], "sha256": "0"*64})],
+                   [dict(pin, body_ref=store.put("phase-review-artifact", {**body, "data": "?"}))]):
+        with patch.dict(packet, review_artifacts=broken + pins[1:]), pytest.raises(w.Refusal) as refused:
+            assemble(tmp_path, plan, None)
+        assert refused.value.reason == "invalid_context"
+
+    # Creation contracts predating the index did not require a pinned view.
+    for contract in ("collaborative/v1", None):
+        legacy = deepcopy(plan)
+        legacy_packet = legacy["visits"][1]["packet"]
+        legacy_packet.pop("review_artifacts")
+        legacy_packet["output"].pop("system_design")
+        if contract:
+            legacy["run_contract"]["phase_contract"] = contract
+            legacy["phase_contract"] = legacy_packet["phase_contract"] = contract
+            for visit in legacy["visits"]:
+                visit["phase_contract"] = contract
+        else:
+            legacy.pop("phase_contract")
+            legacy.pop("run_contract")
+            legacy_packet.pop("phase_contract")
+            for visit in legacy["visits"]:
+                visit.pop("phase_contract")
+        items, *_ = assemble(tmp_path, legacy, None)
+        assert {item["body"]["path"]: item["body"] for item in items
+                if item["id"] in {"artifact/design.md", "artifact/design.png"}} == expected
+
+    (tmp_path/"design.md").write_text("Persistent workspace drift")
+    with pytest.raises(w.Refusal) as refused:
+        c.context(plan["run"])
+    assert refused.value.reason == "invalid_context" and c.report(plan["run"])["invalidation_pending"]

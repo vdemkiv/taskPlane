@@ -15,16 +15,27 @@ bootstrap, native dashboard handoff and legitimate user waits.
 Inspect the relevant requirements and current code with native tools. Reuse
 existing decisions. Describe the smallest workable approach, the interfaces and
 data it changes, meaningful alternatives, risks, and how success will be tested.
-Use a diagram or mockup only if it makes a decision easier.
 
 Apply the shared [collaborative refinement and readiness policy](../tp-go/references/shared-flow.md#collaborative-refinement-and-readiness).
 Delivery Design DoR requires current accepted Product with every identified
 uncertainty resolved. Standalone Design records the inputs actually available.
 Design DoD settles material design questions and maps approach, interfaces, failure
-behavior and verification to criteria and applicable run DoD. Use mockups, diagrams
-or prototypes when they help review a decision; identify each artifact's purpose,
-criteria and immutable revision, with a readable fallback. Preserve feedback on
-the version reviewed. Previewing a design never accepts it.
+behavior and verification to criteria and applicable run DoD.
+
+For a run created under `collaborative/v2`, include a System design section.
+Draw one view at the smallest scale that explains the change. Name the actor,
+components and state owner. Label what crosses each boundary and distinguish
+proposed behavior from existing behavior. For an editorial change, show how the
+author's edit reaches the reader. Add a sequence or state view when order,
+retries or failure changes a decision. A mockup can supplement the system view.
+
+Index the view in `system_design.views` and use its review artifact's `fallback`
+to explain the reading order in plain text. Link each material decision to its
+criteria and views. State the constraint, choice, credible alternative, reason
+for choosing, accepted downside and observation that would make you reconsider.
+Review the diagram and reasoning together, including when only the fallback is
+available. Keep feedback bound to the revision reviewed. See the
+[worked packet example](../../docs/cli-reference.md#system-design-evidence).
 
 Follow [the shared flow](../tp-go/references/shared-flow.md) for standalone Design
 and delivery alike. Start/reuse the relevant run at Design, inspect dependencies

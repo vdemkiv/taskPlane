@@ -51,6 +51,40 @@ def text_body(raw: bytes) -> dict[str, Any]:
         return {"encoding": "base64", "text": base64.b64encode(raw).decode("ascii")}
 
 
+def _design_view_bytes(workspace: Path, packet: dict[str, Any]) -> dict[str, bytes]:
+    """Resolve only the review artifacts selected by the accepted Design index."""
+    output = packet["output"]
+    declared = {row["id"]: row for row in output["phase_review"]["artifacts"]}
+    pins = packet.get("review_artifacts")
+    w.require(isinstance(pins, list), "invalid_context", "Accepted Design is missing its review artifacts.")
+    assert isinstance(pins, list)
+    by_id = {row["id"]: row for row in pins if isinstance(row, dict) and isinstance(row.get("id"), str)}
+    w.require(len(by_id) == len(pins), "invalid_context", "Accepted Design review artifact IDs are invalid.")
+    store = Store(workspace)
+    result = {}
+    for artifact_id in dict.fromkeys(view["artifact"] for view in output["system_design"]["views"]):
+        artifact = declared[artifact_id]
+        path = artifact["path"]
+        pin = by_id.get(artifact_id, {})
+        ref = pin.get("body_ref")
+        w.require(pin == {**artifact, "body_ref": ref} and isinstance(ref, dict)
+                  and ref.get("kind") == "phase-review-artifact", "invalid_context",
+                  f"Accepted Design view {path} has no matching review artifact reference.")
+        assert isinstance(ref, dict)
+        body = store.resolve(ref)
+        w.require(isinstance(body, dict) and body.get("encoding") == "base64"
+                  and isinstance(body.get("data"), str), "invalid_context", f"Invalid pinned Design body for {path}.")
+        try:
+            raw = base64.b64decode(body["data"], validate=True)
+        except ValueError as exc:
+            raise w.Refusal("invalid_context", f"Invalid pinned Design bytes for {path}.") from exc
+        w.require(len(raw) == body.get("bytes") and len(raw) <= evidence.ARTIFACT_LIMIT
+                  and hashlib.sha256(raw).hexdigest() == body.get("sha256") == artifact["sha256"]
+                  == packet["manifest"].get(path), "invalid_context", f"Pinned Design digest or size differs for {path}.")
+        result[path] = raw
+    return result
+
+
 def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[list[dict[str, Any]], list[str], list[str], dict[str, Any]]:
     phase = w.current(state)["phase"]
     rows = evidence.context_tasks(state)
@@ -68,10 +102,15 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
         for ref in finding.get("evidence_refs", []):
             items.append({"id": "finding-evidence/" + identity + "/" + ref["sha256"],
                           "kind": "finding-evidence", "body": Store(workspace).resolve(ref)})
-    for visit in state["visits"][:state["index"]]:
-        packet = visit.get("packet")
-        if visit.get("superseded") or visit["decision"] != "approved" or not packet:
-            continue
+    visits = [visit for visit in state["visits"][:state["index"]]
+              if not visit.get("superseded") and visit["decision"] == "approved" and visit.get("packet")]
+    # Reserve indexed paths before first-visit deduplication. Product may also
+    # have declared the file, with different downstream delivery requirements.
+    views = {path: (visit["id"], raw) for visit in visits
+             if visit["phase"] == "design" and visit.get("phase_contract") == w.PHASE_CONTRACT
+             for path, raw in _design_view_bytes(workspace, visit["packet"]).items()}
+    for visit in visits:
+        packet = visit["packet"]
         accepted.append({"visit": visit["id"], "phase": visit["phase"],
                          "checkpoint": packet["checkpoint"], "evidence_digest": digest(packet)})
         # Preserve the normative predecessor output and referenced artifact bodies,
@@ -84,10 +123,12 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
                 items.append({"id": f"verification/{visit['id']}/{number}", "kind": "verification",
                               "body": inherited(workspace, check["reuse_ref"])})
         for relative in sorted(packet["manifest"]):
+            if relative in views and views[relative][0] != visit["id"]:
+                continue
             if semantic and relative in artifact_ids:
                 continue
             artifact_ids.add(relative)
-            raw = evidence.read(workspace, relative)
+            raw = views[relative][1] if relative in views else evidence.read(workspace, relative)
             try:
                 document = json.loads(raw)
             except (ValueError, UnicodeError):

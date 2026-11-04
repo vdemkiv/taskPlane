@@ -450,9 +450,9 @@ are unknown, not zero. Tokens remain advisory and are not billing totals.
 
 ## Collaborative refinement
 
-New production `flow start` runs select the frozen `collaborative/v1` phase
-contract. Reusing an existing run preserves its original contract; absent markers
-remain legacy, with no invented DoR/DoD records or migrated approvals. Unknown,
+New production `flow start` runs select the frozen `collaborative/v2` phase
+contract. Existing `collaborative/v1` and unmarked legacy runs retain their
+original contract across visits and repairs. Unknown,
 removed or downgraded contracted markers refuse. There is no CLI downgrade flag.
 The shared [refinement policy](../skills/tp-go/references/shared-flow.md#collaborative-refinement-and-readiness)
 and phase table define how to use this contract.
@@ -583,6 +583,72 @@ old revision. Viewing cannot mutate or accept evidence. Existing required contex
 reads, native permissions, checkpoint presentation and approval policy still apply.
 An optional preview creates no wait: a valid eligible policy can continue through
 Retro, while a manual run still requires its explicit checkpoint decisions.
+
+### System design evidence
+
+Standalone and delivery Design under `collaborative/v2` require at least one
+view and one decision. In this example, criterion `AC1` requires a running
+check to observe its own output before it exits. The Design scope includes
+`design.md`. Its complete contents use UTF-8, LF and a final newline.
+
+````markdown
+## Log visibility
+```mermaid
+sequenceDiagram
+    Check->>Runner: Emit marker bytes
+    Runner->>Log: Append and flush bytes
+    Check->>Log: Read marker before exit
+```
+````
+
+Add the artifact row to the existing `phase_review.artifacts` array and place
+`system_design` at the top level of the Design output. Use the actual criterion,
+revision, scoped path and digest for your run. Hash the whole file after editing.
+
+```json
+{
+  "phase_review": {
+    "artifacts": [{
+      "id": "live-log", "path": "design.md", "revision": 1,
+      "sha256": "a8c411fcc8eb2a82c3029a35de8b3e3e185b249360e8ffcbc8c8abf837be27e3",
+      "media_type": "text/markdown", "criteria": ["AC1"],
+      "purpose": "Show when the check can observe output.",
+      "fallback": "The check emits a marker. The runner owns the log and flushes the marker to it. The check reads the marker while it is still running."
+    }]
+  },
+  "system_design": {
+    "views": [{
+      "id": "visibility", "criteria": ["AC1"], "artifact": "live-log",
+      "format": "mermaid", "section": "Log visibility"
+    }],
+    "decisions": [{
+      "id": "flush", "criteria": ["AC1"], "views": ["visibility"],
+      "constraint": "The check waits for its marker before exiting.",
+      "choice": "Flush output to the log while the check runs.",
+      "alternative": "Buffer output and write the log at exit.",
+      "rationale": "Buffering until exit leaves the check waiting for a marker it cannot see.",
+      "downside": "Flushing during execution adds write operations.",
+      "verification": "Run a check that exits only after reading its marker. A timeout with the marker buffered would disprove the timing guarantee."
+    }]
+  }
+}
+```
+
+A Mermaid `section` is the literal text of a unique Markdown heading. Put a
+closed Mermaid fence before the next heading, with a relationship in a
+`flowchart`, `graph`, `sequenceDiagram` or `stateDiagram` (including
+`stateDiagram-v2`). For a whole PNG use `format: "png"`, `media_type: "image/png"`
+and omit `section`. In either format the artifact's criteria must cover its view.
+Each decision criterion must occur on at least one linked view.
+
+Prevalidation and submission identify broken fields. A missing heading points
+to `system_design.views[visibility].section`, an unknown view to
+`system_design.decisions[flush].views`, and a blank rationale to
+`system_design.decisions[flush].rationale`. Fix the source or reference and
+refresh its digest for the new revision. Validation checks Mermaid structure
+or PNG container integrity. Reviewers can read the pinned bytes and fallback
+if rendering is unavailable. They judge whether the labels explain the system,
+the alternative is credible and the test could overturn the choice.
 
 ## Automatic approval policy
 

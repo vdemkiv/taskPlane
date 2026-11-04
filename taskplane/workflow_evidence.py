@@ -5,11 +5,15 @@ import json
 import base64
 import hashlib
 import os
+import re
+import zlib
 from copy import deepcopy
 from pathlib import Path
 import stat
+import struct
 from typing import Any
 import uuid
+from collections.abc import Iterator
 
 from . import workflow as w
 from .depgraph import GRAPH_SCAN_QUALITY_SCHEMA, scan_quality, source_inputs_current
@@ -133,6 +137,202 @@ def _causal_records(state: dict[str, Any], rows: list[dict[str, Any]], root: Pat
     return result
 
 
+_NODE_ID = r"[\w.]+(?:-[\w.]+)*"
+# Flowchart shapes may nest their delimiters, as in B((Store)) or A[(Database)].
+_SHAPE = r"(?:\[+[^\[\]]*\]+|\(+[^()]*\)+|\{+[^{}]*\}+|>[^>\]]*\])"
+_FLOW_NODE = rf"{_NODE_ID}(?:{_SHAPE})?" r"(?:[:]{3}\w+)?"
+_FLOW_LINK = (r"(?:[<ox]?(?:-{2,}[>ox]|-{3,}|={2,}>|={3,}|-\.+-+[>ox]?|~~~)"
+              r"|(?:--|==|-\.)[ \t]+(?:[^;|\s]+[ \t]+)+?(?:-->|---|==>|===|\.->))"
+              r"(?:[ \t]*\|[^|\n]*\|)?")
+_FLOW_EDGE = re.compile(rf"{_FLOW_NODE}(?:[ \t]*&[ \t]*{_FLOW_NODE})*[ \t]*{_FLOW_LINK}[ \t]*{_FLOW_NODE}"
+                        rf"(?=[ \t]*(?:$|{_FLOW_LINK}|&))")
+_SEQUENCE_EDGE = re.compile(rf"{_NODE_ID}\s*(?:<<--?>>|--?(?:>>?|x|\)))\s*[+-]?{_NODE_ID}\s*:.*")
+_STATE_NODE = rf"(?:{_NODE_ID}|\[\*\])"
+_STATE_EDGE = re.compile(rf"{_STATE_NODE}\s*-->\s*{_STATE_NODE}(?:\s*:.*)?")
+
+
+def _has_mermaid_relationship(lines: list[str]) -> bool:
+    # Hide comments and quoted labels before looking for statement boundaries.
+    # A quoted label may span several lines and contain semicolons or arrows.
+    source = re.sub(r'"[^"]*(?:"|\Z)|%%[^\n]*',
+                    lambda token: '""' if token[0].startswith('"') else "", "\n".join(lines))
+    header = re.match(r"((?:flowchart|graph)[ \t]+(?:TB|TD|BT|RL|LR)|sequenceDiagram|stateDiagram(?:-v2)?)"
+                      r"[ \t]*[;\n]", source)
+    if not header:
+        return False
+    body = source[header.end():]
+    if header[1].startswith(("flowchart", "graph")):
+        # Keep unquoted node/edge labels from introducing apparent statements.
+        body = re.sub(r"\[[^\[\]]*\]|\([^()]*\)|\{[^{}]*\}|\|[^|\n]*\|",
+                      lambda label: label[0][0] + label[0][-1], body)
+        return any(_FLOW_EDGE.match(line.strip()) for line in re.split(r"[;\n]", body))
+    if header[1] == "sequenceDiagram":
+        edge = _SEQUENCE_EDGE
+    else:
+        edge = _STATE_EDGE
+        # A multi-line state note holds prose until its closing "end note".
+        body = re.sub(r"(?im)^[ \t]*note[ \t]+(?:left|right)[ \t]+of[ \t]+[\w.-]+[ \t]*\n"
+                      r"[\s\S]*?(?:^[ \t]*end[ \t]+note[ \t]*$|\Z)", "", body)
+    return any(edge.fullmatch(line.strip()) for line in re.split(r"[;\n]", body))
+
+
+def _has_mermaid_view(raw: bytes, section: str) -> bool:
+    """Resolve a literal ATX heading and its closed Mermaid fence without rendering."""
+    try:
+        lines = raw.decode("utf-8-sig").splitlines()
+    except UnicodeDecodeError:
+        return False
+    heading_matches = 0
+    selected = found = False
+    fence = ""
+    mermaid = False
+    statements: list[str] = []
+    for line in lines:
+        if fence:
+            closing = line.strip()
+            if len(line) - len(line.lstrip(" ")) <= 3 and closing.startswith(fence) and not closing.strip(fence[0]):
+                if mermaid and _has_mermaid_relationship(statements):
+                    found = True
+                fence = ""
+            elif mermaid and line.strip() and not line.lstrip().startswith("%%"):
+                statements.append(line.strip())
+            continue
+        heading = re.fullmatch(r" {0,3}#{1,6}[ \t]+(.+?)\s*", line)
+        if heading:
+            selected = heading[1] == section
+            heading_matches += int(selected)
+            continue
+        opening = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
+        if opening:
+            fence = opening[1]
+            mermaid = selected and opening[2].strip() == "mermaid"
+            statements = []
+    return heading_matches == 1 and found
+
+
+def _is_png(raw: bytes) -> bool:
+    """Check the PNG container and chunk integrity without inflating image data."""
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    cursor = 8
+    image_data = seen_data = seen_palette = False
+    previous = b""
+    color = depth = 0
+    depths = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: (8, 16)}
+    while cursor + 12 <= len(raw):
+        length = int.from_bytes(raw[cursor:cursor + 4], "big")
+        kind = raw[cursor + 4:cursor + 8]
+        end = cursor + 8 + length
+        if end + 4 > len(raw) or zlib.crc32(raw[cursor + 4:end]) != int.from_bytes(raw[end:end + 4], "big"):
+            return False
+        if not previous and kind != b"IHDR":
+            return False
+        if kind == b"IHDR":
+            if previous or length != 13:
+                return False
+            width, height, depth, color, compression, filtering, interlace = struct.unpack_from(
+                ">IIBBBBB", raw, cursor + 8)
+            if (not 0 < width < 2**31 or not 0 < height < 2**31 or depth not in depths.get(color, ())
+                    or compression or filtering or interlace not in (0, 1)):
+                return False
+        elif kind == b"PLTE":
+            if (seen_palette or seen_data or color in (0, 4)
+                    or not 0 < length <= 768 or length % 3 or color == 3 and length > 3 * 2**depth):
+                return False
+            seen_palette = True
+        elif kind == b"IDAT":
+            if color == 3 and not seen_palette or seen_data and previous != b"IDAT":
+                return False
+            seen_data = True
+            image_data |= length > 0
+        elif kind == b"IEND":
+            return image_data and length == 0 and end + 4 == len(raw)
+        elif not re.fullmatch(b"[a-z][a-zA-Z][A-Z][a-zA-Z]", kind):
+            return False  # Invalid chunk type or unknown critical chunk.
+        previous = kind
+        cursor = end + 4
+    return False
+
+
+def _design_rows(index: dict[str, Any], group: str, accepted: set[str]
+                 ) -> Iterator[tuple[str, dict[str, Any], set[str]]]:
+    records = index.get(group)
+    w.require(isinstance(records, list) and records, "invalid_evidence",
+              f"system_design.{group} needs at least one record.")
+    assert isinstance(records, list)
+    seen: set[str] = set()
+    for position, row in enumerate(records):
+        prefix = f"system_design.{group}[{position}]"
+        w.require(isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"].strip()
+                  and row["id"] not in seen, "invalid_evidence", f"{prefix}.id must be a unique stable ID.")
+        prefix = f"system_design.{group}[{row['id']}]"
+        seen.add(row["id"])
+        criteria = set(_strings(row.get("criteria"), prefix + ".criteria"))
+        w.require(criteria <= accepted, "invalid_evidence",
+                  f"{prefix}.criteria references an unknown criterion.")
+        yield prefix, row, criteria
+
+
+def _validate_design_view(row: dict[str, Any], prefix: str, criteria: set[str],
+                          artifacts: dict[str, dict[str, Any]], paths: list[str], root: Path | None) -> None:
+    artifact_id = row.get("artifact")
+    w.require(isinstance(artifact_id, str) and artifact_id in artifacts, "invalid_evidence",
+              f"{prefix}.artifact must identify a phase_review artifact.")
+    assert isinstance(artifact_id, str)
+    artifact = artifacts[artifact_id]
+    w.require(artifact.get("path") in paths, "scope_violation",
+              f"{prefix}.artifact.path must be within Design scope.")
+    w.require(criteria <= set(_strings(artifact.get("criteria"), prefix + ".artifact.criteria")),
+              "invalid_evidence", f"{prefix}.artifact.criteria must cover this view.")
+    w.require(isinstance(artifact.get("fallback"), str) and artifact["fallback"].strip(),
+              "invalid_evidence", f"{prefix}.artifact.fallback needs a plain-text reading order.")
+    fmt = row.get("format")
+    w.require(fmt in ("mermaid", "png"), "invalid_evidence", f"{prefix}.format must be mermaid or png.")
+    media = "text/markdown" if fmt == "mermaid" else "image/png"
+    w.require(artifact.get("media_type") == media, "invalid_evidence", f"{prefix}.artifact.media_type must be {media}.")
+    if fmt == "mermaid":
+        w.require(isinstance(row.get("section"), str) and row["section"].strip(),
+                  "invalid_evidence", f"{prefix}.section must name a Markdown heading.")
+    w.require(isinstance(artifact.get("sha256"), str) and re.fullmatch("[0-9a-f]{64}", artifact["sha256"]),
+              "invalid_evidence", f"{prefix}.artifact.sha256 must identify the reviewed bytes.")
+    if root is not None:
+        try:
+            raw = read(root, artifact["path"])
+        except w.Refusal as exc:
+            raise w.Refusal(exc.reason, f"{prefix}.artifact.path: {exc.detail}") from None
+        w.require(len(raw) <= ARTIFACT_LIMIT, "context_overflow", f"{prefix}.artifact exceeds 8 MiB.")
+        w.require(hashlib.sha256(raw).hexdigest() == artifact["sha256"], "invalid_evidence",
+                  f"{prefix}.artifact.sha256 does not match the file.")
+        if fmt == "mermaid":
+            w.require(_has_mermaid_view(raw, row["section"]), "invalid_evidence",
+                      f"{prefix}.section must resolve to a unique heading containing a nonempty Mermaid diagram.")
+        else:
+            w.require(_is_png(raw), "invalid_evidence", f"{prefix}.artifact must contain a PNG image.")
+
+
+def validate_system_design(state: dict[str, Any], output: dict[str, Any], artifacts: list[dict[str, Any]],
+                           root: Path | None) -> None:
+    index = output.get("system_design")
+    w.require(isinstance(index, dict), "invalid_evidence", "Design requires a system_design index.")
+    assert isinstance(index, dict)
+    by_artifact = {row["id"]: row for row in artifacts}
+    accepted = set(state["scope"]["criteria"])
+    view_criteria = {}
+    for prefix, view, criteria in _design_rows(index, "views", accepted):
+        _validate_design_view(view, prefix, criteria, by_artifact, state["scope"]["paths"]["design"], root)
+        view_criteria[view["id"]] = criteria
+    for prefix, row, criteria in _design_rows(index, "decisions", accepted):
+        links = _strings(row.get("views"), prefix + ".views")
+        w.require(all(link in view_criteria for link in links), "invalid_evidence",
+                  f"{prefix}.views references an unknown view.")
+        w.require(criteria <= set().union(*(view_criteria[link] for link in links)),
+                  "invalid_evidence", f"{prefix}.criteria must be covered by its linked views.")
+        for field in ("constraint", "choice", "alternative", "rationale", "downside", "verification"):
+            w.require(isinstance(row.get(field), str) and row[field].strip(),
+                      "invalid_evidence", f"{prefix}.{field} needs a written explanation.")
+
+
+
 def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
                        root: Path | None = None, repair_route: bool = False) -> dict[str, Any]:
     """Common manual/policy gate. Structural errors refuse; honest gaps stay reviewable.
@@ -140,7 +340,8 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
     root=None evaluates sealed metadata; Controller freshness checks protect its bytes.
     root supplied additionally verifies every referenced file against its exact digest.
     """
-    if not w.phase_contract(state):
+    contract = w.phase_contract(state)
+    if not contract:
         return {"contract": "legacy", "ready": True, "blockers": [], "files": []}
     review = output.get("phase_review")
     w.require(isinstance(review, dict) and review.get("schema") == PHASE_REVIEW
@@ -251,6 +452,8 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
                       "invalid_evidence", "Addressed feedback must identify the resulting revision.")
         if item.get("material", True) and item["disposition"] == "open":
             blockers.append("Open material feedback: " + item["id"] + ".")
+    if contract == w.PHASE_CONTRACT and w.current(state)["phase"] == "design":
+        validate_system_design(state, output, rows["artifacts"], root)
     for item in rows["artifacts"]:
         linked(item)
         w.require(all(isinstance(item.get(k), str) and item[k].strip() for k in
@@ -341,7 +544,7 @@ def phase_review_gates(state: dict[str, Any], output: dict[str, Any], *,
     active_hold = w.current(state).get("hold")
     if isinstance(active_hold, dict) and active_hold.get("active"):
         blockers.append("An explicit user hold is active.")
-    return {"contract": w.PHASE_CONTRACT, "ready": not blockers, "blockers": blockers,
+    return {"contract": contract, "ready": not blockers, "blockers": blockers,
             "revision": review["revision"], "files": sorted(files),
             "dor": deepcopy(rows["dor"]), "dod": deepcopy(rows["dod"]),
             "causes": deepcopy(rows["causes"]), "failures": sorted(failures),
@@ -464,7 +667,8 @@ def repeated_causal_attempt(previous: list[dict[str, Any]], attempt: dict[str, A
 
 
 def require_phase_ready(state: dict[str, Any], *, root: Path | None = None, repair: bool = False) -> dict[str, Any]:
-    if not w.phase_contract(state):
+    contract = w.phase_contract(state)
+    if not contract:
         return {"contract": "legacy", "ready": True, "blockers": []}
     packet = w.current(state).get("packet") or {}
     w.require(packet, "approval_required", "Submit the current phase before requesting acceptance or transition.")
@@ -1620,7 +1824,7 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
             # invalidating approved normative artifacts merely because telemetry changed.
             "context": {"graph": graph, "graph_receipt": receipt, "tasks": tasks, "tasks_path": tasks_path, "dashboard_digest": content_fingerprint(dashboard)},
             "verification": verification, "route_change": change,
-            **({"phase_contract": w.PHASE_CONTRACT, "phase_review_gates": review_gates,
+            **({"phase_contract": review_gates["contract"], "phase_review_gates": review_gates,
                 "review_artifacts": pin_review_artifacts(root, state, output, persist=False)}
                if w.phase_contract(state) else {})}
 

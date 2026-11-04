@@ -150,7 +150,9 @@ def test_repeated_repairs_reuse_accepted_plan_scope_and_fresh_build_lineage():
 
 
 def collaborative_state():
-    return w.new_state("/workspace", "root", "run", scope(), phase_contract=w.PHASE_CONTRACT)
+    declared = scope()
+    declared["paths"]["design"].append("design.md")
+    return w.new_state("/workspace", "root", "run", declared, phase_contract=w.PHASE_CONTRACT)
 
 
 @pytest.mark.parametrize("defect", ["unknown", "removed", "downgraded", "frozen_removed", "visit_removed"])
@@ -185,7 +187,11 @@ def test_collaborative_positive_decision_and_transition_share_gates(phase):
     s["index"] = w.PHASES.index(phase)
     review = collaborative_review(s, {"path": "evidence.txt", "sha256": "a"*64})
     review["dod"][0]["outcome"] = "unknown"
-    s = ready(s, output={"write_scope": [], "phase_review": review})
+    output = {"write_scope": [], "phase_review": review}
+    if phase == "design":
+        from taskplane.tests.test_workflow_evidence import system_design
+        output["system_design"] = system_design()
+    s = ready(s, output=output)
     assert w.current(s)["work"] == "evidence_blocked"
     with pytest.raises(w.Refusal, match="Required dod"):
         w.decide(s, answer(s))
@@ -211,3 +217,20 @@ def test_collaborative_hold_blocks_success_without_erasing_approval():
     assert s["decisions"] == decisions
     s["visits"][0]["hold"]["active"] = False
     assert w.current(w.advance(s, "design"))["phase"] == "design"
+
+
+def test_historical_collaborative_repair_visits_keep_original_contract():
+    from taskplane.tests.test_workflow_evidence import collaborative_review
+
+    declared = scope()
+    declared["paths"]["build"] = ["repair.py"]
+    s = w.new_state("/workspace", "root", "run", declared, phase_contract="collaborative/v1")
+    for i, phase in enumerate(w.PHASES[:5]):
+        review = collaborative_review(s, {"path": "observation.txt", "sha256": "1"*64})
+        output = {"phase_review": review, "write_scope": ["repair.py"], "criterion_results": {"AC1": {"status": "pass"}}}
+        extra = {"route_change": {"kind": "repair", "reason": "Repair failed test",
+                                 "findings": ["Failure in reviewed path"], "proposed_paths": ["repair.py"]}} if phase == "evaluate" else {}
+        s = accept(s, output=output, **extra)
+        s = w.advance(s, "build" if phase == "evaluate" else w.PHASES[i+1])
+    assert w.phase_contract(s) == "collaborative/v1"
+    assert all(v["phase_contract"] == "collaborative/v1" for v in s["visits"][7:])

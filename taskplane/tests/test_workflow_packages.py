@@ -16,7 +16,7 @@ import pytest
 
 from scripts import package_plugin
 from taskplane.tests.test_workflow_host import FixtureHost, controller, native
-from taskplane.tests.test_workflow_evidence import prepare
+from taskplane.tests.test_workflow_evidence import DESIGN_DIAGRAM, prepare, system_design
 from taskplane.tests.test_workflow_delivery import output
 from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, shipped_execution_prompts
 from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs, exercise_counter_freshness, exercise_dashboard_publication_order
@@ -151,22 +151,32 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
                             'claude' if host=='claude' else 'codex', root=extracted)
     # The child interpreter sees only the extracted runtime and the standard library.
     # Test-only adapter code is embedded here, never exported by either package.
-    helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
+    helpers = f'DESIGN_DIAGRAM = {DESIGN_DIAGRAM!r}\n\n'
+    helpers += '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, system_design, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
     helpers += '\n\n' + '\n\n'.join(inspect.getsource(getattr(review_regressions, name)) for name in (
         'setup', 'submit', 'authorization', 'set_policy', 'refused', 'exercise_correction',
         'exercise_handles', 'exercise_child_lineage', 'exercise_routing'))
-    script = '''import sys, json, io, shlex
+    prelude = '''import sys, json, io, os, shlex, time, faulthandler
+started = time.monotonic()
+def stage(name):
+    print(f'{time.monotonic() - started:.2f}s {Path(__file__).stem} {name}', file=sys.stderr, flush=True)
+
+# Keep stacks and the last stage available if the parent hits its 120s deadline.
+faulthandler.dump_traceback_later(35, repeat=True)
 from datetime import datetime, timezone
 from pathlib import Path
 from copy import deepcopy
 from contextlib import redirect_stdout
 from unittest.mock import patch
+stage('import extracted runtime')
+temp = Path(sys.argv[2]); temp.mkdir()
+os.environ.update(CODEX_HOME=str(temp/'codex-home'), CLAUDE_CONFIG_DIR=str(temp/'claude-home'))
 sys.path.insert(0, sys.argv[1])
 from taskplane import flow, workflow as w, workflow_host as h, workflow_local as local
 from taskplane import workflow_approval as approval
 assert Path(flow.__file__).resolve().is_relative_to(Path(sys.argv[1]))
-''' + helpers + '''
-temp = Path(sys.argv[2]); temp.mkdir()
+''' + helpers
+    delivery = '''
 c, host, initial = controller(temp)
 assert not h.installed_adapter('codex' if sys.argv[3] == 'openai' else sys.argv[3]).capabilities()['human_origin']
 def command(*args):
@@ -189,6 +199,7 @@ for hook_command in ('screen', 'session-verify'):
         assert result.get('systemMessage') and 'decision' not in result
 assert host.store.read_bytes() == before
 for i, phase in enumerate(w.PHASES):
+    stage(phase)
     s = c.report()
     target = output(c, s)
     before = host.store.read_bytes()
@@ -254,6 +265,7 @@ assert command('finish', '--expected-revision', str(s['revision'])) == 0
 assert c.report(initial['run'])['status'] == 'accepted'
 assert len(c.report(initial['run'])['decisions']) == 7
 # Standalone review cannot label a new delivery as repair to obtain Build writes.
+stage('standalone review')
 standalone = temp/'standalone'; standalone.mkdir()
 c, host, s = controller(standalone, {'entry': 'engineering', 'standalone': True})
 target = output(c, s)
@@ -278,7 +290,13 @@ import os
 os.environ['TASKPLANE_TEST_APPROVAL'] = 'approved'
 with redirect_stdout(io.StringIO()):
     assert flow.main(['start', '--workspace', str(c.workspace)]) == 2
+print('seven accepted fixture checkpoints; production authority refused')
+stage('complete')
+'''
+    regressions = '''
 # EV-F02: exercise the extracted native adapter with progress and normative edits.
+os.environ['TASKPLANE_TEST_APPROVAL'] = 'approved'
+stage('task observations')
 task_ws = temp/'task-observations'; task_ws.mkdir()
 c, task_state, task_relative = task_observation_checkpoint(task_ws, host='claude' if sys.argv[3]=='claude' else 'codex')
 task_file=task_ws/task_relative
@@ -286,30 +304,46 @@ task_data=json.loads(task_file.read_text());task_data['tasks'][0]['status']='wor
 assert not c.report().get('invalidation_pending')
 task_data['tasks'][0]['owner']='different';task_file.write_text(json.dumps(task_data))
 assert c.report().get('invalidation_pending')
+stage('legacy task observations')
 legacy_ws = temp/'legacy-task-observations'; legacy_ws.mkdir()
 c, task_state, task_relative = task_observation_checkpoint(legacy_ws, legacy=True, host='claude' if sys.argv[3]=='claude' else 'codex')
 assert not c.report().get('invalidation_pending')
 task_file=legacy_ws/task_relative;task_data=json.loads(task_file.read_text());task_data['tasks'][0]['status']='working';task_file.write_text(json.dumps(task_data))
 assert c.report().get('invalidation_pending')
 print('EV-F02 progress, normative and legacy packet regressions passed')
+stage('dashboard publication')
 publication_ws = temp/'publication-order'; publication_ws.mkdir()
 c, publication_state, _ = task_observation_checkpoint(publication_ws, host='claude' if sys.argv[3]=='claude' else 'codex')
 for select in (False, True):
     exercise_dashboard_publication_order(c, publication_state, select=select)
 print('ENG-F01 concurrent publication regressions passed')
-print('seven accepted fixture checkpoints; production authority refused')
 print('EV-F01 EV-F02 EV-F03 archive regressions passed')
 print('EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed')
 for exercise_review in (exercise_correction, exercise_handles, exercise_child_lineage):
+    stage(exercise_review.__name__)
     exercise_review(temp/exercise_review.__name__)
+stage('routing')
 exercise_routing()
+stage('complete')
+faulthandler.cancel_dump_traceback_later()
 print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
 '''
-    harness = tmp_path/(host+'-harness.py')
-    harness.write_text(script)
-    result = bounded_run([sys.executable, '-I', str(harness), str(extracted),
-                             str(tmp_path/(host+'-behavior')), host],
-                            cwd=tmp_path, capture_output=True, text=True)
+    # Independent workspaces share the original process-tree deadline and cleanup.
+    commands = []
+    for suite, body in [('delivery', delivery), ('regressions', regressions)]:
+        harness = tmp_path/f'{host}-{suite}.py'
+        harness.write_text(prelude + body)
+        commands.append([sys.executable, '-I', str(harness), str(extracted),
+                         str(tmp_path/f'{host}-{suite}'), host])
+    supervisor = '''import json, subprocess, sys
+delivery, regressions = json.loads(sys.argv[1])
+with subprocess.Popen(delivery) as child:
+    subprocess.run(regressions, check=True)
+    sys.exit(child.wait())
+'''
+    result = bounded_run([sys.executable, '-I', '-c', supervisor, json.dumps(commands)],
+                         cwd=tmp_path, capture_output=True, text=True)
+    request.node.user_properties.append(('isolated_harness_diagnostics', result.stderr))
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'EV-F02 progress, normative and legacy packet regressions passed' in result.stdout
     assert 'ENG-F01 concurrent publication regressions passed' in result.stdout
