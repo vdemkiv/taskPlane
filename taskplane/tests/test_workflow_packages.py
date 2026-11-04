@@ -16,7 +16,7 @@ import pytest
 
 from scripts import package_plugin
 from taskplane.tests.test_workflow_host import FixtureHost, controller, native
-from taskplane.tests.test_workflow_evidence import prepare
+from taskplane.tests.test_workflow_evidence import DESIGN_DIAGRAM, prepare, system_design
 from taskplane.tests.test_workflow_delivery import output
 from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, shipped_execution_prompts
 from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs, exercise_counter_freshness, exercise_dashboard_publication_order
@@ -151,7 +151,8 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
                             'claude' if host=='claude' else 'codex', root=extracted)
     # The child interpreter sees only the extracted runtime and the standard library.
     # Test-only adapter code is embedded here, never exported by either package.
-    helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
+    helpers = f'DESIGN_DIAGRAM = {DESIGN_DIAGRAM!r}\n\n'
+    helpers += '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, system_design, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
     helpers += '\n\n' + '\n\n'.join(inspect.getsource(getattr(review_regressions, name)) for name in (
         'setup', 'submit', 'authorization', 'set_policy', 'refused', 'exercise_correction',
         'exercise_handles', 'exercise_child_lineage', 'exercise_routing'))
