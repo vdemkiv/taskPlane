@@ -1,5 +1,11 @@
 # taskplane changelog
 
+## v2.35.6 — system design diagrams and technical decisions
+
+- Require new Design runs to include a labelled system diagram, a plain-text reading order, and a rationale for each material choice that identifies an alternative, a trade-off and a way to test the decision.
+- Validate supported Mermaid relationships and PNG structure at prevalidation and submission, including when automatic approval is authorized.
+- Give Plan the diagram bytes from the approved Design revision. Runs created under earlier contracts keep their original behavior.
+
 ## v2.35.5 — reliable recovery, storage and verification
 
 - Recover measured usage after review attachments and large native compaction records, using bounded incremental parsing and proven run/visit intervals. Preserve incomplete-coverage reporting, counter validation and historical records.

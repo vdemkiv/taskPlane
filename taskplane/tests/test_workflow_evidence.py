@@ -2,9 +2,32 @@
 import json
 import base64
 import hashlib
+import struct
+import zlib
 from copy import deepcopy
 import pytest
 from taskplane import workflow as w, workflow_evidence as e
+
+
+DESIGN_DIAGRAM = """## Checkpoint handoff
+```mermaid
+flowchart LR
+    Reviewer -->|approve revision| Controller
+    Controller -->|persist decision| Store
+```
+"""
+
+
+def system_design():
+    return {"views": [{"id": "handoff", "criteria": ["AC1"], "artifact": "checkpoint-view",
+                       "format": "mermaid", "section": "Checkpoint handoff"}],
+            "decisions": [{"id": "pin", "criteria": ["AC1"], "views": ["handoff"],
+                           "constraint": "A later edit must not change an approval.",
+                           "choice": "Bind the decision to the stored revision.",
+                           "alternative": "Resolve the current workspace file on read.",
+                           "rationale": "A revision identifies the exact proposal the reviewer saw.",
+                           "downside": "The store must retain each reviewed revision.",
+                           "verification": "Edit the file and compare the old revision's stored bytes."}]}
 
 
 def collaborative_review(s, evidence, revision=1):
@@ -14,6 +37,12 @@ def collaborative_review(s, evidence, revision=1):
               "uncertainties": [], "feedback": [], "artifacts": [], "causes": [],
               "run_dod": [{"id": "DELIVERY", "required": True, "criteria": ["AC1"],
                            "statement": "Verify implemented behavior", "phases": ["evaluate", "retro"]}]}
+    if w.current(s)["phase"] == "design" and w.phase_contract(s) == w.PHASE_CONTRACT:
+        review["artifacts"] = [{"id": "checkpoint-view", "criteria": ["AC1"], "path": "design.md",
+                                "sha256": hashlib.sha256(DESIGN_DIAGRAM.encode()).hexdigest(),
+                                "revision": revision, "media_type": "text/markdown",
+                                "purpose": "Explain checkpoint ownership",
+                                "fallback": "Reviewer approves a revision. Controller owns the decision and persists it to Store."}]
     for group, ids in e.review_obligations(s, review).items():
         review[group] = [{"id": key, "criteria": ["AC1"], "required": True,
                           "outcome": "met", "evidence": [evidence],
@@ -52,7 +81,8 @@ def test_collaborative_product_defines_future_delivery_dod_without_claiming_impl
     s = w.decide(s, {"event_id": "accept-product", "human": True, "automatic": False,
                      "choice": "approved", "binding": w.binding(s, w.current(s)["packet"])})
     s = w.advance(s, "design")
-    design = {"phase_review": collaborative_review(s, evidence)}
+    (tmp_path/"design.md").write_text(DESIGN_DIAGRAM)
+    design = {"phase_review": collaborative_review(s, evidence), "system_design": system_design()}
     assert e.phase_review_gates(s, design, root=tmp_path)["ready"]
     s["index"] = w.PHASES.index("evaluate")
     evaluate = {"phase_review": collaborative_review(s, evidence)}
@@ -298,6 +328,7 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
     scope = {"criteria": ["AC1"], "paths": {p: [p+".json"] for p in w.PHASES},
              "verification_inputs": ["app.py"]}
     scope["paths"]["build"].append("app.py")
+    scope["paths"]["design"].append("design.md")
     s = w.new_state(str(tmp_path), "root", "run", scope)
     s["index"] = w.PHASES.index(phase)
     graph = tmp_path/".taskplane/knowledge"
@@ -314,6 +345,8 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
     if phase == "product":
         out["acceptance_criteria"] = [{"id": "AC1", "statement": "Human accepts the declared outcome"}]
     if phase == "design":
+        (tmp_path/"design.md").write_bytes(DESIGN_DIAGRAM.encode())
+        out["system_design"] = system_design()
         out["acceptance_test_map"] = {"AC1": "Exercise the native decision boundary"}
     if phase == "plan":
         out.update(write_scope=["build.json", "app.py"], acceptance_coverage={"AC1": ["T1"]},
@@ -1007,3 +1040,191 @@ def test_repair_rejects_false_verified_claim_but_allows_honest_investigation(tmp
         cause['state'] = honest_state
         assert e.phase_review_gates(state, output, root=tmp_path, repair_route=True)['ready']
         assert not e.phase_review_gates(state, output, root=tmp_path)['ready']
+
+
+def design_fixture(workspace, contract=w.PHASE_CONTRACT, standalone=True):
+    initial, out, _ = prepare(workspace, "design")
+    state = w.new_state(str(workspace), "root", "run", initial["scope"],
+                        entry="design" if standalone else "product", standalone=standalone,
+                        phase_contract=contract)
+    state["index"] = 0 if standalone else w.PHASES.index("design")
+    out["visit"] = w.current(state)["id"]
+    if contract:
+        out["phase_review"] = collaborative_review(state, {"path": "app.py",
+            "sha256": hashlib.sha256((workspace/"app.py").read_bytes()).hexdigest()})
+    return state, out
+
+
+@pytest.mark.parametrize(("field", "bad"), [
+    ("system_design", None), ("views", []), ("decisions", []),
+    ("view.artifact", "missing"), ("view.criteria", ["absent"]), ("view.section", "Elsewhere"),
+    ("artifact.path", "app.py"), ("artifact.sha256", "0"*64), ("artifact.fallback", "   "),
+    ("decision.criteria", []), ("decision.views", ["absent"]), ("decision.rationale", ""),
+    ("decision.constraint", None), ("decision.choice", " "), ("decision.alternative", []),
+    ("decision.downside", ""), ("decision.verification", None),
+])
+def test_system_design_prevalidation_and_sealing_identify_invalid_field(tmp_path, field, bad):
+    state, out = design_fixture(tmp_path)
+    index = out["system_design"]
+    locations = {"view": index["views"][0], "decision": index["decisions"][0],
+                 "artifact": out["phase_review"]["artifacts"][0]}
+    parent, _, key = field.rpartition(".")
+    (locations[parent] if parent else out if key == "system_design" else index)[key] = bad
+    (tmp_path/"design.json").write_text(json.dumps(out))
+    for validate in (e.prevalidate, e.seal):
+        with pytest.raises(w.Refusal, match=key):
+            validate(tmp_path, state, "design.json", "tasks.json")
+
+
+@pytest.mark.parametrize("source", [
+    "## Checkpoint handoff\nJust a description.",
+    "## Checkpoint handoff\n```mermaid\nflowchart LR\nThis is ordinary prose.\n```",
+    "## Checkpoint handoff\n```mermaid\n%% comment\n\n```",
+    "## Checkpoint handoff\n```mermaid\nflowchart LR\n```",
+    "## Checkpoint handoff\n## Unrelated\n" + DESIGN_DIAGRAM.split("\n", 1)[1],
+    "~~~~text\n" + DESIGN_DIAGRAM + "~~~~",
+    DESIGN_DIAGRAM + "\n## Checkpoint handoff\nA duplicate heading",
+    DESIGN_DIAGRAM.removesuffix("```\n"),
+])
+def test_system_design_mermaid_must_resolve_at_selected_section(tmp_path, source):
+    state, out = design_fixture(tmp_path)
+    (tmp_path/"design.md").write_bytes(source.encode())
+    out["phase_review"]["artifacts"][0]["sha256"] = hashlib.sha256(source.encode()).hexdigest()
+    with pytest.raises(w.Refusal, match="handoff.*section"):
+        e.phase_review_gates(state, out, root=tmp_path)
+
+
+@pytest.mark.parametrize(("diagram", "valid"), [
+    ("flowchart LR\n-->", False),
+    ("flowchart LR\nA::source --> B::target", False),
+    ("graph TD;A -->", False),
+    ("graph TD;A == B", False),
+    ("flowchart LR\nThe reviewer -- approves the proposal.", False),
+    ('flowchart LR\nA["label; Fake --> Edge"]', False),
+    ('flowchart LR\nA["line one\nFake --> Edge\nline three"]', False),
+    ("sequenceDiagram\nNote over A: hide A->>B: hello", False),
+    ("stateDiagram-v2\nIdle %% Idle --> Busy", False),
+    ("stateDiagram-v2\nnote right of Idle\nWait --> Go\nend note", False),
+    ("flowchart LR;A[Author] -->|submit| B{Ready}", True),
+    ("flowchart LR\nA --> B:::target", True),
+    ("flowchart LR\nA:::source --> B:::target", True),
+    ('graph TD\nA["label; punctuation"] -. review .-> B((Store))', True),
+    ("flowchart TD;A & B ==> C", True),
+    ("sequenceDiagram\nRunner-->>+Log: append marker", True),
+    ("stateDiagram\n[*] --> Idle", True),
+    ("stateDiagram-v2\nIdle --> [*]: finish", True),
+])
+def test_system_design_requires_mermaid_relationship(tmp_path, diagram, valid):
+    state, out = design_fixture(tmp_path)
+    raw = f"## Checkpoint handoff\n```mermaid\n{diagram}\n```\n".encode()
+    (tmp_path/"design.md").write_bytes(raw)
+    out["phase_review"]["artifacts"][0]["sha256"] = hashlib.sha256(raw).hexdigest()
+    (tmp_path/"design.json").write_text(json.dumps(out))
+    for validate in (e.prevalidate, e.seal):
+        if valid:
+            validate(tmp_path, state, "design.json", "tasks.json")
+        else:
+            with pytest.raises(w.Refusal, match="handoff.*section"):
+                validate(tmp_path, state, "design.json", "tasks.json")
+
+
+def png_container(fields=(1, 1, 8, 2, 0, 0, 0), chunks=("IHDR", "IDAT", "IEND")):
+    payloads = {"IHDR": struct.pack(">IIBBBBB", *fields), "IDAT": zlib.compress(b"\0\0\0\0"),
+                "PLTE": b"\0\0\0", "tEXt": b"key\0value", "IEND": b""}
+    result = bytearray(b"\x89PNG\r\n\x1a\n")
+    for kind in chunks:
+        data = kind.encode() + payloads[kind]
+        result += struct.pack(">I", len(data) - 4) + data + struct.pack(">I", zlib.crc32(data))
+    return bytes(result)
+
+
+@pytest.mark.parametrize("raw", [
+    png_container((1, 1, 8, 255, 0, 0, 0)),
+    png_container((1, 1, 4, 2, 0, 0, 0)),
+    png_container((1, 1, 8, 2, 1, 0, 0)),
+    png_container((1, 1, 8, 2, 0, 1, 0)),
+    png_container((1, 1, 8, 2, 0, 0, 2)),
+    png_container((2**31, 1, 8, 2, 0, 0, 0)),
+    png_container((1, 1, 1, 3, 0, 0, 0)),  # Indexed color requires a palette.
+    png_container(chunks=("IHDR", "IHDR", "IDAT", "IEND")),
+    png_container(chunks=("IHDR", "PLTE", "PLTE", "IDAT", "IEND")),
+    png_container(chunks=("IHDR", "IDAT", "PLTE", "IEND")),
+    png_container(chunks=("IHDR", "IDAT", "tEXt", "IDAT", "IEND")),
+], ids=["color", "depth", "compression", "filter", "interlace", "width", "palette-missing",
+        "duplicate-header", "duplicate-palette", "late-palette", "nonconsecutive-data"])
+def test_system_design_refuses_malformed_png_container(tmp_path, raw):
+    from taskplane import depgraph
+    state, out = design_fixture(tmp_path)
+    state["scope"]["paths"]["design"].append("system.png")
+    (tmp_path/"system.png").write_bytes(raw)
+    view = out["system_design"]["views"][0]
+    view.update(format="png")
+    del view["section"]
+    out["phase_review"]["artifacts"][0].update(path="system.png", media_type="image/png",
+                                               sha256=hashlib.sha256(raw).hexdigest())
+    (tmp_path/"design.json").write_text(json.dumps(out))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    for validate in (e.prevalidate, e.seal):
+        with pytest.raises(w.Refusal, match="PNG"):
+            validate(tmp_path, state, "design.json", "tasks.json")
+
+
+def test_system_design_static_image_is_pinned_with_plain_text_fallback(tmp_path):
+    from taskplane.context import Store
+    state, out = design_fixture(tmp_path)
+    state["scope"]["paths"]["design"].append("system.png")
+    raw = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAKAAAAAZAQAAAACecRg9AAAArklEQVR4nGP8z4AJmBjoJfiI4R+YcYLhH8N3BgaGJwcYGJh4oYq/QFX9Amt/Unb8XL8Dw4F+6d6GJxMYmCKfKDAx/GL48u/FAQeWF6H6Dr8MLgjM777A9PmJxcmGCV8mMDA0MDA8+avCxMCgwMQtx2DzoIJH4Q/IQDlmDh4Ghg9MTP8Y/nD8YNjgABL8x/DmAUiQgc2Ap0WC4cEZif+Me9oYfrA9bDRgHNhQopcgAB+eOTTz18duAAAAAElFTkSuQmCC")
+    view = out["system_design"]["views"][0]
+    view.update(format="png")
+    del view["section"]
+    artifact = out["phase_review"]["artifacts"][0]
+    artifact.update(path="system.png", media_type="image/png")
+    for candidate in (b"fake image", raw[:24], raw):
+        (tmp_path/"system.png").write_bytes(candidate)
+        artifact["sha256"] = hashlib.sha256(candidate).hexdigest()
+        (tmp_path/"design.json").write_text(json.dumps(out))
+        if candidate != raw:
+            with pytest.raises(w.Refusal, match="PNG"):
+                e.seal(tmp_path, state, "design.json", "tasks.json")
+        else:
+            from taskplane import depgraph
+            depgraph.scan(str(tmp_path), decompose=True, strict=True)
+            packet = e.seal(tmp_path, state, "design.json", "tasks.json")
+            pinned = packet["review_artifacts"][0]
+            assert pinned["fallback"] == artifact["fallback"]
+            assert base64.b64decode(Store(tmp_path).resolve(pinned["body_ref"])["data"]) == raw
+
+
+@pytest.mark.parametrize("contract", [None, "collaborative/v1"])
+def test_system_design_prose_only_legacy_packet_keeps_creation_contract(tmp_path, contract):
+    state, out = design_fixture(tmp_path, contract)
+    del out["system_design"]
+    (tmp_path/"design.json").write_text(json.dumps(out))
+    packet = e.seal(tmp_path, state, "design.json", "tasks.json")
+    assert packet.get("phase_contract") == contract
+    if contract:
+        assert packet["phase_review_gates"]["contract"] == contract
+    from taskplane.tests.test_workflow import answer
+    state = w.submit(state, packet)
+    assert w.finish(w.decide(state, answer(state)))["finished"]
+
+
+def test_resuming_v1_design_keeps_the_submitted_prose_packet(tmp_path):
+    from taskplane import workflow_host as host
+    from taskplane.tests.test_workflow_host import collaborative_repair_submit
+    from taskplane.tests.test_workflow_local import collaborative_output, decide
+    initial, out, _ = prepare(tmp_path, "design")
+    request = {"scope": initial["scope"], "standalone": True, "entry": "design",
+               "request_reference": "fixture/prior-design"}
+    controller = host.Controller(tmp_path, "root", host.installed_adapter("codex"))
+    state = controller.start(request, phase_contract="collaborative/v1")
+    out.update(run=state["run"], visit=w.current(state)["id"])
+    del out["system_design"]
+    collaborative_output(tmp_path, state, out)
+    state = collaborative_repair_submit(controller, state, out)
+    resumed = host.Controller(tmp_path, "root", host.installed_adapter("codex"))
+    restarted = resumed.start(request, phase_contract=w.PHASE_CONTRACT)
+    assert restarted.pop("start_created") is False
+    assert restarted == state
+    approved = decide(resumed, state)
+    assert w.finish(approved)["finished"]

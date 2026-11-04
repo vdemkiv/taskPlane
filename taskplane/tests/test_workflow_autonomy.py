@@ -1,6 +1,7 @@
 """Observed policy fixtures do not certify live human origin or host permissions."""
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 import json
 
 import pytest
@@ -43,14 +44,17 @@ def auto(c, s, value=None, revision=None):
 @pytest.mark.parametrize('phase', w.PHASES)
 def test_collaborative_automatic_and_manual_gates_have_all_phase_parity(phase):
     from taskplane.tests.test_workflow_evidence import collaborative_review
-    from taskplane.tests.test_workflow import scope
-    s = w.new_state('/workspace', 'root', 'run', scope(), phase_contract=w.PHASE_CONTRACT)
+    from taskplane.tests.test_workflow import collaborative_state
+    s = collaborative_state()
     s.update(profile='native_workflow', started_at=datetime.now(timezone.utc).isoformat())
     s['index'] = w.PHASES.index(phase)
     s = approval.authorize(s, authorization(s))
     output = dict(phase_review=collaborative_review(s, {'path':'evidence.txt','sha256':'a'*64}),
                   write_scope=[], known_gaps=[], build_checks=[{'name':'check','status':'pass'}],
                   criterion_results={'AC1':{'status':'pass'}}, unknowns_and_failures=[], findings=[])
+    if phase == "design":
+        from taskplane.tests.test_workflow_evidence import system_design
+        output["system_design"] = system_design()
     s = w.submit(s, dict(phase=phase, visit=w.current(s)['id'], checkpoint='checkpoint',
                          output=output, manifest={'evidence.txt':'a'*64}))
     value = assessment(s)
@@ -671,3 +675,54 @@ class TestEveryDirectivePolicy:
         assert not c.report().get('approval_policy')
         assert not c.report()['decisions']
         assert request == original
+
+
+@pytest.mark.parametrize('mode', ['manual', 'automatic'])
+def test_public_standalone_design_requires_justified_decisions_in_both_modes(tmp_path, mode):
+    from taskplane.tests.test_workflow_evidence import png_container
+    workspace = tmp_path.resolve()
+    create(workspace)
+    state = cli(workspace, 'codex', 'start', '--standalone', '--phase', 'design',
+                '--scope', '.taskplane/scope.json', '--request-reference', 'fixture/design')['workflow']
+    if mode == 'automatic':
+        state = cli(workspace, 'codex', 'policy', '--policy-json', json.dumps(authorization(state)),
+                    '--expected-revision', str(state['revision']))['workflow']
+    path = output(workspace, state)
+    candidate = json.loads((workspace/path).read_text())
+    diagram_path = workspace / candidate['phase_review']['artifacts'][0]['path']
+    approved_example = diagram_path.read_bytes()
+    invalid_diagrams = [
+        ('mermaid', b'## Checkpoint handoff\n```mermaid\nflowchart LR\n-->\n```\n', 'section'),
+        ('png', png_container(chunks=('IHDR', 'IHDR', 'IDAT', 'IEND')), 'PNG'),
+    ]
+    for fmt, raw, detail in invalid_diagrams:
+        broken = deepcopy(candidate)
+        diagram_path.write_bytes(raw)
+        broken['phase_review']['artifacts'][0]['sha256'] = hashlib.sha256(raw).hexdigest()
+        if fmt == 'png':
+            broken['phase_review']['artifacts'][0]['media_type'] = 'image/png'
+            broken['system_design']['views'][0]['format'] = 'png'
+            del broken['system_design']['views'][0]['section']
+        (workspace/path).write_text(json.dumps(broken))
+        for action in ('prevalidate', 'submit'):
+            refused = cli(workspace, 'codex', action, '--run', state['run'], '--output', path,
+                          '--tasks', 'tasks.json', '--expected-revision', str(state['revision']), code=2)
+            assert detail in refused['detail']
+    diagram_path.write_bytes(approved_example)
+    for field, invalid in [('views', ['absent']), ('rationale', '')]:
+        broken = deepcopy(candidate)
+        broken['system_design']['decisions'][0][field] = invalid
+        (workspace/path).write_text(json.dumps(broken))
+        for action in ('prevalidate', 'submit'):
+            refused = cli(workspace, 'codex', action, '--run', state['run'], '--output', path,
+                          '--tasks', 'tasks.json', '--expected-revision', str(state['revision']), code=2)
+            assert 'decisions[pin].' + field in refused['detail']
+    assert not w.current(cli(workspace, 'codex', 'report')['workflow'])['packet']
+    (workspace/path).write_text(json.dumps(candidate))
+    state = cli(workspace, 'codex', 'submit', '--output', path, '--tasks', 'tasks.json',
+                '--expected-revision', str(state['revision']))['workflow']
+    handoff(workspace, 'codex')
+    operation = (['auto-decide', '--assessment-json', json.dumps(assessment(state))]
+                 if mode == 'automatic' else ['decide', '--decision-json', json.dumps(decision(state))])
+    state = cli(workspace, 'codex', *operation, '--expected-revision', str(state['revision']))['workflow']
+    assert cli(workspace, 'codex', 'finish', '--expected-revision', str(state['revision']))['status'] == 'accepted'
