@@ -1,7 +1,8 @@
 # taskplane changelog
 
-## v2.35.8 — concise approval and blocker context
+## v2.35.8 — concise approval context and focused CI
 
+- Use focused checks for documentation and version-only changes, retaining full runtime coverage for code changes and splitting core tests into four shards per OS.
 - Give every phase approval and repair request a short extract of the output, key verification results and gaps, and clickable dashboard and deliverable links.
 - Apply the same format to blockers, clarification and permission requests, stating the exact action needed and linking available evidence.
 

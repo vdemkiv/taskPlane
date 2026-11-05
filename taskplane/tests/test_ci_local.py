@@ -13,11 +13,12 @@ from taskplane.tests.test_native_workflow_cli import bounded_run, native_journey
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def collect(tmp_path, suite='all', host=None):
+def collect(tmp_path, suite='all', host=None, shard=1, shards=1):
     target = tmp_path/'collection.json'
     args = [sys.executable, '-m', 'pytest', 'taskplane/tests',
             '--ignore=taskplane/tests/test_dashboard_browser.py', '--collect-only', '-q',
-            '--taskplane-suite', suite, '--taskplane-collection-report', str(target)]
+            '--taskplane-suite', suite, '--taskplane-collection-report', str(target),
+            '--taskplane-shard', str(shard), '--taskplane-shards', str(shards)]
     if host: args += ['--taskplane-host', host]
     result = bounded_run(args, cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout+result.stderr
@@ -62,8 +63,9 @@ def test_expensive_host_selection_is_exact(tmp_path, suite, host):
     assert len([r for r in rows if r['suite']==suite]) == 2
 
 
+@pytest.mark.parametrize('shards', [1, 4])
 @pytest.mark.parametrize('fail', [False, True], ids=['passing', 'failing'])
-def test_runner_preserves_failure_and_writes_junit(tmp_path, monkeypatch, fail):
+def test_runner_preserves_failure_and_writes_junit(tmp_path, monkeypatch, fail, shards):
     # Run real pytest in a tiny checkout instead of invoking the repository suite recursively.
     tests = tmp_path/'taskplane/tests'; tests.mkdir(parents=True)
     scripts = tmp_path/'scripts'; scripts.mkdir()
@@ -73,7 +75,8 @@ def test_runner_preserves_failure_and_writes_junit(tmp_path, monkeypatch, fail):
     target = tmp_path/'reports/probe.xml'
     monkeypatch.setenv('CODEX_THREAD_ID', 'must-not-leak')
     result = bounded_run([sys.executable, str(scripts/'ci_local.py'), '--check', 'tests',
-                          '--junitxml', str(target)], cwd=tmp_path, env=dict(os.environ),
+                          '--junitxml', str(target), '--shards', str(shards),
+                          '--shard', str(ci_local.shard_for('taskplane/tests/test_probe.py::test_probe', shards))], cwd=tmp_path, env=dict(os.environ),
                          capture_output=True, text=True)
     assert result.returncode == (1 if fail else 0), result.stdout + result.stderr
     suite = ET.parse(target).getroot().find('testsuite')
@@ -82,10 +85,23 @@ def test_runner_preserves_failure_and_writes_junit(tmp_path, monkeypatch, fail):
 
 
 @pytest.mark.parametrize('args', [
-    ['--check','quality','--suite','core'], ['--check','tests','--host','codex'],
+    ['--check','quality','--suite','core'], ['--check','tests','--shard','0'],
+    ['--check','tests','--shard','3','--shards','2'], ['--check','quality','--shards','2'], ['--check','tests','--host','codex'],
     ['--check','package','--junitxml','result.xml'], ['--check','browser','--package-output','tmp'],
 ])
 def test_incompatible_selections_fail_before_running(monkeypatch, args):
     monkeypatch.setattr(sys, 'argv', ['ci_local', *args])
     with pytest.raises(SystemExit) as error: ci_local.main()
     assert error.value.code == 2
+
+
+def test_core_shards_cover_every_test_exactly_once(tmp_path):
+    rows = collect(tmp_path, "core")
+    expected = {row["nodeid"] for row in rows if row["selected"]}
+    seen = set()
+    for shard in range(1, 5):
+        selected = {row["nodeid"] for row in collect(tmp_path, "core", shard=shard, shards=4) if row["selected"]}
+        assert selected and not selected & seen
+        assert 0.2 * len(expected) < len(selected) < 0.3 * len(expected)
+        seen.update(selected)
+    assert seen == expected

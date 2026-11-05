@@ -2,6 +2,7 @@
 """Run the same product checks used by CI, with failures visible in the log."""
 from __future__ import annotations
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -40,15 +41,24 @@ def suite_for(nodeid: str, *, capacity: bool = False) -> str:
     return "core"
 
 
+def shard_for(nodeid: str, count: int) -> int:
+    """Stable node IDs give disjoint, exhaustive shards on every platform."""
+    return int.from_bytes(hashlib.sha256(nodeid.replace("\\", "/").encode()).digest()[:8], "big") % count + 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser", action="store_true", help="Include the real-browser dashboard suite")
     parser.add_argument("--check", choices=["tests", "quality", "package", "browser"])
     parser.add_argument("--suite", choices=SUITES, default="all")
+    parser.add_argument("--shard", type=int, default=1)
+    parser.add_argument("--shards", type=int, default=1)
     parser.add_argument("--host", choices=["codex", "claude"])
     parser.add_argument("--junitxml", type=Path)
     parser.add_argument("--package-output", type=Path)
     args = parser.parse_args()
+    if not 1 <= args.shard <= args.shards or (args.shards != 1 and args.check != "tests"):
+        parser.error("--shard must be within --shards and requires tests")
     if args.suite != "all" and args.check != "tests":
         parser.error("--suite requires --check tests")
     if args.host and (args.check != "tests" or args.suite not in ("packages", "capacity")):
@@ -65,6 +75,7 @@ def main() -> int:
         "package": [[sys.executable, f"scripts/package_{host}.py"] for host in ("openai", "claude")],
         "browser": [[sys.executable, "-m", "pytest", "taskplane/tests/test_dashboard_browser.py", "-q", "--durations=25"]],
     }
+    checks["tests"][0] += ["--taskplane-shard", str(args.shard), "--taskplane-shards", str(args.shards)]
     if args.host:
         checks["tests"][0] += ["--taskplane-host", args.host]
     if args.junitxml:

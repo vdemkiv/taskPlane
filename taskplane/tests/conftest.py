@@ -14,14 +14,19 @@ def pytest_addoption(parser):
     parser.addoption("--taskplane-archive-dir", default=None,
                      help="Verify these existing build archives instead of fresh temporary packages")
     parser.addoption("--taskplane-suite", choices=['all', 'portability', 'core', 'native', 'packages', 'capacity'], default='all')
+    parser.addoption("--taskplane-shard", type=int, default=1)
+    parser.addoption("--taskplane-shards", type=int, default=1)
     parser.addoption("--taskplane-host", choices=['codex', 'claude'])
     parser.addoption("--taskplane-collection-report", default=None)
 
 
 def pytest_collection_modifyitems(config, items):
-    from scripts.ci_local import suite_for
+    from scripts.ci_local import suite_for, shard_for
     suite = config.getoption('--taskplane-suite')
     host = config.getoption('--taskplane-host')
+    shard, shards = config.getoption('--taskplane-shard'), config.getoption('--taskplane-shards')
+    if not 1 <= shard <= shards:
+        raise pytest.UsageError('--taskplane-shard must be within --taskplane-shards')
     if host and suite not in ('packages', 'capacity'):
         raise pytest.UsageError('--taskplane-host requires the packages or capacity suite')
     selected, deselected, report = [], [], []
@@ -31,6 +36,7 @@ def pytest_collection_modifyitems(config, items):
         item_host = param.params.get('host') if param else None
         if item_host == 'openai': item_host = 'codex'
         keep = (suite == 'all' or suite == category) and (not host or item_host == host)
+        keep = keep and shard_for(item.nodeid, shards) == shard
         (selected if keep else deselected).append(item)
         item.user_properties.append(('taskplane_suite', category))
         report.append({'nodeid': item.nodeid, 'suite': category, 'host': item_host, 'selected': keep})

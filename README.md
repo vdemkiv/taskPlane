@@ -144,6 +144,8 @@ python -m pip install --require-hashes --no-deps -r .venv/tests.lock
 python scripts/ci_local.py
 ```
 
+CI uses focused instruction/package/version, quality and security checks for Markdown documentation and version-only manifest changes. Runtime, test, CI, configuration and unknown changes require the full platform suite. Both aggregate gates verify the selected checks, including intentional exclusions; a failed or missing check cannot pass. The full core suite uses four disjoint shards per OS. To reproduce one shard, use `python scripts/ci_local.py --check tests --suite core --shard 1 --shards 4`.
+
 Add `--browser` for the browser suite. Build the Codex upload archive with `python scripts/package_openai.py`; generated packages go to `dist/`. See the [CI workflow](https://github.com/vdemkiv/taskPlane/blob/main/.github/workflows/ci.yml) for platform-specific checks and profiles.
 
 TaskPlane supplies bounded phase context and command summaries. Use `flow context` to consume current required inputs; new runs require the returned receipt in phase evidence. See [context optimization](docs/cli-reference.md#bounded-context-transport) for receipt semantics and verification reuse.
