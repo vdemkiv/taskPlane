@@ -115,6 +115,40 @@ checkpoint handoff survives an approval-only revision increment. A new packet,
 policy/scope change, repair visit or stale source requires a fresh handoff. Automatic
 approval, advance and finish enforce it even without Stop. Never create a replacement dashboard.
 
+### Compact approval request
+
+For every phase, including repair visits, put the review context in the approval
+request itself so the user can understand the decision without reading earlier
+chat messages. Keep it to roughly 100–150 words, excluding links:
+
+- Name the phase and checkpoint, and state what accepting this output authorizes.
+- Give a 2–3 sentence extract from the submitted output: the actual scope,
+  decisions or changes being accepted, plus the key verification result and any
+  unresolved gap or trade-off. Summarize that phase's work, not just its status.
+- Include a clickable **Dashboard** link to the current checkpoint's dashboard.
+- Include clickable **Deliverables** links to the submitted phase's relevant
+  files, with descriptive labels. Prefer the short report and primary outputs;
+  link a delivery index when there are many files. Use host-supported links to
+  actual files in the selected workspace, with absolute local paths where needed.
+- End with a clear approve/request-changes choice bound to this checkpoint.
+
+Use the same compact review context for Product, Design, Plan, Build, Evaluate,
+Engineering and Retro. Include it in the native question text when supported;
+otherwise send it immediately before the question. If a link cannot be opened on
+the host, provide an accessible file fallback and state the limitation. Keep the
+existing presentation/provenance recording and approval policy; an automatic
+decision uses this context in its update without adding a manual pause.
+
+Apply the same compact format to blocker notices and requests for clarification,
+permission or repair authorization in any phase, including setup before a
+checkpoint exists. State what is blocked, the observed reason and impact, what
+has already been completed, and the exact input or action needed to proceed.
+Link the current dashboard and relevant available deliverables or failure evidence.
+If either is unavailable, say so explicitly; never invent a file or checkpoint.
+Offer choices appropriate to the blocker and explain what each authorizes. A
+response resolving a blocker does not accept unfinished phase output or waive
+required checks.
+
 Stop requests one corrective continuation for missing initialization, phase output
 or dashboard handoff, including read-only reviews. `stop_hook_active` prevents an
 endless loop. When actual user input is needed, use the native question tool or

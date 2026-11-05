@@ -12,7 +12,22 @@ concurrency:
 env:
   PYTHONUTF8: "1"
 jobs:
+  scope:
+    name: select required checks
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false, fetch-depth: 0}
+      - id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/ci_scope.py
   portability:
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     name: portability preflight (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -37,14 +52,20 @@ jobs:
           path: reports/portability.xml
           if-no-files-found: error
   suites:
-    name: ${{ matrix.suite }} (${{ matrix.os }})
-    needs: portability
+    name: ${{ matrix.suite }} (${{ matrix.os }}, shard ${{ matrix.shard }}/${{ matrix.shards }})
+    needs: [scope, portability]
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        suite: [core, native]
+        suite: [core]
+        shard: [1, 2, 3, 4]
+        shards: [4]
+        include:
+          - {os: ubuntu-latest, suite: native, shard: 1, shards: 1}
+          - {os: windows-latest, suite: native, shard: 1, shards: 1}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false}
@@ -55,16 +76,17 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests --suite ${{ matrix.suite }} --junitxml reports/${{ matrix.suite }}.xml
+      - run: python scripts/ci_local.py --check tests --suite ${{ matrix.suite }} --shard ${{ matrix.shard }} --shards ${{ matrix.shards }} --junitxml reports/${{ matrix.suite }}.xml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: ${{ matrix.suite }}-${{ matrix.os }}
+          name: ${{ matrix.suite }}-${{ matrix.os }}-${{ matrix.shard }}
           path: reports/*.xml
           if-no-files-found: error
   archive-journeys:
     name: archive ${{ matrix.host }} (${{ matrix.os }})
-    needs: portability
+    needs: [scope, portability]
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -90,7 +112,8 @@ jobs:
           if-no-files-found: error
   capacity:
     name: full capacity ${{ matrix.host }} (${{ matrix.os }})
-    needs: portability
+    needs: [scope, portability]
+    if: needs.scope.outputs.mode == 'full'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -123,16 +146,24 @@ jobs:
         with: {persist-credentials: false}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "3.12", cache: pip}
-      - run: python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+      - name: Install quality and test dependencies
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
+          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
       - run: python scripts/security_checks.py
       - run: python scripts/ci_local.py --check quality
       - run: python scripts/ci_local.py --check package
+      - name: Instruction, package and version contracts
+        run: python -m pytest taskplane/tests/test_workflow_packages.py -q -m 'not taskplane_packages'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: plugins-${{ github.sha }}
           path: dist/
           if-no-files-found: error
   dashboard-browser:
+    needs: scope
+    if: needs.scope.outputs.mode == 'full'
     name: dashboard browser conformance
     runs-on: ubuntu-latest
     steps:
@@ -217,20 +248,24 @@ jobs:
   tests:
     name: tests (python 3.12)
     if: always()
-    needs: [portability, suites, archive-journeys, capacity, quality-package, dashboard-browser, security, interpreter-import]
+    needs: [scope, portability, suites, archive-journeys, capacity, quality-package, dashboard-browser, security, interpreter-import]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every CI suite
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - name: Require every selected CI suite
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: python3 -c 'import json, os; results = json.loads(os.environ["RESULTS"]); assert all(job["result"] == "success" for job in results.values()), results'
+        run: python3 scripts/ci_scope.py
   native-portability:
     name: native portability (windows)
     if: always()
-    needs: [portability, suites, archive-journeys, capacity, quality-package, dashboard-browser, security, interpreter-import]
+    needs: [scope, portability, suites, archive-journeys, capacity, quality-package, dashboard-browser, security, interpreter-import]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every CI suite
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - name: Require every selected CI suite
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: python3 -c 'import json, os; results = json.loads(os.environ["RESULTS"]); assert all(job["result"] == "success" for job in results.values()), results'
+        run: python3 scripts/ci_scope.py
