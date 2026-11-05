@@ -1,5 +1,10 @@
 # taskplane changelog
 
+## v2.35.8 — concise approval and blocker context
+
+- Give every phase approval and repair request a short extract of the output, key verification results and gaps, and clickable dashboard and deliverable links.
+- Apply the same format to blockers, clarification and permission requests, stating the exact action needed and linking available evidence.
+
 ## v2.35.7 — worker repair scope and approval guidance
 
 - Refuse a worker grant before reservation if any requested write would overwrite sealed evidence or a source file excluded from the approved repair. Explicitly authorized repair writes and required Build outputs remain available.
