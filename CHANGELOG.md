@@ -1,5 +1,10 @@
 # taskplane changelog
 
+## v2.35.9 — recover dropped native worker responses
+
+- Reconcile a Codex worker whose spawn response was lost only when an already-authorized native poll and exact session identity match its pending launch. Missing proof, unsolicited polls and foreign worker names remain unjoined.
+- Preserve task-result and context-claim requirements after identity recovery; a completed worker status alone does not accept execution evidence.
+
 ## v2.35.8 — concise approval context and focused CI
 
 - Use focused checks for documentation and version-only changes, retaining full runtime coverage for code changes and splitting core tests into four shards per OS.

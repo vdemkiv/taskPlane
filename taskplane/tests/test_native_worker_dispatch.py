@@ -837,3 +837,33 @@ def test_dual_bound_real_worker_keeps_parent_authority(tmp_path, monkeypatch, ca
     with pytest.raises(w.Refusal): flow.hook(event)
     assert flow.main(['report','--workspace',str(tmp_path)]) == 2
     capsys.readouterr()
+
+
+@pytest.mark.parametrize('proof,poll,expected', [
+    ('exact',True,'result_pending'), ('missing',True,'launch_pending'),
+    ('exact',False,'launch_pending'), ('foreign-name',True,'launch_pending'),
+])
+def test_dropped_spawn_response_can_join_only_exact_polled_worker(tmp_path,monkeypatch,proof,poll,expected):
+    controller,state=setup(tmp_path)
+    logs=tmp_path/'native'/'sessions'
+    logs.mkdir(parents=True)
+    monkeypatch.setenv('CODEX_HOME',str(logs.parent))
+    item=reserve(controller,state)
+    row=item['grant']
+    event={'tool_name':'collaboration.spawn_agent','call_id':'orphan-launch','tool_input':{
+        'task_name':row['task_name'],'message':item['message'],'fork_turns':'none'}}
+    controller.guard(dict(event,hook_event_name='PreToolUse'),state['run'])
+    if proof!='missing':
+        metadata(logs/'child.jsonl',state,row)
+    target='/root/'+row['task_name'] if proof!='foreign-name' else '/root/other'
+    status={'tool_name':'collaboration.list_agents','call_id':'orphan-poll','tool_input':{'path_prefix':target}}
+    if poll:
+        controller.guard(dict(status,hook_event_name='PreToolUse'),state['run'])
+    controller.observe(dict(status,hook_event_name='PostToolUse',tool_response={
+        'agents':[{'agent_name':target,'agent_status':{'completed':'no execution evidence'}}]}),state['run'])
+    after=controller.report()
+    assert after['workers'][row['grant_id']]['state']==expected
+    assert not after.get('task_results')
+    if expected=='result_pending':
+        assert after['workers'][row['grant_id']]['worker_id']=='native-uuid'
+        assert not after['workers'][row['grant_id']].get('claimed_at')

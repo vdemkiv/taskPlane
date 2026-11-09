@@ -779,7 +779,22 @@ def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
                               if target and target in {r.get('worker_id'), r.get('canonical_name')}]
                 polls = state.get('worker_polls', {})
                 if call in polls:
-                    candidates = [r for r in candidates if r['grant_id'] in polls[call]]
+                    polled = polls[call]
+                    # A dropped spawn response can leave a completed Codex worker unnamed.
+                    # Reconcile only a grant present when the native poll started, using
+                    # the native session's parent, start time and exact launch name.
+                    if not candidates and agent.get("agent_name") == target:
+                        pending = [r for r in records(state).values()
+                                   if r["grant_id"] in polled and r["state"] == "launch_pending"
+                                   and r.get("host") == "codex" and r.get("call_id")
+                                   and r.get("binding") == binding(state)
+                                   and target == "/root/" + r["task_name"]]
+                        if len(pending) == 1:
+                            candidate = pending[0]
+                            correlate(state, candidate, canonical_name=target)
+                            if candidate.get("worker_id") and candidate.get("canonical_name") == target:
+                                candidates = [candidate]
+                    candidates = [r for r in candidates if r['grant_id'] in polled]
                 elif len(candidates) > 1:
                     candidates = []  # An uncorrelated old poll cannot join a new attempt.
                 row = max(candidates, key=lambda r: r['prepared_at']) if candidates else None
@@ -800,9 +815,10 @@ def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
     # wait_agent is a mailbox wait; interrupt returns previous status. Neither joins work.
 
 
-def correlate(state: dict[str, Any], row: dict[str, Any], expected_identity: str | None = None) -> None:
+def correlate(state: dict[str, Any], row: dict[str, Any], expected_identity: str | None = None,
+              *, canonical_name: str | None = None) -> None:
     from .host_capabilities import worker_identities
-    identities = worker_identities(state['root'], canonical_name=row.get('canonical_name'),
+    identities = worker_identities(state['root'], canonical_name=canonical_name or row.get('canonical_name'),
                                    task_name=row['task_name'], since=row['prepared_at'])
     if len(identities) == 1 and (expected_identity is None or identities[0]['worker_id'] == expected_identity):
         identity = identities[0]
