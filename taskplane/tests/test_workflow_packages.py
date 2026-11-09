@@ -30,6 +30,53 @@ from taskplane.tests import test_harness_review_regressions as review_regression
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def archive_stack_watchdog(stream, interval=35):
+    """Keep periodic stacks without walking live frames from a native watchdog."""
+    import atexit
+    import sys
+    import threading
+    import traceback
+
+    stopped = threading.Event()
+
+    def dump():
+        while not stopped.wait(interval):
+            # Python frame references remain owned while formatting under the GIL.
+            frames = sys._current_frames()
+            for identity, frame in frames.items():
+                print(f'Timed diagnostic: thread {identity}', file=stream, flush=True)
+                traceback.print_stack(frame, limit=100, file=stream)
+            stream.flush()
+
+    thread = threading.Thread(target=dump, name='archive-stack-watchdog', daemon=True)
+    thread.start()
+
+    def stop():
+        stopped.set()
+        thread.join(timeout=1)
+
+    atexit.register(stop)
+    return stop
+
+
+def test_archive_stack_watchdog_emits_live_frames_and_stops():
+    import time
+
+    stream = io.StringIO()
+    stop = archive_stack_watchdog(stream, interval=0.01)
+    try:
+        deadline = time.monotonic() + 2
+        while 'test_archive_stack_watchdog_emits_live_frames_and_stops' not in stream.getvalue():
+            assert time.monotonic() < deadline, stream.getvalue()
+            time.sleep(0.01)
+    finally:
+        stop()
+    before = stream.getvalue()
+    assert 'Timed diagnostic: thread ' in before
+    time.sleep(0.03)
+    assert stream.getvalue() == before
+
+
 def verify_generated_lenses(root):
     """Generate from inputs only; compare full inventory without repairing source."""
     source = root/'lenses'
@@ -152,7 +199,7 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
     # The child interpreter sees only the extracted runtime and the standard library.
     # Test-only adapter code is embedded here, never exported by either package.
     helpers = f'DESIGN_DIAGRAM = {DESIGN_DIAGRAM!r}\n\n'
-    helpers += '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, system_design, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
+    helpers += '\n\n'.join(inspect.getsource(f) for f in (archive_stack_watchdog, FixtureHost, system_design, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
     helpers += '\n\n' + '\n\n'.join(inspect.getsource(getattr(review_regressions, name)) for name in (
         'setup', 'submit', 'authorization', 'set_policy', 'refused', 'exercise_correction',
         'exercise_handles', 'exercise_child_lineage', 'exercise_routing'))
@@ -161,8 +208,9 @@ started = time.monotonic()
 def stage(name):
     print(f'{time.monotonic() - started:.2f}s {Path(__file__).stem} {name}', file=sys.stderr, flush=True)
 
-# Keep stacks and the last stage available if the parent hits its 120s deadline.
-faulthandler.dump_traceback_later(35, repeat=True)
+# Fatal diagnostics stay local to the faulting thread. Periodic snapshots below
+# run as Python code, avoiding asynchronous native walks of changing frames.
+faulthandler.enable(all_threads=False)
 from datetime import datetime, timezone
 from pathlib import Path
 from copy import deepcopy
@@ -175,7 +223,7 @@ sys.path.insert(0, sys.argv[1])
 from taskplane import flow, workflow as w, workflow_host as h, workflow_local as local
 from taskplane import workflow_approval as approval
 assert Path(flow.__file__).resolve().is_relative_to(Path(sys.argv[1]))
-''' + helpers
+''' + helpers + '\nstop_diagnostics = archive_stack_watchdog(sys.stderr)\n'
     delivery = '''
 c, host, initial = controller(temp)
 assert not h.installed_adapter('codex' if sys.argv[3] == 'openai' else sys.argv[3]).capabilities()['human_origin']
@@ -292,6 +340,7 @@ with redirect_stdout(io.StringIO()):
     assert flow.main(['start', '--workspace', str(c.workspace)]) == 2
 print('seven accepted fixture checkpoints; production authority refused')
 stage('complete')
+stop_diagnostics()
 '''
     regressions = '''
 # EV-F02: exercise the extracted native adapter with progress and normative edits.
@@ -325,7 +374,7 @@ for exercise_review in (exercise_correction, exercise_handles, exercise_child_li
 stage('routing')
 exercise_routing()
 stage('complete')
-faulthandler.cancel_dump_traceback_later()
+stop_diagnostics()
 print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
 '''
     # Independent workspaces share the original process-tree deadline and cleanup.
@@ -335,16 +384,28 @@ print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
         harness.write_text(prelude + body)
         commands.append([sys.executable, '-I', str(harness), str(extracted),
                          str(tmp_path/f'{host}-{suite}'), host])
+    diagnostic_paths = [tmp_path/f'{host}-{suite}.stderr' for suite in ('delivery', 'regressions')]
     supervisor = '''import json, subprocess, sys
 delivery, regressions = json.loads(sys.argv[1])
-with subprocess.Popen(delivery) as child:
-    subprocess.run(regressions, check=True)
-    sys.exit(child.wait())
+delivery_log, regression_log = json.loads(sys.argv[2])
+with open(delivery_log, 'w', encoding='utf-8') as left, open(regression_log, 'w', encoding='utf-8') as right:
+    with subprocess.Popen(delivery, stderr=left) as child:
+        regression = subprocess.run(regressions, stderr=right)
+        print(f'regressions child exit: {regression.returncode}', file=sys.stderr, flush=True)
+        delivery_code = child.wait()
+        print(f'delivery child exit: {delivery_code}', file=sys.stderr, flush=True)
+        sys.exit(1 if regression.returncode or delivery_code else 0)
 '''
-    result = bounded_run([sys.executable, '-I', '-c', supervisor, json.dumps(commands)],
-                         cwd=tmp_path, capture_output=True, text=True)
-    request.node.user_properties.append(('isolated_harness_diagnostics', result.stderr))
-    assert result.returncode == 0, result.stdout + result.stderr
+    try:
+        result = bounded_run([sys.executable, '-I', '-c', supervisor, json.dumps(commands),
+                              json.dumps([str(path) for path in diagnostic_paths])],
+                             cwd=tmp_path, capture_output=True, text=True)
+    finally:
+        diagnostics = '\n'.join(f'--- {path.name} ---\n' + path.read_text(encoding='utf-8')
+                                for path in diagnostic_paths if path.exists())
+        request.node.user_properties.append(('isolated_harness_diagnostics', diagnostics))
+        print(diagnostics, file=sys.stderr)
+    assert result.returncode == 0, result.stdout + result.stderr + diagnostics
     assert 'EV-F02 progress, normative and legacy packet regressions passed' in result.stdout
     assert 'ENG-F01 concurrent publication regressions passed' in result.stdout
     assert 'seven accepted fixture checkpoints; production authority refused' in result.stdout
