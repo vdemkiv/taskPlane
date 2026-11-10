@@ -1,4 +1,5 @@
 """History retention and retirement never create checkpoint acceptance."""
+from taskplane.tests.test_workflow_evidence import start_native, seed_legacy_run
 from copy import deepcopy
 import json
 import pytest
@@ -9,7 +10,7 @@ from taskplane.tests.test_workflow_evidence import prepare
 def controller(tmp_path):
     state, _, _ = prepare(tmp_path)
     c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
-    s = c.start({'scope': state['scope'], 'request_reference': 'actual-fixture-request'})
+    s = start_native(c, {'scope': state['scope'], 'request_reference': 'actual-fixture-request'})
     return c, s
 
 
@@ -32,7 +33,7 @@ def test_retire_preserves_unaccepted_output_and_rejects_stale_revision(tmp_path)
 def test_retention_roundtrip_tamper_and_failed_index_write(tmp_path, monkeypatch):
     c, first = controller(tmp_path)
     monkeypatch.setattr(retention, 'WATERMARK', 1)
-    second = c.start({'scope': first['scope'], 'request_reference': 'new-user-request',
+    second = seed_legacy_run(c, {'scope': first['scope'], 'request_reference': 'new-user-request',
                       'replace_run': first['run'], 'expected_revision': 0})
     db = c._read(c._path())
     assert list(db['runs']) == [second['run']]
@@ -40,7 +41,7 @@ def test_retention_roundtrip_tamper_and_failed_index_write(tmp_path, monkeypatch
     old = c.report(first['run'])
     assert old['archived'] and old['superseded_by'] == second['run']
     assert old['decisions'] == first['decisions'] and not old['finished']
-    assert c.start({'scope': first['scope'], 'request_reference': 'new-user-request',
+    assert seed_legacy_run(c, {'scope': first['scope'], 'request_reference': 'new-user-request',
                     'replace_run': first['run'], 'expected_revision': 0})['run'] == second['run']
     ref = db['archives'][first['run']]
     from taskplane.context import Store
@@ -58,7 +59,7 @@ def test_archive_failure_keeps_original_index(tmp_path, monkeypatch):
     from taskplane.context import Store
     monkeypatch.setattr(Store, 'put', lambda *args, **kwargs: (_ for _ in ()).throw(OSError('disk full')))
     with pytest.raises(w.Refusal, match='disk full'):
-        c.start({'scope': s['scope'], 'request_reference': 'next', 'replace_run': s['run'], 'expected_revision': 0})
+        seed_legacy_run(c, {'scope': s['scope'], 'request_reference': 'next', 'replace_run': s['run'], 'expected_revision': 0})
     assert c._path().read_bytes() == before
 
 
@@ -74,7 +75,7 @@ def test_active_and_protected_history_never_auto_archive(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('adapter', ['claude', 'codex'])
 @pytest.mark.parametrize('large,native_name', [(False, True), (True, True), (True, False)])
-def test_start_with_backup_inventory_at_production_watermark(tmp_path, adapter, large, native_name):
+def test_legacy_start_with_backup_inventory_at_production_watermark(tmp_path, adapter, large, native_name):
     from taskplane.context import encode
     workspace = tmp_path.resolve()
     backup = workspace / '.taskplane-backup'
@@ -84,7 +85,7 @@ def test_start_with_backup_inventory_at_production_watermark(tmp_path, adapter, 
         (backup / (name + suffix)).write_text('{}')
     scope = {'criteria': ['START'], 'paths': {phase: [] for phase in w.PHASES}}
     c = h.Controller(workspace, 'fixture-root', h.installed_adapter(adapter))
-    first = c.start({'scope': scope, 'request_reference': 'fixture-first'})
+    first = seed_legacy_run(c, {'scope': scope, 'request_reference': 'fixture-first'})
     retired = c.apply('retire', first['run'], expected_revision=0,
         native_reference=json.dumps({'request_reference': 'fixture-retire', 'reason': 'historical run'}))
     db = c._read(c._path())
@@ -94,8 +95,8 @@ def test_start_with_backup_inventory_at_production_watermark(tmp_path, adapter, 
         c._path().write_bytes(encode(db))
     assert (len(c._path().read_bytes()) >= retention.WATERMARK) is large
     request = {'scope': scope, 'request_reference': 'fixture-second'}
-    second = c.start(request)
-    assert c.start(request)['run'] == second['run']
+    second = seed_legacy_run(c, request)
+    assert seed_legacy_run(c, request)['run'] == second['run']
     db = c._read(c._path())
     assert db['active'] == second['run']
     assert set(db['runs']) | set(db.get('archives', {})) == {first['run'], second['run']}
@@ -136,7 +137,7 @@ def test_archive_preserves_approved_history_and_failed_index_bytes(tmp_path, mon
     request = {'scope': first['scope'], 'request_reference': 'fixture-second'}
     if failure:
         with pytest.raises(w.Refusal) as error:
-            c.start(request)
+            seed_legacy_run(c, request)
         message = str(error.value)
         if failure == 'index-write':
             assert 'fixture index write failed' in message
@@ -146,11 +147,11 @@ def test_archive_preserves_approved_history_and_failed_index_bytes(tmp_path, mon
                     else 'History archive verification failed') in message
         assert c._path().read_bytes() == before
     else:
-        second = c.start(request)
+        second = seed_legacy_run(c, request)
         archived = retention.read(c.workspace, c._read(c._path()), first['run'])
         assert encode(archived) == encode(retired)
         assert archived['decisions'] == approved['decisions'] and archived['decisions']
         assert archived['visits'] == retired['visits']
         archive_before = c._read(c._path())['archives']
-        assert c.start(request)['run'] == second['run']
+        assert seed_legacy_run(c, request)['run'] == second['run']
         assert c._read(c._path())['archives'] == archive_before

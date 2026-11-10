@@ -1,4 +1,5 @@
 """Integration of restored code uses explicit test owners, not certified hosts."""
+from taskplane.tests.test_workflow_evidence import start_native
 from copy import deepcopy
 import io
 import json
@@ -28,7 +29,7 @@ def configured(tmp_path):
     commands=cr.CommandRuntime(store,workspace=session.workspace,root='root',observer=owner)
     adapter=h.CodexAdapter(session,commands);c=h.Controller(session.workspace,'root',adapter)
     human(owner,'scope',authorization={'scope':owner.scope,'entry':'product','standalone':False})
-    initial=c.start({'entry':'product','standalone':False,'native_reference':'scope'})
+    initial=start_native(c, {'entry':'product','standalone':False,'native_reference':'scope'})
     return c,owner,initial
 
 
@@ -66,7 +67,9 @@ def test_command_hooks_use_independent_call_binding_and_actual_processes(tmp_pat
     owner.native_calls['call1']['handle']='process'
     assert flow.hook(event|{'hook_event_name':'PostToolUse'},governor=c)=={}
     waiting=flow.hook(event|{'hook_event_name':'Stop'},governor=c)
-    assert 'quiescence' in waiting['systemMessage'] and 'decision' not in waiting
+    assert 'quiescence' in waiting['stopReason'] and waiting['continue'] is False
+    assert 'decision' not in waiting and 'systemMessage' not in waiting
+    assert flow.hook(event|{'hook_event_name':'Stop', 'stop_hook_active':True},governor=c) == waiting
     target=output(c,s)
     with pytest.raises(w.Refusal):c.apply('submit',s['run'],expected_revision=s['revision'],output=target,tasks='tasks.json')
     stdin=event|{'tool_use_id':'input1','tool_name':'write_stdin','tool_input':{'session_id':'process','chars':'next'}}
@@ -94,7 +97,7 @@ def test_named_installed_hooks_keep_native_error_contract(tmp_path):
         result=subprocess.run([sys.executable,str(root/'taskplane/tp.py'),command],input='[]',capture_output=True,text=True,cwd=tmp_path)
         data=json.loads(result.stdout)
         if event=='PreToolUse':assert result.returncode==0 and data['hookSpecificOutput']['permissionDecision']=='deny'
-        elif event=='Stop':assert result.returncode==0 and data.get('systemMessage') and 'decision' not in data
+        elif event=='Stop':assert result.returncode==0 and data.get('continue') is False and data.get('stopReason') and 'decision' not in data and 'systemMessage' not in data
         else:assert result.returncode==2 and data['decision']=='block'
     for event,groups in hooks.items():
         for group in groups:

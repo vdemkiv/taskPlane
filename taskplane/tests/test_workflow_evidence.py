@@ -322,8 +322,68 @@ def test_collaborative_repair_evaluate_malformed_results_refuse_cleanly(tmp_path
         e.phase_review_gates(state, output, root=tmp_path)
 
 
-def prepare(tmp_path, phase="product", *, plan_fixture=False):
+def ensure_native_worktree(workspace):
+    """Provision a real isolated Git checkout for native workflow fixtures."""
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    workspace = Path(workspace).resolve()
+    if (workspace / '.git').is_file():
+        return
+    assert not (workspace / '.git').exists(), 'Fixture must not reuse a primary Git checkout'
+    workspace.mkdir(parents=True, exist_ok=True)
+    base = Path(tempfile.mkdtemp(prefix='native-git-', dir=workspace.parent))
+    repository = base / 'repository'
+    repository.mkdir()
+    def git(*args):
+        subprocess.run(['git', '-C', str(repository), *args], check=True,
+                       capture_output=True, timeout=30)
+    git('init')
+    git('-c', 'user.name=Taskplane fixture', '-c', 'user.email=fixture@example.invalid',
+        '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'fixture baseline')
+    saved = base / 'inputs'
+    saved.mkdir()
+    # Keep the directory inode: several host fixtures already use it as cwd.
+    for item in workspace.iterdir():
+        shutil.move(str(item), str(saved / item.name))
+    try:
+        git('worktree', 'add', '--detach', str(workspace), 'HEAD')
+    finally:
+        workspace.mkdir(parents=True, exist_ok=True)
+        for item in saved.iterdir():
+            shutil.move(str(item), str(workspace / item.name))
+        saved.rmdir()
+
+
+def start_native(controller, request, **kwargs):
+    """Start native fixtures through the real isolation gate, retaining their dummy dashboard."""
+    if controller.adapter.profile != 'native_workflow':
+        return controller.start(request, **kwargs)
+    ensure_native_worktree(controller.workspace)
+    dashboard = controller.workspace / '.taskplane/dashboard.html'
+    placeholder = b'<html>Shared dashboard</html>'
+    restore = (dashboard.is_file() and dashboard.read_bytes() == placeholder
+               and not controller.adapter.state_exists(allow_pending=True))
+    if restore:
+        dashboard.unlink()
+    try:
+        return controller.start(request, **kwargs)
+    finally:
+        if restore:
+            dashboard.write_bytes(placeholder)
+
+
+def seed_legacy_run(controller, request, **kwargs):
+    """Build pre-isolation history for storage/replay tests, not a supported new-run API."""
+    return controller._start(request, **kwargs)
+
+
+def prepare(tmp_path, phase="product", *, plan_fixture=False, native=False):
     from taskplane import depgraph
+    if native:
+        ensure_native_worktree(tmp_path)
 
     scope = {"criteria": ["AC1"], "paths": {p: [p+".json"] for p in w.PHASES},
              "verification_inputs": ["app.py"]}
@@ -333,7 +393,8 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
     s["index"] = w.PHASES.index(phase)
     graph = tmp_path/".taskplane/knowledge"
     graph.mkdir(parents=True, exist_ok=True)
-    (tmp_path/".taskplane/dashboard.html").write_text("<html>Shared dashboard</html>")
+    if not native or list((tmp_path / ".taskplane").glob("workflow-*.json")):
+        (tmp_path/".taskplane/dashboard.html").write_text("<html>Shared dashboard</html>")
     if not (tmp_path/"app.py").exists():
         (tmp_path/"app.py").write_text("value = 1\n")
     tasks = {"tasks": [{"id": "T1", "phase": "build", "dependencies": [], "paths": ["build.json", "app.py"],
@@ -703,7 +764,7 @@ def native_lens_fixture(tmp_path, *, serial=False, phase='engineering'):
         for row in rows: row.update(execution_reason='User explicitly requested serial review', execution_reference='user/serial')
     (tmp_path/'tasks.json').write_text(json.dumps({'tasks':rows}))
     c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
-    s = c.start(dict(scope=scope, entry=phase, standalone=True, tasks='tasks.json', request_reference='fixture/request'))
+    s = start_native(c, dict(scope=scope, entry=phase, standalone=True, tasks='tasks.json', request_reference='fixture/request'))
     claims = []
     if not serial:
         prepared = [reserve(c, s, row['id']) for row in rows]
@@ -964,7 +1025,7 @@ def test_start_refuses_unscoped_reads_before_initializing(tmp_path):
     (tmp_path/'unscoped.json').write_text('{"private":"fixture"}')
     controller = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
     with pytest.raises(w.Refusal, match='read inputs'):
-        controller.start({'scope':state['scope'], 'tasks':'tasks.json', 'request_reference':'fixture'})
+        start_native(controller, {'scope':state['scope'], 'tasks':'tasks.json', 'request_reference':'fixture'})
     assert not controller.adapter.state_exists()
 
 
@@ -1217,13 +1278,13 @@ def test_resuming_v1_design_keeps_the_submitted_prose_packet(tmp_path):
     request = {"scope": initial["scope"], "standalone": True, "entry": "design",
                "request_reference": "fixture/prior-design"}
     controller = host.Controller(tmp_path, "root", host.installed_adapter("codex"))
-    state = controller.start(request, phase_contract="collaborative/v1")
+    state = start_native(controller, request, phase_contract="collaborative/v1")
     out.update(run=state["run"], visit=w.current(state)["id"])
     del out["system_design"]
     collaborative_output(tmp_path, state, out)
     state = collaborative_repair_submit(controller, state, out)
     resumed = host.Controller(tmp_path, "root", host.installed_adapter("codex"))
-    restarted = resumed.start(request, phase_contract=w.PHASE_CONTRACT)
+    restarted = start_native(resumed, request, phase_contract=w.PHASE_CONTRACT)
     assert restarted.pop("start_created") is False
     assert restarted == state
     approved = decide(resumed, state)

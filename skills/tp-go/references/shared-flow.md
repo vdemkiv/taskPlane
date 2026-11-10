@@ -7,6 +7,21 @@ Help and status are read-only: they never initialize or advance a workflow.
 
 ## Workspace and execution contract
 
+Every **new run**, including standalone reviews and replacement runs, starts in
+its own fresh linked Git worktree. Resuming the same run keeps its existing tree.
+Before activation, use the host's native create-worktree action with the approved
+baseline (explicit `HEAD` for the current committed baseline), then use its returned
+workspace. If no native action is available, use `tp.py flow isolate --workspace
+<source> --destination <new-path>` and select the returned workspace. The source
+checkout and its uncommitted work remain untouched. Never copy `.taskplane`, old
+transcripts, dashboards, context stores, approvals or run history into the new tree.
+Prepare only the current request's explicitly needed bootstrap inputs. Do not load
+previous run context to initialize a new run. A repo without a committed Git baseline
+must establish that baseline before starting; do not silently use the selected folder.
+The controller enforces one run per worktree across chats and refuses reuse even
+after completion. Existing runs can resume where they are; their approvals do not
+transfer to a new run. Replacement creates a fresh tree, not another run in the old one.
+
 Resolve the selected durable project before activation, bootstrap writes, journals,
 context or dashboards. Cowork and signaled session/scratch roots require an explicit
 binding; legacy unbound local Claude Code/Codex execution remains compatible when
@@ -149,9 +164,9 @@ Offer choices appropriate to the blocker and explain what each authorizes. A
 response resolving a blocker does not accept unfinished phase output or waive
 required checks.
 
-Stop requests one corrective continuation for missing initialization, phase output
-or dashboard handoff, including read-only reviews. `stop_hook_active` prevents an
-endless loop. When actual user input is needed, use the native question tool or
+Stop halts on missing initialization, phase output or dashboard handoff, including
+read-only reviews. It returns `continue: false` with a `stopReason`; it does not
+create a corrective prompt or downgrade repeated failures to advisory warnings. When actual user input is needed, use the native question tool or
 `flow wait --workspace PATH --note <actual-missing-input>`, then state the question.
 A wait never approves anything or weakens write checks. New input or further tool
 work clears it, and another phase/revision cannot reuse it. Do not call unfinished
@@ -242,15 +257,14 @@ run. Preserve failed verification attempts when a repaired attempt passes.
    or verified source invalidate affected acceptance and descendants while retaining
    history. Finish only after every required visit, including Retro, is accepted.
 
-If the user explicitly asks to start over, preserve the prior findings and create
-a fresh scope under `.taskplane/bootstrap/`. Read the active run/revision and use
-`flow start --replace-run OLD_ID --expected-revision N --scope FILE
---request-reference REF` in the same workspace. This supersedes the previous run
-without accepting it, retains its evidence, and selects a new native dashboard.
-Never copy approvals or autonomous policy into the new run. Sealed/stale evidence
-does not prevent this control action; exact CLI help/status, read-only diagnostics
-and fresh bootstrap proposals remain available. Do not ask the user to disable
-hooks or reopen the old checkpoint merely to start the run they requested.
+If the user explicitly asks to start over, keep the old run and its evidence in
+its original worktree. Retire it there using its exact run/revision when authorized;
+never accept unfinished work. Create and select a fresh worktree for the new run,
+then prepare a new `.taskplane/bootstrap/` scope from the current request. Include
+only explicitly needed findings, not whole historical reports or context stores.
+Start normally in the new tree. In-place `--replace-run` is refused. Approvals and
+automatic policy never transfer. Resuming the same run continues in its existing
+tree; a phase change alone does not create another worktree.
 
 | Phase | Definition of Ready (DoR) | Definition of Done (DoD) and useful artifacts |
 | --- | --- | --- |

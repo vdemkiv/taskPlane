@@ -1022,7 +1022,7 @@ def _hook(event: dict[str, Any], *,
             controller.observe(event, str(run))
         guarded = controller.report(str(run))
         if name == "Stop" and not controller.adapter.can_seal(guarded):
-            return {"systemMessage": "Taskplane is waiting for process quiescence before sealing. No phase has advanced; unknown host coverage remains explicit."}
+            return {"continue": False, "stopReason": "Taskplane is waiting for process quiescence before sealing. No phase has advanced; unknown host coverage remains explicit."}
     guarded_run = guarded.get("run") or (run if controller.adapter.profile == "protected_host" else None)
     event['taskplane_observed_binding']['run'] = guarded_run
     if guarded_run and name == "PreToolUse":
@@ -1172,8 +1172,8 @@ def run_hook(command: str | None = None, *,
             print(json.dumps(result))
             return 0  # Native deny JSON, not approval.
         if event.get("hook_event_name") == "Stop":
-            print(json.dumps({"systemMessage": reason}))
-            return 0  # Waiting/errors must not create forced-continuation loops.
+            print(json.dumps({"continue": False, "stopReason": reason}))
+            return 0  # Halt on errors without scheduling another model prompt.
         print(json.dumps({"decision": "block", "reason": reason}))
         return 2
     print(json.dumps(result))
@@ -1185,7 +1185,7 @@ def emit(payload: dict[str, Any], workspace: Path, action: str, *, full: bool = 
     from .context import Store, encode
     from .context_handoff import Session
     from .context_views import summary
-    if full or action in {'diagnose', 'recover'}:
+    if full or action in {'diagnose', 'recover', 'isolate'}:
         print(json.dumps(payload, indent=2))
         return
     state = payload.get("workflow", payload)
@@ -1225,15 +1225,27 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
          prepare: Callable[[str], dict[str, Any]] | None = None,
          governor: workflow_host.Controller | None = None) -> int:
     arguments = list(argv if argv is not None else sys.argv[1:])
-    selected = None
-    if '--workspace' in arguments:
-        index = arguments.index('--workspace')
-        selected = arguments[index+1] if index+1 < len(arguments) else None
+    early_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    early_parser.add_argument('--workspace')
+    early_parser.add_argument('--profile', default='native_workflow')
+    early, _ = early_parser.parse_known_args(arguments)
+    selected = early.workspace
     workspace: Path | None
     try:
         workspace = workspace_binding.resolve_workspace(selected)
     except (workflow.Refusal, OSError, ValueError):
         workspace = None
+    if arguments[:1] == ['isolate']:
+        # Creating a destination must not open source usage/context stores.
+        with primitives.lock_budget():
+            return _main(arguments, compact=compact, prepare=prepare, governor=governor)
+    if arguments[:1] == ['start'] and workspace is not None:
+        try:
+            (governor or _controller(workspace, session_id({}), early.profile)).preflight_start(
+                replace=any(arg == '--replace-run' or arg.startswith('--replace-run=') for arg in arguments))
+        except workflow.Refusal as exc:
+            print(json.dumps(exc.result()))
+            return 2
     with (primitives.lock_budget(), flow_journal.action_budget(workspace), claude_flow_usage.action_budget(workspace),
           codex_cache.action_budget(workspace)):
         return _main(arguments, compact=compact, prepare=prepare, governor=governor)
@@ -1245,7 +1257,7 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "refine", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "inspect", "prevalidate", "context", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "inspect", "prevalidate", "context", "retire", "worker", "isolate"])
     parser.add_argument("--kind", choices=["contract", "result"])
     parser.add_argument("--reference")
     parser.add_argument("--offset", type=int, default=0)
@@ -1265,6 +1277,7 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--section")
     parser.add_argument("--page", type=int)
     parser.add_argument("--workspace")
+    parser.add_argument("--destination", help="New linked worktree path; isolate only")
     parser.add_argument("--goal", default="")
     parser.add_argument("--phase", default="", type=str.lower)
     parser.add_argument("--standalone", action="store_true")
@@ -1289,7 +1302,7 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
     assessments.add_argument("--assessment", help="Assessment JSON file for auto-decide (at most 64 KiB)")
     assessments.add_argument("--assessment-json", help="Inline assessment JSON for auto-decide (at most 64 KiB)")
     parser.add_argument("--expected-revision", type=int)
-    parser.add_argument("--replace-run", help="Explicitly replace this active native run, preserving its evidence; start only")
+    parser.add_argument("--replace-run", help="Legacy option: native in-place replacement is refused; create a fresh worktree instead")
     parser.add_argument("--recover-from", help="Exact adjacent numbered workflow copy; recover only")
     parser.add_argument("--expected-sha256", help="Expected recovery copy SHA-256; recover only")
     parser.add_argument("--evidence", action="append", default=[])
@@ -1338,11 +1351,23 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
         if args.claude_invocation is not None:
             parser.error('Claude invocation references apply only to worker claim or scoped context')
         return run_hook(governor=governor)
+    if args.destination and args.action != 'isolate':
+        parser.error('--destination applies only to flow isolate')
     observation_errors: list[str] = []
     try:
         workspace = workspace_binding.resolve_workspace(args.workspace)
         workspace_binding.ensure(workspace)
         workspace_validated = True
+        if args.action == 'start':
+            (governor or _controller(workspace, session_id({}), args.profile)).preflight_start(
+                replace=bool(args.replace_run))
+        if args.action == 'isolate':
+            from . import run_worktree
+            workflow.require(bool(args.destination), 'run_isolation', 'flow isolate requires --destination.')
+            workflow.require(not observed_parent({}, session_id({})), 'scope_violation',
+                             'Workers cannot create a new run worktree.')
+            show(run_worktree.create(workspace, Path(args.destination)))
+            return 0
         if args.claude_invocation is not None:
             workflow.require(args.profile == 'native_workflow' and (
                 args.action == 'context' or args.action == 'worker' and args.operation == 'claim'),

@@ -1,4 +1,5 @@
 """Integrated retained-finding regressions using disposable canonical workspaces."""
+from taskplane.tests.test_workflow_evidence import start_native
 from copy import deepcopy
 import io
 import json
@@ -140,7 +141,7 @@ def request():
             'request_reference': 'user/first-start'}
 
 
-@pytest.mark.parametrize('write_number', range(1, 7))
+@pytest.mark.parametrize('write_number', range(1, 9))
 @pytest.mark.parametrize('after', [False, True])
 def test_first_creation_recovers_each_write_interruption_without_read_repair(root, monkeypatch, write_number, after):
     controller = h.Controller(root, 'root', h.installed_adapter('codex'))
@@ -156,13 +157,13 @@ def test_first_creation_recovers_each_write_interruption_without_read_repair(roo
             raise OSError('injected after publication/directory sync')
         return result
     monkeypatch.setattr(primitives, 'atomic_json', interrupted)
-    if write_number == 6:  # The run is durable before the advisory harness binding.
-        committed = controller.start(request())
+    if write_number == 7:  # The run is durable before the derived harness binding.
+        committed = start_native(controller, request())
         assert committed['start_observation_errors']
         assert controller.report()['run'] == committed['run']
     else:
         with pytest.raises((OSError, w.Refusal), match='injected'):
-            controller.start(request())
+            start_native(controller, request())
     monkeypatch.setattr(primitives, 'atomic_json', original)
     before = {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')}
     try:
@@ -170,7 +171,7 @@ def test_first_creation_recovers_each_write_interruption_without_read_repair(roo
     except w.Refusal as exc:
         assert 'pending' in exc.detail
     assert {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')} == before
-    state = controller.start(request())
+    state = start_native(controller, request())
     db = json.loads(controller._path().read_text())
     assert list(db['runs']) == [state['run']] and state['revision'] == 0 and not state['decisions']
     proof = json.loads(next((root / '.taskplane').glob('initialization-*.json')).read_text())
@@ -188,8 +189,15 @@ def test_pending_initialization_resumes_through_hook_and_flow_cli(root, monkeypa
         return original(path, value, **kwargs)
     monkeypatch.setattr(primitives, 'atomic_json', interrupted)
     with pytest.raises(OSError):
-        controller.start(request())
+        start_native(controller, request())
     monkeypatch.setattr(primitives, 'atomic_json', original)
+    # Equivalent CLI defaults may resume; a different request still cannot claim the tree.
+    from taskplane import run_worktree
+    _, private = run_worktree.identity(root)
+    ownership = (private / 'taskplane-run.json').read_bytes()
+    with pytest.raises(w.Refusal, match='already assigned'):
+        start_native(controller, {**request(), 'request_reference': 'user/different-request'})
+    assert (private / 'taskplane-run.json').read_bytes() == ownership
     monkeypatch.setattr(flow, 'observed_parent', lambda *args: None)
     local.Harness(root, 'root').select('tp-go', 'user/first-start', {})
     (root / 'scope.json').write_text(json.dumps(request()['scope']))
@@ -215,7 +223,7 @@ def test_missing_or_corrupt_history_never_qualifies_as_fresh(root, kind):
         marker = root / '.taskplane' / controller.adapter.markername
         primitives.atomic_json(marker, controller.adapter.marker())
     else:
-        controller.start(request())
+        start_native(controller, request())
         target = controller._path()
         proof = next((root / '.taskplane').glob('initialization-*.json'))
         if kind == 'established_missing':
@@ -227,7 +235,7 @@ def test_missing_or_corrupt_history_never_qualifies_as_fresh(root, kind):
             data['root' if kind == 'foreign_proof' else 'status'] = 'other' if kind == 'foreign_proof' else 'pending'
             proof.write_text(json.dumps(data))
     before = {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')}
-    for action in [controller.report, lambda: controller.start(request())]:
+    for action in [controller.report, lambda: start_native(controller, request())]:
         with pytest.raises((w.Refusal, ValueError)):
             action()
     assert {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')} == before
@@ -246,7 +254,7 @@ def test_setup_handle_survives_first_start_and_only_accepts_safe_input(root):
                 {**stdin(root, 4100), 'session_id': 'foreign'}]:
         with pytest.raises(w.Refusal):
             flow.hook(bad, governor=controller)
-    state = controller.start(request())
+    state = start_native(controller, request())
     assert state['observed_handles']['4100']['control'] is True
     assert harness.read()['setup_handles'] == {}
     assert not controller.adapter.can_seal(state)
@@ -269,8 +277,16 @@ def test_setup_handle_survives_first_start_and_only_accepts_safe_input(root):
     harness.select('tp-go', 'user/new-request', controller.report())
     with pytest.raises(w.Refusal):
         flow.hook(stdin(root, 4100), governor=controller)
-    fresh = controller.start({**request(), 'request_reference': 'user/new-request'})
+    with pytest.raises(w.Refusal, match='fresh linked Git worktree'):
+        start_native(controller, {**request(), 'request_reference': 'user/new-request'})
+    from taskplane import run_worktree
+    destination = root.parent / (root.name + '-next')
+    run_worktree.create(root, destination)
+    new = h.Controller(destination, 'root', h.installed_adapter('codex'))
+    fresh = start_native(new, {**request(), 'request_reference': 'user/new-request'})
     assert fresh['observed_handles'] == {}
+    with pytest.raises(w.Refusal):
+        flow.hook(stdin(destination, 4100), governor=new)
 
 
 def test_active_control_handle_is_observed_at_sealed_checkpoint(root):
@@ -325,14 +341,14 @@ def test_start_retry_finishes_handle_transfer_after_harness_write_interruption(r
                       tool_response={'session_id': 7000}), governor=controller)
     original = local.Harness.bind
     monkeypatch.setattr(local.Harness, 'bind', lambda *args: (_ for _ in ()).throw(OSError('handoff interrupted')))
-    committed = controller.start(request())
+    committed = start_native(controller, request())
     assert committed['start_observation_errors']
     state = controller.report()
     assert state['run'] == committed['run']
     assert state['observed_handles']['7000']['state'] == 'running'
     assert harness.setup_handles()['7000']['state'] == 'running'
     monkeypatch.setattr(local.Harness, 'bind', original)
-    assert controller.start(request())['run'] == state['run']
+    assert start_native(controller, request())['run'] == state['run']
     assert harness.read()['setup_handles'] == {} and harness.read()['run'] == state['run']
 
 
@@ -682,7 +698,7 @@ def test_setup_handle_updates_hold_lock_across_concurrent_read_and_merge(root, m
     assert set(harness.setup_handles()) == {'901', '902'}
     for handle in [901, 902]:
         flow.hook(stdin(root, handle), governor=controller)
-    controller.start(request())
+    start_native(controller, request())
     flow.hook(stdin(root, 901, name='PostToolUse', tool_response={'exit_code': 0}), governor=controller)
     assert not controller.adapter.can_seal(controller.report())
     flow.hook(stdin(root, 902, name='PostToolUse', tool_response={'exit_code': 0}), governor=controller)
@@ -717,7 +733,7 @@ def test_stale_pre_run_observation_rechecks_first_start_under_store_lock(root, m
         observation = pool.submit(flow.hook, event, governor=controller)
         try:
             assert reported.wait(10)
-            state = controller.start(request())
+            state = start_native(controller, request())
         finally:
             resume.set()
         observation.result(timeout=10)
@@ -748,7 +764,7 @@ def test_concurrent_terminal_setup_observations_preserve_each_completion(root):
         list(pool.map(complete, [904, 905]))
     assert {key: record['state'] for key, record in harness.setup_handles().items()} == {
         '904': 'completed', '905': 'completed'}
-    state = controller.start(request())
+    state = start_native(controller, request())
     assert controller.adapter.can_seal(state)
     for handle in [904, 905]:
         with pytest.raises(w.Refusal):

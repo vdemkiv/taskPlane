@@ -1,3 +1,4 @@
+from taskplane.tests.test_workflow_evidence import start_native
 from copy import deepcopy
 import json
 import os
@@ -54,11 +55,11 @@ def test_start_uses_native_scope_and_checks_requested_entry(tmp_path):
     human(owner,'scope',authorization=authorization)
     adapter=h.CodexAdapter(session)
     c=h.Controller(session.workspace,'root',adapter)
-    with pytest.raises(w.Refusal):c.start({'actor':'human','authenticated':True})
+    with pytest.raises(w.Refusal):start_native(c, {'actor':'human','authenticated':True})
     request={'entry':'product','standalone':False,'native_reference':'scope'}
     assert session.verify_start(request)['scope']==owner.scope
     # Session provenance without a matching native process owner is insufficient.
-    with pytest.raises(w.Refusal):c.start(request)
+    with pytest.raises(w.Refusal):start_native(c, request)
     with pytest.raises(w.Refusal):session.verify_start({'native_reference':'scope','entry':'engineering','standalone':True})
     assert not h.ClaudeAdapter(session).capabilities()['human_origin']
     assert not h.installed_adapter('codex').capabilities()['human_origin']

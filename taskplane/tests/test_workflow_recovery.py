@@ -1,4 +1,5 @@
 """Recovery must be reachable through hooks without granting phase approval."""
+from taskplane.tests.test_workflow_evidence import start_native
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -103,7 +104,7 @@ def test_oversized_source_diagnosis_does_not_initialize_or_hash(tmp_path, initia
     with (tmp_path/'large.bin').open('wb') as stream:stream.truncate(local.MAX_SOURCE_BYTES+1)
     if initialized:
         with pytest.raises(w.Refusal,match='512 MiB.*flow diagnose'):
-            c.start({'scope':state['scope'],'request_reference':'fixture/start'})
+            start_native(c, {'scope':state['scope'],'request_reference':'fixture/start'})
         assert c.adapter.state_exists() and not c.report().get('run')
     before={p.name:p.read_bytes() for p in (tmp_path/'.taskplane').glob('workflow-*.json')}
     harness.guard_bootstrap(runtime('flow','diagnose','--workspace',str(tmp_path)),c.report())
@@ -140,7 +141,7 @@ def test_clean_worktree_setup_requires_exact_observed_host_result(tmp_path):
         result=subprocess.run(['git','-C',str(source),*args],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
     git('init');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','Fixture')
-    c,s=setup(source);s=submit(c,s);harness=local.Harness(source,'root')
+    c,s=setup(source,legacy=True);s=submit(c,s);harness=local.Harness(source,'root')
     event={'tool_name':'mcp__codex_app__create_worktree','tool_input':{'name':'recovery-fixture'},'call_id':'create-1'}
     c.guard(event,s['run'])
     destination=tmp_path/'clean';git('worktree','add','--detach',str(destination),'HEAD')
@@ -185,33 +186,45 @@ def runtime(*words):
     return command(sys.executable, str(Path(h.__file__).with_name("tp.py")), *words)
 
 
+def fresh_recovery(c, state):
+    from taskplane import run_worktree
+    from taskplane.tests.test_workflow_evidence import prepare
+    destination = c.workspace.parent / (c.workspace.name + '-restart')
+    run_worktree.create(c.workspace, destination)
+    initial, _, _ = prepare(destination)
+    fresh = h.Controller(destination, c.root, h.installed_adapter(c.adapter.name))
+    request = {'scope': initial['scope'], 'request_reference': 'conversation/new-run'}
+    return fresh, start_native(fresh, request), request
+
+
 @pytest.mark.parametrize("drift", ["out_of_scope", "evidence", "none"])
-def test_explicit_new_run_preserves_old_checkpoint_and_revokes_its_grants(tmp_path, drift):
+def test_explicit_new_run_preserves_old_checkpoint_in_its_own_worktree(tmp_path, drift):
     c, old = setup(tmp_path)
     old = submit(c, old)
     if drift == "out_of_scope":
         (tmp_path / "upload.zip").write_bytes(b"user requested package")
     elif drift == "evidence":
         (tmp_path / "product.json").write_text("{}")
-    request = restart_request(old)
-    new = c.start(request)
-    assert new["run"] != old["run"]
-    assert new["revision"] == 0 and new["decisions"] == {}
-    assert w.current(new)["phase"] == "product" and w.current(new)["packet"] is None
-    assert not new.get("approval_policy") and not new["finished"]
-    prior = c.report(old["run"])
-    assert prior["status"] == "superseded" and prior["superseded_by"] == new["run"]
-    assert prior["visits"] == old["visits"] and prior["decisions"] == old["decisions"]
-    assert not prior["finished"]
-    from taskplane.flow_dashboard import _workflow
-    old_view = _workflow({"workflow": prior})
-    assert "Historical run. Replaced by" in old_view and 'class="stage current"' not in old_view
-    assert c.start(request)["run"] == new["run"]  # interrupted response/retry
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match='fresh linked Git worktree'):
+        start_native(c, restart_request(old))
+    assert c._path().read_bytes() == before
+    prior = c.apply('retire', old['run'], expected_revision=old['revision'],
+        native_reference=json.dumps({'request_reference':'conversation/new-run','reason':'User requested restart'}))
+    fresh, new, request = fresh_recovery(c, old)
+    assert new['run'] != old['run'] and fresh.workspace != c.workspace
+    assert new['revision'] == 0 and new['decisions'] == {}
+    assert w.current(new)['phase'] == 'product' and w.current(new)['packet'] is None
+    assert not new.get('approval_policy') and not new['finished']
+    assert prior['visits'] == old['visits'] and prior['decisions'] == old['decisions']
+    assert c.report(old['run'])['status'] == 'retired' and not prior['finished']
+    assert start_native(fresh, request)['run'] == new['run']
     with pytest.raises(w.Refusal):
-        c.guard({"tool_name": "Write", "tool_input": {"path": "product.json"}}, old["run"])
+        c.guard({'tool_name':'Write','tool_input':{'path':'product.json'}}, old['run'])
     with pytest.raises(w.Refusal):
-        c.apply("finish", old["run"], expected_revision=prior["revision"])
-    assert c.report()["run"] == new["run"]
+        c.apply('finish', old['run'], expected_revision=prior['revision'])
+    assert fresh.report()['run'] == new['run']
+    assert old['run'] not in fresh._path().read_text()
 
 
 @pytest.mark.parametrize("bad", ["foreign", "revision", "boolean", "reference", "scope", "live"])
@@ -231,7 +244,7 @@ def test_new_run_requires_bound_request_and_preserves_store_on_failure(tmp_path,
         c.observe(event, old["run"])
     target = c.adapter.control_path(c.workspace, c.root)
     before = target.read_bytes()
-    with pytest.raises(w.Refusal): c.start(request)
+    with pytest.raises(w.Refusal): start_native(c, request)
     assert target.read_bytes() == before
 
 
@@ -239,11 +252,11 @@ def test_conflicting_start_does_not_silently_return_previous_run(tmp_path):
     c, old = setup(tmp_path)
     request = restart_request(old)
     request.pop("replace_run")
-    with pytest.raises(w.Refusal, match="replace-run"): c.start(request)
+    with pytest.raises(w.Refusal, match="fresh linked Git worktree"): start_native(c, request)
     assert c.report()["run"] == old["run"]
 
 
-def test_failed_replacement_write_keeps_old_run(tmp_path, monkeypatch):
+def test_in_place_replacement_refuses_before_any_write(tmp_path, monkeypatch):
     c, state = setup(tmp_path)
     state = submit(c, state)
     target = c.adapter.control_path(c.workspace, c.root)
@@ -251,7 +264,7 @@ def test_failed_replacement_write_keeps_old_run(tmp_path, monkeypatch):
     def failed(*args, **kwargs):
         raise OSError("simulated publication failure")
     monkeypatch.setattr(c, "_write", failed)
-    with pytest.raises(OSError): c.start(restart_request(state))
+    with pytest.raises(w.Refusal, match="fresh linked Git worktree"): start_native(c, restart_request(state))
     assert target.read_bytes() == before
 
 
@@ -266,11 +279,16 @@ def test_sealed_diagnostic_can_be_polled_or_interrupted_but_not_sent_code(tmp_pa
         c.guard({"tool_name": "write_stdin", "tool_input": {"session_id": 88, "chars": chars}}, state["run"])
     with pytest.raises(w.Refusal):
         c.guard({"tool_name": "write_stdin", "tool_input": {"session_id": 88, "chars": "touch app.py\n"}}, state["run"])
-    with pytest.raises(w.Refusal, match="Live tool processes"):
-        c.start(restart_request(state))
+    retirement = json.dumps({'request_reference': 'conversation/new-run', 'reason': 'Restart requested'})
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match="Stop live work"):
+        c.apply('retire', state['run'], expected_revision=state['revision'], native_reference=retirement)
+    assert c._path().read_bytes() == before
     event["tool_response"]["exit_code"] = 0
     c.observe(event, state["run"])
-    assert c.start(restart_request(state))["run"] != state["run"]
+    c.apply('retire', state['run'], expected_revision=state['revision'], native_reference=retirement)
+    fresh, new, _ = fresh_recovery(c, state)
+    assert new['run'] != state['run'] and fresh.workspace != c.workspace
 
 
 def test_bootstrap_recovery_cannot_overwrite_sealed_evidence(tmp_path):
@@ -343,7 +361,7 @@ def test_recovery_controls_and_diagnostics_pass_through_declared_hook(tmp_path, 
 
 
 @pytest.mark.parametrize("phase", w.PHASES)
-def test_replacement_is_available_at_every_delivery_checkpoint(tmp_path, phase):
+def test_new_worktree_recovery_is_available_at_every_delivery_checkpoint(tmp_path, phase):
     c, state = setup(tmp_path)
     for current in w.PHASES:
         state = submit(c, state)
@@ -354,7 +372,11 @@ def test_replacement_is_available_at_every_delivery_checkpoint(tmp_path, phase):
     replacement = restart_request(state)
     c.guard(runtime("flow", "start", "--workspace", str(tmp_path), "--replace-run", state["run"],
                     "--expected-revision", str(state["revision"])), state["run"])
-    fresh = c.start(replacement)
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match='fresh linked Git worktree'):
+        start_native(c, replacement)
+    assert c._path().read_bytes() == before
+    _, fresh, _ = fresh_recovery(c, state)
     assert fresh["decisions"] == {} and w.current(fresh)["phase"] == "product"
     assert c.report(state["run"])["visits"] == state["visits"]
 
@@ -416,18 +438,32 @@ def exercise_declared_recovery(workspace, root, entry="product"):
     (workspace / target).write_text("{}")
     args = ["start", "--replace-run", state["run"], "--expected-revision", str(state["revision"]),
             "--scope", ".taskplane/scope.json", "--request-reference", "test/new-run-request"]
+    refused = run(*args, code=2)
+    assert refused['reason'] == 'run_isolation'
+    retired = run('retire', '--expected-revision', str(state['revision']),
+                  '--request-reference', 'test/new-run-request', '--note', 'User requested restart')['workflow']
+    assert retired['decisions'] == state['decisions']
+    assert run('report', '--run', state['run'])['workflow']['status'] == 'retired'
+    old_workspace = workspace
+    destination = workspace.parent / (workspace.name + '-new-run')
+    isolated = run('isolate', '--destination', str(destination))
+    assert isolated['workspace'] == str(destination)
+    workspace = destination
+    create(workspace)
+    hook('SessionStart')
+    run('activate', '--phase', 'tp-go', '--request-reference', 'test/new-run-request')
+    args = ['start', '--scope', '.taskplane/scope.json', '--request-reference', 'test/new-run-request']
     fresh_report = run(*args)
-    fresh = fresh_report["workflow"]
-    assert fresh["run"] != state["run"] and fresh["revision"] == 0 and not fresh["decisions"]
-    assert fresh["phase"] == "product" and len(fresh["visits"]) == 7
-    assert fresh_report["harness"]["entry"] == "tp-go"
-    assert fresh_report["harness"]["presentation"] is None
-    assert run(*args)["workflow"]["run"] == fresh["run"]
-    selection = json.loads((workspace / ".taskplane/dashboard.selection.json").read_text())
-    assert selection["run"] == fresh["run"] and selection["revision"] == 0
-    prior = run("report", "--run", state["run"])
-    assert prior["workflow"]["status"] == "superseded" and prior["historical"]
-    assert not prior["workflow"]["pending_checkpoint"]
+    fresh = fresh_report['workflow']
+    assert fresh['run'] != state['run'] and fresh['revision'] == 0 and not fresh['decisions']
+    assert fresh['phase'] == 'product' and len(fresh['visits']) == 7
+    assert fresh_report['harness']['entry'] == 'tp-go'
+    assert fresh_report['harness']['presentation'] is None
+    assert run(*args)['workflow']['run'] == fresh['run']
+    selection = json.loads((workspace / '.taskplane/dashboard.selection.json').read_text())
+    assert selection['run'] == fresh['run'] and selection['revision'] == 0
+    assert (old_workspace / 'dist/upload.zip').read_bytes() == b'user requested upload'
+    assert not (workspace / 'dist/upload.zip').exists()
     # The new task is actually usable, but cannot skip its Product acceptance.
     target = output(workspace, fresh)
     fresh = run("submit", "--output", target, "--tasks", "tasks.json",

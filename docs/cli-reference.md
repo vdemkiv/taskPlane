@@ -65,7 +65,7 @@ Invoke `python3 <plugin>/taskplane/tp.py` with one of these commands.
 | `flow present --workspace PATH --run ID --evidence .taskplane/dashboard.html --presentation OUTCOME --note TEXT` | Record the actual native dashboard handoff for this visit/revision |
 | `flow wait --workspace PATH --note TEXT` | Record actual missing user input while retaining write and approval checks |
 | `flow start --workspace PATH --scope FILE --request-reference REF [--standalone --phase PHASE] --goal TEXT` | Start or reuse an explicitly scoped native workflow |
-| `flow start --workspace PATH --replace-run OLD_ID --expected-revision N --scope FILE --request-reference REF --goal TEXT` | Replace an active native run on explicit user request; retain the previous evidence and begin with fresh approvals |
+| `flow isolate --workspace SOURCE --destination NEW_PATH` | Create a fresh linked worktree from committed HEAD, without copying source edits or runtime history |
 | `flow progress --workspace PATH --phase PHASE --note TEXT` | Record same-phase observations; phase changes require guarded advance |
 | `flow attach --workspace PATH --tasks FILE --reviews FILE --evidence FILE` | Attach shared tasks and evidence |
 | `flow report --workspace PATH [--run ID]` | Read profile-bound decisions, separate observations and native token coverage |
@@ -298,21 +298,24 @@ the malformed observation before retrying.
 
 ### Start again without losing the previous run
 
-When the user explicitly requests a new run, read the current run ID and revision
-with `flow report`. Prepare the new exact scope under `.taskplane/bootstrap/` using
-fresh filenames, then call `flow start` with `--replace-run OLD_ID`,
-`--expected-revision N`, the new `--scope`, and the actual `--request-reference`.
-Use the same workspace. Carry useful prior findings and documents into the new
-scope as evidence; do not copy approvals or policy authorization.
+Every new native run requires its own linked Git worktree, including standalone
+reviews and replacements. Use the host's native create-worktree action, or:
 
-Replacement works with sealed or stale evidence and unrelated source changes.
-The previous run becomes historical with status `superseded`, keeping its packets,
-decisions and a link to the replacement. Its grants are revoked. The new run starts
-at Product (or the explicitly requested standalone entry) with a fresh source
-baseline, empty decisions and manual approval policy. This does not approve or
-finish the old run. The native dashboard selects the new run. A matching retry is
-idempotent; a wrong run/revision, invalid scope or known running process refuses
-without replacing the active run. Stop known processes before retrying.
+```sh
+python3 /path/to/taskplane/tp.py flow isolate --workspace /path/to/source --destination /path/to/new-run
+```
+
+Select the returned workspace before activation and bootstrap preparation. The
+command uses committed HEAD and leaves source edits untouched. It copies no
+`.taskplane` state, transcripts or untracked files. A tracked `.taskplane` baseline
+is refused. Prepare only explicitly needed current-request inputs in the new tree.
+`flow start` refuses the primary checkout, a tree assigned to another run, or
+copied run history before graph/context loading. Each tree has a durable owner in
+its private Git directory, so deleting local state does not free it for reuse.
+An exact retry resumes the same run. Existing pre-isolation runs may resume in
+place; new runs cannot reuse their workspace. `--replace-run` no longer starts an
+in-place replacement. Preserve the previous worktree/history and retire its run
+with the exact revision when authorized; no approvals transfer to the new tree.
 
 Sealed/stale checkpoints still permit exact installed recovery/status/help
 commands, `pwd`, plain `cat`, a bounded set of non-executing `rg` options, and fresh
@@ -859,8 +862,9 @@ queued opens are linked/unverified; verified requires actual rendered evidence;
 blocked records the restriction and artifact fallback. These are cooperative
 observations, not proof the host displayed the artifact or that the user saw it.
 
-Stop requests one corrective continuation for missing setup, unsubmitted phase
-output or missing current handoff. A repeated stop emits a message to avoid loops.
+Stop returns `continue: false` and `stopReason` for missing setup, unsubmitted
+phase output, missing current handoff or invalid state. This halts processing
+without creating another prompt; repetition never becomes an advisory bypass.
 `wait` records a real missing-input reason and never approves or completes work.
 New user input/further tools clear it; a different visit/revision cannot reuse it.
 Unloaded/disabled hooks remain outside these cooperative guarantees. No live hook

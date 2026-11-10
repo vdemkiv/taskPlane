@@ -1,5 +1,12 @@
 # taskplane changelog
 
+## v2.35.10 — isolated runs and hard stops without repeated prompts
+
+- Require a fresh linked Git worktree for each new native run. Keep an existing run in its own tree when resuming; refuse primary checkouts, reused trees, copied runtime history and in-place replacements.
+- Add `flow isolate` to create from committed HEAD without copying uncommitted source, old context or runtime state. Check isolation before opening usage stores or scanning the project.
+- Halt on incomplete phase evidence, missing dashboard handoff or invalid Stop input without asking the host to generate another prompt. Repeated failures remain enforcing, never advisory.
+- Preserve existing run history, approvals and compact approval extracts while updating startup and recovery guidance.
+
 ## v2.35.9 — recover dropped native worker responses
 
 - Reconcile a Codex worker whose spawn response was lost only when an already-authorized native poll and exact session identity match its pending launch. Missing proof, unsolicited polls and foreign worker names remain unjoined.
