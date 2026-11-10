@@ -1,4 +1,5 @@
 """Claude and Codex share one flow without sharing transcript formats."""
+from taskplane.tests.test_workflow_evidence import start_native, ensure_native_worktree
 import json
 import os
 from pathlib import Path
@@ -122,6 +123,7 @@ def bound_workspace(tmp_path, monkeypatch, policy='any'):
         if key.startswith(('CODEX_', 'CLAUDE_', 'TASKPLANE_')):
             monkeypatch.delenv(key)
     ws=tmp_path/'selected'; ws.mkdir()
+    ensure_native_worktree(ws)
     (ws/'host-proof.txt').write_text('host-created fixture nonce')
     request={'schema':'taskplane.workspace-request/v1','surface':'cowork',
         'host_root':'/Users/fixture/farm-viewer','execution_root':str(ws), 'policy':policy,
@@ -310,7 +312,7 @@ def test_legacy_local_runtime_does_not_require_posix_binding_operations(tmp_path
     assert binding.describe(tmp_path)['status']=='unbound'
     c=workflow_host.Controller(tmp_path,'legacy',workflow_host.installed_adapter('claude'))
     scope=json.loads((tmp_path/'.taskplane/scope.json').read_text())
-    assert c.start({'scope':scope,'entry':'product','standalone':True,
+    assert start_native(c, {'scope':scope,'entry':'product','standalone':True,
                     'request_reference':'fixture/legacy-platform'})['run']
     monkeypatch.setenv('TASKPLANE_SURFACE','cowork')
     from taskplane.workflow import Refusal
@@ -521,6 +523,7 @@ def test_claude_hooks_prefer_current_plugin_over_stale_codex_launcher(tmp_path):
 
 
 def test_claude_cli_start_does_not_install_codex_launcher(tmp_path):
+    ensure_native_worktree(tmp_path)
     result = subprocess.run([sys.executable, str(ROOT / 'taskplane/tp.py'), 'flow', 'start',
                              '--workspace', str(tmp_path), '--goal', 'Claude delivery'],
         capture_output=True, text=True, env={**os.environ, 'TASKPLANE_CLAUDE_SESSION_ID': 'root'})
@@ -622,7 +625,7 @@ def test_legacy_start_without_baseline_keeps_unknown_usage_and_retry_attachments
     scope = create(tmp_path)
     monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID', 'root')
     controller = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('claude'))
-    state = controller.start({'entry': 'product', 'standalone': True, 'scope': scope,
+    state = start_native(controller, {'entry': 'product', 'standalone': True, 'scope': scope,
                               'request_reference': 'fixture/legacy-start'})
     assert 'initial_journal_observation' not in state
     if source == 'empty':

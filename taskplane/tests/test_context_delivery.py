@@ -4,6 +4,7 @@ The comparison deliberately reports failing ratios instead of padding a baseline
 The oracle is available only to this evaluator, never production view selection.
 """
 from __future__ import annotations
+from taskplane.tests.test_workflow_evidence import start_native
 def engine_comparison_entry():
     """Supplemental old/new shipped-engine replay. Fixture decisions are test data."""
     import argparse
@@ -479,7 +480,7 @@ def delivery(workspace, host='codex'):
     request = ('Add WELCOME 10, LOYALTY 15 and STAFF 50 percent discounts before 20 percent tax; '
                'unknown or absent code leaves subtotal unchanged. Preserve basket and catalog behavior.')
     c = h.Controller(workspace, 'fixture-root', h.installed_adapter(host))
-    state = c.start({'scope': scope, 'request_reference': 'fixture-labelled/user-request', 'goal': request})
+    state = start_native(c, {'scope': scope, 'request_reference': 'fixture-labelled/user-request', 'goal': request})
     depgraph.scan(str(workspace), decompose=True, strict=True)
     flow.publish_dashboard(workspace, state['run'], governor=c, select=True)
     outputs, responses, baselines = [], [], []

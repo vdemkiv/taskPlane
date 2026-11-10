@@ -426,7 +426,54 @@ class Controller:
             w.require(not initial or requested == initial,
                       "stale_checkpoint", "Start retry cannot replace the run's initial tasks.")
 
+    def preflight_start(self, *, replace: bool = False) -> None:
+        """Refuse reuse before CLI graph, journal, or context work begins."""
+        if self.adapter.profile != 'native_workflow':
+            return
+        from . import run_worktree
+        w.require(not replace, 'run_isolation', run_worktree.GUIDANCE)
+        adapter = cast(workflow_local.LocalWorkflow, self.adapter)
+        if adapter.state_exists(allow_pending=True):
+            db = self._read(self._path())
+            if db['active']:
+                run_worktree.verify_resume(self.workspace, self.root, db['runs'][db['active']])
+                return
+            w.require(not db['runs'] and not db.get('archives'), 'run_isolation', run_worktree.GUIDANCE)
+        _, private = run_worktree.identity(self.workspace)
+        owner = run_worktree.read_owner(private / 'taskplane-run.json')
+        w.require(not owner or (not owner.get('run') and owner.get('root') == self.root),
+                  'run_isolation', 'This worktree is already assigned to a run. ' + run_worktree.GUIDANCE)
+        run_worktree.fresh_state(self.workspace, self._path())
+
     def start(self, request: dict[str, Any], *, phase_contract: str | None = None) -> dict[str, Any]:
+        if self.adapter.profile != 'native_workflow':
+            return self._start(request, phase_contract=phase_contract)
+        from . import run_worktree
+        w.require(self.principal == self.root, 'scope_violation', 'Workers cannot start workflows.')
+        w.require(not request.get('replace_run'), 'run_isolation', run_worktree.GUIDANCE)
+        target = self._path()
+        with primitives.file_lock(str(target.parent / 'run-start')):
+            adapter = cast(workflow_local.LocalWorkflow, self.adapter)
+            if adapter.state_exists(allow_pending=True):
+                db = self._read(target)
+                if db['active']:
+                    run_worktree.verify_resume(self.workspace, self.root, db['runs'][db['active']])
+                    return self._start(request, phase_contract=phase_contract)
+                w.require(not db['runs'] and not db.get('archives'), 'run_isolation', run_worktree.GUIDANCE)
+            # Reject invalid bootstrap input before reserving the worktree.
+            authorized = adapter.verify_start(self.workspace, self.root, request)
+            self._initial_tasks(request, authorized['scope'])
+            w.new_state(str(self.workspace), self.root, 'validate', authorized['scope'],
+                        entry=authorized['entry'], standalone=authorized['standalone'],
+                        phase_contract=phase_contract)
+            with run_worktree.reserve(self.workspace, self.root, request, target) as reservation:
+                result = self._start(request, phase_contract=phase_contract,
+                                     isolation=reservation['owner'])
+                run_worktree.commit(reservation, result['run'])
+                return result
+
+    def _start(self, request: dict[str, Any], *, phase_contract: str | None = None,
+               isolation: dict[str, Any] | None = None) -> dict[str, Any]:
         w.require(self.principal == self.root, "scope_violation", "Workers cannot start or replace workflows.")
         contract = (workspace_binding.ensure(self.workspace)
                     if self.adapter.profile == "native_workflow" else None)
@@ -494,6 +541,8 @@ class Controller:
                 # stays unavailable; a retry cannot invent a newer baseline.
                 s['initial_journal_observation'] = 'cli-start/v1'
             self.adapter.state_created(s, authorized)
+            if isolation:
+                s['run_worktree'] = isolation
             if contract:
                 s["workspace_contract"] = {k: contract[k] for k in ("project_id", "digest")}
             if replaced is not None:

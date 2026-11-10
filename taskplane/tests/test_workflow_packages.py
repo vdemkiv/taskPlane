@@ -16,7 +16,7 @@ import pytest
 
 from scripts import package_plugin
 from taskplane.tests.test_workflow_host import FixtureHost, controller, native
-from taskplane.tests.test_workflow_evidence import DESIGN_DIAGRAM, prepare, system_design
+from taskplane.tests.test_workflow_evidence import DESIGN_DIAGRAM, ensure_native_worktree, start_native, prepare, system_design
 from taskplane.tests.test_workflow_delivery import output
 from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, shipped_execution_prompts
 from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs, exercise_counter_freshness, exercise_dashboard_publication_order
@@ -199,7 +199,7 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
     # The child interpreter sees only the extracted runtime and the standard library.
     # Test-only adapter code is embedded here, never exported by either package.
     helpers = f'DESIGN_DIAGRAM = {DESIGN_DIAGRAM!r}\n\n'
-    helpers += '\n\n'.join(inspect.getsource(f) for f in (archive_stack_watchdog, FixtureHost, system_design, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
+    helpers += '\n\n'.join(inspect.getsource(f) for f in (archive_stack_watchdog, FixtureHost, system_design, ensure_native_worktree, start_native, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
     helpers += '\n\n' + '\n\n'.join(inspect.getsource(getattr(review_regressions, name)) for name in (
         'setup', 'submit', 'authorization', 'set_policy', 'refused', 'exercise_correction',
         'exercise_handles', 'exercise_child_lineage', 'exercise_routing'))
@@ -244,7 +244,7 @@ for hook_command in ('screen', 'session-verify'):
     if hook_command == 'screen':
         assert result['hookSpecificOutput']['permissionDecision'] == 'deny'
     else:
-        assert result.get('systemMessage') and 'decision' not in result
+        assert result['continue'] is False and result['stopReason'] and 'decision' not in result
 assert host.store.read_bytes() == before
 for i, phase in enumerate(w.PHASES):
     stage(phase)

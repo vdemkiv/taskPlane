@@ -1,4 +1,5 @@
 """Required input delivery, replay rejection and unchanged controller authority."""
+from taskplane.tests.test_workflow_evidence import start_native
 from copy import deepcopy
 import json
 import pytest
@@ -333,18 +334,28 @@ def test_initial_tasks_do_not_leak_between_runs_or_expand_scope(tmp_path):
     path.write_text(json.dumps(tasks))
     c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
     request = {'scope': state['scope'], 'tasks': '.taskplane/initial.json', 'request_reference': 'first', 'standalone': True, 'entry': 'product'}
-    s = c.start(request)
+    s = start_native(c, request)
     assert Session(tmp_path, s, 'FIRST').view['task_ids']['items'] == ['FIRST']
-    assert c.start(request)['run'] == s['run']
+    assert start_native(c, request)['run'] == s['run']
     tasks['tasks'][0]['id'] = 'SECOND'; path.write_text(json.dumps(tasks))
-    with pytest.raises(w.Refusal, match='retry'): c.start(request)
+    with pytest.raises(w.Refusal, match='retry'): start_native(c, request)
     assert c.report()['initial_context_tasks'][0]['id'] == 'FIRST'
     s = submit(c, s); s = decide(c, s); c.apply('finish', s['run'], expected_revision=s['revision'])
-    (tmp_path/'.taskplane/tasks.json').write_text(json.dumps({'tasks': [{'id':'FOREIGN','criteria':['OTHER'],'paths':['other.py']}]}))
-    s = c.start({**request, 'request_reference':'second'})
-    assert Session(tmp_path, s, 'SECOND').view['task_ids']['items'] == ['SECOND']
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match='fresh linked Git worktree'):
+        start_native(c, {**request, 'request_reference':'second'})
+    from taskplane import run_worktree
+    fresh = tmp_path.parent / (tmp_path.name + '-second')
+    run_worktree.create(tmp_path, fresh)
+    prepare(fresh)
+    (fresh/'.taskplane/initial.json').write_text(json.dumps(tasks))
+    (fresh/'.taskplane/tasks.json').write_text(json.dumps({'tasks': [{'id':'FOREIGN','criteria':['OTHER'],'paths':['other.py']}]}))
+    second = h.Controller(fresh, 'root', h.installed_adapter('codex'))
+    s = start_native(second, {**request, 'request_reference':'second'})
+    assert c._path().read_bytes() == before
+    assert Session(fresh, s, 'SECOND').view['task_ids']['items'] == ['SECOND']
     legacy = deepcopy(s); legacy.pop('initial_context_tasks')
-    context = Session(tmp_path, legacy)
+    context = Session(fresh, legacy)
     assert context.view['criteria']['items'] == ['AC1']
     assert context.items[0]['body']['paths'] == ['product.json']
     assert context.view['task_ids']['items'] == []
@@ -358,7 +369,7 @@ def test_initial_task_scope_is_validated_before_initialization(tmp_path, field, 
     (tmp_path/'tasks.json').write_text(json.dumps(tasks))
     c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
     with pytest.raises(w.Refusal, match='scope'):
-        c.start({'scope':state['scope'],'tasks':'tasks.json','request_reference':'invalid-task'})
+        start_native(c, {'scope':state['scope'],'tasks':'tasks.json','request_reference':'invalid-task'})
     assert not c.adapter.state_exists()
 
 
@@ -367,9 +378,9 @@ def test_display_tasks_on_start_retry_do_not_replace_empty_snapshot(tmp_path):
     state, _, tasks = prepare(tmp_path)
     c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
     request = {'scope': state['scope'], 'request_reference': 'first'}
-    first = c.start(request)
+    first = start_native(c, request)
     (tmp_path/'tasks.json').write_text(json.dumps(tasks))
-    refreshed = c.start({**request, 'tasks': 'tasks.json'})
+    refreshed = start_native(c, {**request, 'tasks': 'tasks.json'})
     assert first['start_created'] is True and refreshed['start_created'] is False
     assert {k:v for k,v in refreshed.items() if k != 'start_created'} == {k:v for k,v in first.items() if k != 'start_created'}
     assert refreshed['initial_context_tasks'] == []
@@ -377,7 +388,7 @@ def test_display_tasks_on_start_retry_do_not_replace_empty_snapshot(tmp_path):
     tasks['tasks'][0]['paths'] = ['outside.py']
     (tmp_path/'tasks.json').write_text(json.dumps(tasks))
     with pytest.raises(w.Refusal, match='scope'):
-        c.start({**request, 'tasks': 'tasks.json'})
+        start_native(c, {**request, 'tasks': 'tasks.json'})
     assert c.report()['initial_context_tasks'] == []
 
 

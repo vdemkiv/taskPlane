@@ -1,4 +1,5 @@
 """Native adapter contracts; fixtures never count as live host execution."""
+from taskplane.tests.test_workflow_evidence import start_native
 import json
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -26,7 +27,7 @@ def setup(tmp_path, count=4, scoped_input=False, extra_inputs=()):
                      dependencies=names, criteria=['AC'], verification='Verify predecessors'))
     (tmp_path/'tasks.json').write_text(json.dumps({'tasks':rows}))
     c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
-    state = c.start(dict(scope=scope, entry='product', standalone=True, tasks='tasks.json', request_reference='fixture/request'))
+    state = start_native(c, dict(scope=scope, entry='product', standalone=True, tasks='tasks.json', request_reference='fixture/request'))
     return c, state
 
 

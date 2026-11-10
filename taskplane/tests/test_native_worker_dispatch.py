@@ -1,4 +1,5 @@
 """Historical native shapes: a canonical name alone is not a session ID."""
+from taskplane.tests.test_workflow_evidence import start_native, seed_legacy_run
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,7 @@ def test_prepare_preserves_earlier_approved_packet(tmp_path, destination):
     scope['paths']['design'].append(destination)
     scope['verification_inputs'].append('product.json')
     controller = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('codex'))
-    state = controller.start({'scope': scope, 'request_reference': 'fixture/sealed-output'})
+    state = start_native(controller, {'scope': scope, 'request_reference': 'fixture/sealed-output'})
     approved = decide(controller, submit(controller, state))
     prior = w.current(approved)
     original = (tmp_path / 'product.json').read_bytes()
@@ -68,7 +69,7 @@ def test_engineering_worker_may_modify_build_input_only_after_repair_route(tmp_p
     fixture, _, _ = prepare(tmp_path, 'evaluate')
     fixture['scope']['paths']['engineering'].append('app.py')
     controller = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('codex'))
-    state = controller.start({'scope': fixture['scope'], 'request_reference': 'fixture/repair'},
+    state = start_native(controller, {'scope': fixture['scope'], 'request_reference': 'fixture/repair'},
                              phase_contract=w.PHASE_CONTRACT)
     state, output, _ = collaborative_repair_evaluate(controller, state)
     state = collaborative_repair_submit(controller, state, output)
@@ -790,13 +791,13 @@ def test_opaque_followup_without_visible_grant_remains_refused(tmp_path):
 
 
 @pytest.mark.parametrize('journal', [True, False])
-def test_independently_bound_fork_uses_own_cli_and_hook_authority(tmp_path, monkeypatch, capsys, journal):
+def test_legacy_independently_bound_fork_uses_own_cli_and_hook_authority(tmp_path, monkeypatch, capsys, journal):
     from taskplane import flow, workflow_host as h
     c, s = setup(tmp_path, count=1)
     own_scope = json.loads(json.dumps(s['scope']))
     own_scope['paths']['product'] = ['own.md']
     child = h.Controller(tmp_path, 'fork', h.installed_adapter('codex'))
-    own = child.start(dict(scope=own_scope, entry='product', standalone=True, request_reference='fixture/own-request'))
+    own = seed_legacy_run(child, dict(scope=own_scope, entry='product', standalone=True, request_reference='fixture/own-request'))
     monkeypatch.setenv('CODEX_THREAD_ID', 'fork')
     monkeypatch.setattr(flow, 'observed_parent', lambda event, actor: 'root' if actor == 'fork' else None)
     if journal:
@@ -814,12 +815,12 @@ def test_independently_bound_fork_uses_own_cli_and_hook_authority(tmp_path, monk
         assert flow.read_events(tmp_path)[-1]['binding_observation']['root'] == 'fork'
 
 
-def test_dual_bound_real_worker_keeps_parent_authority(tmp_path, monkeypatch, capsys):
+def test_legacy_dual_bound_real_worker_keeps_parent_authority(tmp_path, monkeypatch, capsys):
     from taskplane import flow, workflow_host as h
     c, s = setup(tmp_path, count=1)
     child = h.Controller(tmp_path, 'native-0', h.installed_adapter('codex'))
     own_scope = json.loads(json.dumps(s['scope'])); own_scope['paths']['product'] = ['own.md']
-    own = child.start(dict(scope=own_scope, entry='product', standalone=True, request_reference='fixture/own'))
+    own = seed_legacy_run(child, dict(scope=own_scope, entry='product', standalone=True, request_reference='fixture/own'))
     item = reserve(c, s); launch(c, s, item)
     consume(c, s, item['grant'], 'native-0')
     monkeypatch.setenv('CODEX_THREAD_ID', 'native-0')

@@ -1,4 +1,5 @@
 """Public operations and hooks share guarded policy; optional telemetry does not."""
+from taskplane.tests.test_workflow_evidence import start_native
 import io
 import json
 from unittest.mock import patch
@@ -292,7 +293,7 @@ def test_malformed_hook_input_returns_named_refusal_without_mutation(tmp_path, c
         assert code == 0 and result['hookSpecificOutput']['permissionDecision'] == 'deny'
         assert result['hookSpecificOutput']['hookEventName'] == 'PreToolUse'
     elif command == 'session-verify':
-        assert code == 0 and result.get('systemMessage') and 'decision' not in result
+        assert code == 0 and result['continue'] is False and result['stopReason'] and 'decision' not in result
     else:
         assert code == 2 and result['decision'] == 'block'
     assert host.store.read_bytes() == before
@@ -389,7 +390,7 @@ def test_plan_handoff_concurrent_edit_uses_approved_view(tmp_path):
     for path, raw in approved.items():
         (tmp_path/path).write_bytes(raw)
     c = h.Controller(tmp_path, "root", h.installed_adapter("codex"))
-    state = c.start({"scope": initial["scope"], "request_reference": "fixture/diagram-handoff"},
+    state = start_native(c, {"scope": initial["scope"], "request_reference": "fixture/diagram-handoff"},
                     phase_contract=w.PHASE_CONTRACT)
     product.update(run=state["run"], visit=w.current(state)["id"])
     product["artifacts"] = [{"path": "design.md", "kind": "supporting", "schema": "markdown",

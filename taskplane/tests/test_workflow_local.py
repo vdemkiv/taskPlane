@@ -1,4 +1,5 @@
 """Real local adapter tests; observations are cooperative, not host attestation."""
+from taskplane.tests.test_workflow_evidence import start_native, seed_legacy_run
 from copy import deepcopy
 import json
 import os
@@ -7,14 +8,15 @@ from taskplane import workflow as w, workflow_host as h, workflow_local as local
 from taskplane.tests.test_workflow_evidence import prepare
 
 
-def setup(workspace, *, entry="product", standalone=False):
+def setup(workspace, *, entry="product", standalone=False, legacy=False):
     workspace=workspace.resolve()
     state, _, _=prepare(workspace)
     (workspace/"build-check.txt").write_text("Fixture Build check passed")
     (workspace/"check.txt").write_text("Observed fixture check result")
     c=h.Controller(workspace,"root",h.installed_adapter("codex"))
-    s=c.start({"scope":state["scope"],"request_reference":"conversation/user-1",
+    s=(seed_legacy_run if legacy else start_native)(c, {"scope":state["scope"],"request_reference":"conversation/user-1",
                "entry":entry,"standalone":standalone})
+    (workspace/".taskplane/dashboard.html").write_text("<html>Shared dashboard</html>")
     return c,s
 
 
@@ -35,7 +37,7 @@ def collaborative_setup(workspace):
     (workspace/'mock.txt').write_text('Published mock version one')
     initial['scope']['paths']['product'].append('mock.txt')
     c = h.Controller(workspace, 'root', h.installed_adapter('codex'))
-    state = c.start({'scope': initial['scope'], 'request_reference': 'fixture/collaboration'},
+    state = start_native(c, {'scope': initial['scope'], 'request_reference': 'fixture/collaboration'},
                     phase_contract=w.PHASE_CONTRACT)
     output.update(run=state['run'], visit=w.current(state)['id'])
     return c, state, collaborative_output(workspace, state, output)
@@ -329,7 +331,8 @@ def test_recovery_cli_restores_only_expected_native_root(tmp_path, capsys, monke
 
 @pytest.mark.parametrize('package_host,adapter', [('claude','claude'), ('openai','codex')])
 def test_extracted_packages_recover_displaced_state_through_declared_hooks(tmp_path, package_host, adapter):
-    import subprocess, sys, zipfile
+    import inspect, subprocess, sys, zipfile
+    from taskplane.tests.test_workflow_evidence import ensure_native_worktree
     from pathlib import Path
     from scripts.package_plugin import package, ROOT
     built = package(package_host, tmp_path/'archives')
@@ -345,13 +348,14 @@ def test_extracted_packages_recover_displaced_state_through_declared_hooks(tmp_p
         archive.extractall(extracted)
     # Only the extracted runtime is importable in this isolated child. Events are
     # fixture observations, never claims about live Cowork or Windows coverage.
-    probe = r'''
+    probe = inspect.getsource(ensure_native_worktree) + r'''
 import hashlib, json, os, shlex, subprocess, sys
 from pathlib import Path
 root, workspace, host = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 sys.path.insert(0, str(root))
 from taskplane import workflow_host as h, workflow as w
 workspace.mkdir()
+ensure_native_worktree(workspace)
 (workspace/'app.py').write_text('value = 1\n')
 scope = {'criteria':['RECOVERY'], 'paths':{p:[p+'.json'] for p in w.PHASES}, 'verification_inputs':['app.py']}
 c = h.Controller(workspace, 'package-root', h.installed_adapter(host))
@@ -518,7 +522,7 @@ def test_local_profile_is_available_without_certifying_host(tmp_path):
     assert h.Controller(c.workspace,"root",h.installed_adapter("codex")).report()["run"]==s["run"]
     protected=h.Controller(c.workspace,"root",h.installed_adapter("codex","protected_host"))
     assert not protected.availability()["workflow_available"]
-    with pytest.raises(w.Refusal,match="unverified"):protected.start({})
+    with pytest.raises(w.Refusal,match="unverified"):start_native(protected, {})
 
 
 @pytest.mark.parametrize("bad",["missing","marker","corrupt","identity","profile","symlink"])
@@ -532,7 +536,7 @@ def test_local_initialized_state_cannot_silently_reset(tmp_path,bad):
         backup=path.with_suffix(".saved");path.rename(backup);path.symlink_to(backup)
     else:
         value=json.loads(path.read_text());value["root" if bad=="identity" else "profile"]="wrong";path.write_text(json.dumps(value))
-    with pytest.raises((w.Refusal,ValueError)):c.start({})
+    with pytest.raises((w.Refusal,ValueError)):start_native(c, {})
 
 
 @pytest.mark.parametrize("bad",["actor","automatic","source","choice","ordering","binding","boolean_revision","no_presentation","actor_only"])
@@ -648,11 +652,11 @@ def test_interrupted_first_initialization_resumes_with_pending_proof(tmp_path,mo
         return original(path,value,**kwargs)
     monkeypatch.setattr(local.primitives,"atomic_json",interrupted)
     with pytest.raises(OSError,match="interruption"):
-        c.start({"scope":initial["scope"],"request_reference":"test/start"})
+        start_native(c, {"scope":initial["scope"],"request_reference":"test/start"})
     monkeypatch.setattr(local.primitives,"atomic_json",original)
     with pytest.raises(w.Refusal,match="pending"):
         c.report()
-    resumed = c.start({"scope":initial["scope"],"request_reference":"test/start"})
+    resumed = start_native(c, {"scope":initial["scope"],"request_reference":"test/start"})
     assert resumed["revision"] == 0 and resumed["decisions"] == {}
 
 
@@ -827,7 +831,7 @@ def test_local_historical_finish_preserves_active_run_and_refusals(tmp_path):
     a = c.apply('finish', a['run'], expected_revision=a['revision'])
     assert c.report()['status'] == 'no_workflow'
     assert c.apply('finish', a['run'], expected_revision=a['revision']) == a
-    b = c.start({'scope':a['scope'], 'request_reference':'test/new-run'})
+    b = seed_legacy_run(c, {'scope':a['scope'], 'request_reference':'test/new-run'})
     check_historical_finish_preserves_active(c, a, b)
     # No output for B overwrites A's evidence. An actual change to A still invalidates A only.
     (c.workspace/'product.json').write_text('{}')
@@ -852,7 +856,7 @@ def task_observation_checkpoint(workspace, *, legacy=False, host="codex"):
     task_path='.taskplane/tasks.json'
     state['scope']['paths']['build'].append(task_path)
     c=h.Controller(workspace.resolve(),'root',h.installed_adapter(host))
-    s=c.start({'scope':state['scope'],'request_reference':'test/EV-F02'})
+    s=start_native(c, {'scope':state['scope'],'request_reference':'test/EV-F02'})
     raw_manifest=evidence.manifest
     for phase in ('product','design','plan','build'):
         _,out,tasks=prepare(workspace,phase)
@@ -923,8 +927,8 @@ def test_execution_selection_requires_harness_before_writes_and_completion(tmp_p
     with pytest.raises(w.Refusal,match='initializ'):
         flow.hook(event|{'tool_name':'Write','tool_input':{'file_path':str(tmp_path/'app.py'),'content':'x'}})
     stopped=flow.hook(event|{'hook_event_name':'Stop'})
-    assert stopped['decision']=='block' and 'initializ' in stopped['reason']
-    assert 'decision' not in flow.hook(event|{'hook_event_name':'Stop','stop_hook_active':True})
+    assert stopped['continue'] is False and 'initializ' in stopped['stopReason']
+    assert flow.hook(event|{'hook_event_name':'Stop','stop_hook_active':True})['continue'] is False
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
 
 
@@ -954,7 +958,7 @@ def test_execution_prompt_arms_session_bound_gate(tmp_path,prompt):
     result=flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':prompt})
     assert 'initializ' in result['hookSpecificOutput']['additionalContext']
     assert flow.hook({'cwd':str(tmp_path),'session_id':'unrelated','hook_event_name':'Stop'})=={}
-    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'})['decision']=='block'
+    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'})['continue'] is False
 
 
 def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
@@ -966,7 +970,7 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
         result=flow.hook(event,governor=c)
         assert phase+' visit' in result['hookSpecificOutput']['additionalContext']
         assert run in result['hookSpecificOutput']['additionalContext']
-        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
+        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['continue'] is False
         s=submit(c,s)
         page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
         harness=local.Harness(c.workspace,c.root)
@@ -978,7 +982,7 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
     assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)=={}
     selected=flow.hook(event|{'hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review the next change.'},governor=c)
     assert 'initialization required' in selected['hookSpecificOutput']['additionalContext']
-    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
+    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['continue'] is False
 
 
 @pytest.mark.parametrize('bad',['source','metadata','escape','shell','compound','foreign_workspace','symlink'])
@@ -1023,7 +1027,7 @@ def test_harness_installed_skill_read_is_an_execution_entry(tmp_path):
     path=Path(flow.__file__).resolve().parents[1]/'skills/tp-engineering/SKILL.md'
     event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse','tool_name':'Read','tool_input':{'file_path':str(path)}}
     assert 'initialization required' in flow.hook(event)['hookSpecificOutput']['additionalContext']
-    assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
+    assert flow.hook(event|{'hook_event_name':'Stop'})['continue'] is False
 
 
 @pytest.mark.parametrize('tool', ['Read', 'exec_command'])
@@ -1070,13 +1074,13 @@ def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
     harness.wait(c.report(),'Need a comparison revision')
     assert 'waiting' in harness.stop({},c.report())['systemMessage']
     s=submit(c,s,presentation=False)
-    assert harness.stop({},c.report())['decision']=='block'
+    assert harness.stop({},c.report())['continue'] is False
     page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
     harness.present(c.report(),str(page.relative_to(c.workspace)),'blocked','Fixture link available and host opening unavailable')
     assert harness.stop({},c.report())=={}
     changed=deepcopy(c.report());changed['run']='another-run'
     with pytest.raises(w.Refusal,match='current run'):harness.present(changed,str(page.relative_to(c.workspace)),'verified','An incorrect claim')
-    assert harness.stop({},changed)['decision']=='block'
+    assert harness.stop({},changed)['continue'] is False
     raw=harness.read();raw['workspace']='foreign';harness.path.write_text(json.dumps(raw))
     with pytest.raises(w.Refusal,match='identity'):harness.read()
 
@@ -1095,7 +1099,7 @@ def test_bare_execution_directive_keeps_its_requested_route(tmp_path,prompt,entr
     flow.hook(event)
     harness=local.Harness(tmp_path,'root')
     assert harness.read()['entry']==entry
-    assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
+    assert flow.hook(event|{'hook_event_name':'Stop'})['continue'] is False
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
 
 
@@ -1130,7 +1134,7 @@ def recovery_fixture(tmp_path):
     git('init', '-q')
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         'commit', '-q', '--allow-empty', '-m', 'Fixture')
-    c, s = setup(source); s = submit(c, s)
+    c, s = setup(source, legacy=True); s = submit(c, s)
     destination = tmp_path/'clean'
     git('worktree', 'add', '--detach', str(destination), 'HEAD')
     harness = local.Harness(source, 'root')

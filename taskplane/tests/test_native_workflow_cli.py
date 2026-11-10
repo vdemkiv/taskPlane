@@ -3,12 +3,12 @@
 Decision messages are explicit test observations; these are not live human or
 host-containment certifications. No trusted owner/FixtureHost is injected.
 """
+from taskplane.tests.test_workflow_evidence import seed_legacy_run
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 from copy import deepcopy
 import json
-import inspect
 import os
 import re
 import signal
@@ -21,7 +21,7 @@ import uuid
 import pytest
 from taskplane import depgraph, workflow as w
 from taskplane.tests.test_workflow_evidence import prepare
-from taskplane.tests.test_workflow_local import decision, check_historical_finish_preserves_active
+from taskplane.tests.test_workflow_local import decision
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -277,7 +277,7 @@ def handoff(workspace,host,root=ROOT):
 
 def create(workspace):
     workspace.mkdir(parents=True,exist_ok=True)
-    initial,_,_=prepare(workspace)
+    initial,_,_=prepare(workspace, native=True)
     (workspace/'build-check.txt').write_text('Fixture Build check passed')
     (workspace/'check.txt').write_text('Observed fixture check result')
     (workspace/'.taskplane/scope.json').write_text(json.dumps(initial['scope']))
@@ -505,7 +505,12 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     a = cli(replay_ws,host,'decide','--decision-json',json.dumps(decision(a)),
             '--expected-revision',str(a['revision']),root=root)['workflow']
     a = cli(replay_ws,host,'finish','--expected-revision',str(a['revision']),root=root)['workflow']
-    b = cli(replay_ws,host,'start','--scope','.taskplane/scope.json',
+    refused = cli(replay_ws,host,'start','--scope','.taskplane/scope.json',
+                  '--request-reference','test/active-B',root=root,code=2)
+    assert refused['reason'] == 'run_isolation'
+    active_ws = workspace.parent/(workspace.name+'-active')
+    create(active_ws)
+    b = cli(active_ws,host,'start','--scope','.taskplane/scope.json',
             '--request-reference','test/active-B',root=root)['workflow']
     assert b['scope'] == scope
     cli(replay_ws,host,'finish','--run',a['run'],'--expected-revision',str(a['revision']),root=root,code=2)
@@ -515,19 +520,40 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from taskplane import workflow as w, workflow_host as h
 assert Path(h.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve())
-''' + inspect.getsource(check_historical_finish_preserves_active) + '''
 c = h.Controller(Path(sys.argv[2]), 'root', h.installed_adapter(sys.argv[3]))
-db = json.loads(c.adapter.control_path(c.workspace, c.root).read_bytes())
-active = db['runs'][db['active']]
-finished = next(s for s in db['runs'].values() if s['finished'])
-check_historical_finish_preserves_active(c, finished, active)
+other = h.Controller(Path(sys.argv[4]), 'root', h.installed_adapter(sys.argv[3]))
+old_path = c.adapter.control_path(c.workspace, c.root)
+active_path = other.adapter.control_path(other.workspace, other.root)
+old_before, active_before = old_path.read_bytes(), active_path.read_bytes()
+finished = next(s for s in json.loads(old_before)['runs'].values() if s['finished'])
+active_db = json.loads(active_before)
+active = active_db['runs'][active_db['active']]
+assert c.apply('finish', finished['run'], expected_revision=finished['revision']) == finished
+assert old_path.read_bytes() == old_before and active_path.read_bytes() == active_before
+assert other.report()['run'] == active['run']
+other.guard({'tool_name':'Write','tool_input':{'path':'product.json'}}, active['run'])
+try:
+    other.guard({'tool_name':'Write','tool_input':{'path':'app.py'}}, active['run'])
+except w.Refusal as exc:
+    assert exc.reason == 'scope_violation'
+else:
+    raise AssertionError('Isolated active run lost its scope guard')
+for controller, state, revision, reason in [(other, active, active['revision'], 'approval_required'),
+                                           (c, finished, finished['revision']-1, 'stale_checkpoint')]:
+    try:
+        controller.apply('finish', state['run'], expected_revision=revision)
+    except w.Refusal as exc:
+        assert exc.reason == reason
+    else:
+        raise AssertionError('Invalid completion accepted')
+assert old_path.read_bytes() == old_before and active_path.read_bytes() == active_before
 print('NGEM-F01 NGEM-F02 repaired state checks passed')
 '''
-    child = bounded_run([sys.executable,'-I','-c',script,str(root),str(replay_ws),host],
+    child = bounded_run([sys.executable,'-I','-c',script,str(root),str(replay_ws),host,str(active_ws)],
                            cwd=workspace.parent,capture_output=True,text=True)
     assert child.returncode == 0, child.stdout + child.stderr
     assert 'NGEM-F01 NGEM-F02 repaired state checks passed' in child.stdout
-    assert cli(replay_ws,host,'report',root=root)['workflow']['run'] == b['run']
+    assert cli(active_ws,host,'report',root=root)['workflow']['run'] == b['run']
 
 
 @pytest.mark.parametrize('host',['codex','claude'])
@@ -717,7 +743,7 @@ def test_phase_usage_missing_reset_partial_and_late_child_are_explicit():
     assert flow.phase_usage([initial],state,child)['status']=='partial'
 
 
-def test_snapshot_run_selection_publication_and_captured_graph(tmp_path,monkeypatch):
+def test_legacy_snapshot_run_selection_publication_and_captured_graph(tmp_path,monkeypatch):
     from taskplane import flow, workflow_host as host
     from taskplane.tests.test_workflow_local import setup, submit, decide
     c,s=setup(tmp_path,standalone=True)
@@ -730,7 +756,7 @@ def test_snapshot_run_selection_publication_and_captured_graph(tmp_path,monkeypa
     target=flow.publish_dashboard(c.workspace,s['run'],select=True,governor=c)
     old=target.read_bytes()
     new=host.Controller(c.workspace,'other-task',host.installed_adapter('codex'))
-    other=new.start({'scope':s['scope'],'request_reference':'test/second-task'})
+    other=seed_legacy_run(new, {'scope':s['scope'],'request_reference':'test/second-task'})
     flow.append(c.workspace,{'kind':'start','session':'other-task','run':other['run'],'phase':'product','at':other['started_at'],'goal':'second run'})
     # The current task remains on its own run, even with a later unrelated start.
     assert flow.report(c.workspace)['run']==s['run']
@@ -990,8 +1016,8 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     payload={'tool_name':'Write','tool_input':{'file_path':str(workspace/'app.py'),'content':'value=2'}} if host=='claude' else {
         'tool_name':'apply_patch','tool_input':{'command':patch}}
     assert hook('PreToolUse',**payload)['hookSpecificOutput']['permissionDecision']=='deny'
-    assert hook('Stop')['decision']=='block'
-    assert 'decision' not in hook('Stop',stop_hook_active=True)
+    assert hook('Stop')['continue'] is False
+    assert hook('Stop',stop_hook_active=True)['continue'] is False
     assert not (workspace/'.taskplane/dashboard.html').exists()
     if phase is None:
         return selected  # A mixed onboarding example requires activation only.
@@ -999,7 +1025,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
         assert 'Taskplane' in hook('PreToolUse',tool_name='Skill',tool_input={'skill':'taskplane:tp-'+phase})['hookSpecificOutput']['additionalContext']
     # Prepare synthetic evidence only after proving the missing-start guard.
     create(workspace)
-    (workspace/'.taskplane/dashboard.html').unlink()
+    (workspace/'.taskplane/dashboard.html').unlink(missing_ok=True)
     # Native reads and exact bootstrap metadata writes remain possible.
     assert 'permissionDecision' not in hook('PreToolUse',tool_name='Read',tool_input={'file_path':str(workspace/'app.py')}).get('hookSpecificOutput',{})
     scope=workspace/'.taskplane/bootstrap/scope.json';scope.parent.mkdir()
@@ -1010,7 +1036,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     command('wait','--note','Need the requested revision from the user')
     assert 'waiting for user input' in hook('Stop')['systemMessage']
     hook('UserPromptSubmit',prompt='Review the current checkout.')
-    assert hook('Stop')['decision']=='block'
+    assert hook('Stop')['continue'] is False
     if standalone:
         wrong_route=command('start','--scope','.taskplane/bootstrap/scope.json','--request-reference','fixture/wrong-full-route',code=2)
         assert wrong_route['reason']=='scope_violation'
@@ -1025,7 +1051,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     assert not state.get('approval_policy') and not state['decisions']
     assert (workspace/'.taskplane/dashboard.html').is_file()
     assert hook('PreToolUse',**payload)['hookSpecificOutput']['permissionDecision']=='deny'
-    assert 'phase evidence is not submitted' in hook('Stop')['reason']
+    assert 'phase evidence is not submitted' in hook('Stop')['stopReason']
     # Record a real link-only fixture handoff; submitting a new revision invalidates it.
     command('present','--evidence','.taskplane/dashboard.html','--presentation','linked','--note','Fixture artifact linked without claiming host display')
     (workspace/'.taskplane/fixture-reviews.json').write_text(json.dumps({'reviews':[
@@ -1038,7 +1064,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     state=submitted['workflow']
     selection=json.loads((workspace/'.taskplane/dashboard.selection.json').read_text())
     assert selection['revision']==state['revision']
-    assert 'handoff is missing' in hook('Stop')['reason']
+    assert 'handoff is missing' in hook('Stop')['stopReason']
     assert command('--run',state['run'],cli_entry='dashboard')==str(workspace/'.taskplane/dashboard.html')
     command('present','--evidence','.taskplane/dashboard.html','--presentation','blocked',
             '--note','Fixture artifact linked; host display unavailable (unverified)')

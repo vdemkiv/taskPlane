@@ -441,7 +441,7 @@ class LocalWorkflow:
             return (set(values) == {"--workspace", "--run", "--expected-revision", "--request-json"}
                     and selected_workspace(values["--workspace"]) and values["--run"] == state["run"]
                     and values["--expected-revision"].isdigit())
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"isolate", "start", "report", "diagnose", "recover", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         try:
@@ -825,6 +825,8 @@ class Harness:
                      'tp-design': 'design', 'tp-product': 'product'}.get(entry)
             route = f'--standalone --phase {phase}' if phase else 'the requested route (Product for full delivery)'
             return ('Taskplane selected; initialization required before implementation or completing the review. '
+                    'Every new run needs its own fresh linked Git worktree. Use flow isolate --workspace <source> '
+                    '--destination <new-path>, select that worktree, and never copy prior .taskplane history. '
                     'Prepare exact scope/evidence under .taskplane/bootstrap/, then run the installed tp.py flow start with '
                     f'{route}, --scope and --request-reference. Read/search, loading skills, asking the user and exact '
                     'Taskplane setup commands remain available. Standalone review does not require seven delivery phases.')
@@ -999,7 +1001,7 @@ class Harness:
                 return False
         except (w.Refusal, OSError, ValueError):
             return False
-        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'wait'})
+        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'wait', 'isolate'})
                 or words[2] == 'graph' and 'scan' in words[3:]
                 or words[2:4] == ['review', 'start'])
 
@@ -1175,5 +1177,7 @@ class Harness:
             reason = 'Taskplane dashboard handoff is missing for this checkpoint. Link/open the current native dashboard and record flow present with the actual outcome.'
         else:
             return {}
-        # One corrective continuation, never a forced loop while the user waits.
-        return {'systemMessage': reason} if event.get('stop_hook_active') else {'decision': 'block', 'reason': reason}
+        # Stop's decision=block creates another model prompt. Halt instead:
+        # unmet gates stay unmet, without a corrective-continuation loop or
+        # an advisory bypass based on retry flags or previously seen notices.
+        return {'continue': False, 'stopReason': reason}

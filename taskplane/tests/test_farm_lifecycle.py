@@ -1,4 +1,5 @@
 """Lifecycle regression cases use observed fixture events, not live host claims."""
+from taskplane.tests.test_workflow_evidence import seed_legacy_run
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
@@ -8,6 +9,24 @@ import pytest
 from taskplane import flow, workflow as w, workflow_host as host, workflow_local as local
 from taskplane.tests.test_workflow_local import setup, submit, decision, decide
 from taskplane.workflow_approval import affirmative_consent
+
+
+class LegacyLifecycleController(host.Controller):
+    """Replay the pre-isolation engine for historical telemetry fault coverage.
+
+    Production startup gates are tested with real worktrees in test_run_worktree;
+    this fixture retains tests for historical multi-run stores and late events.
+    """
+    def preflight_start(self, *, replace=False):
+        pass
+
+    def start(self, request, *, phase_contract=None):
+        return self._start(request, phase_contract=phase_contract)
+
+
+def legacy_lifecycle(tmp_path, *, standalone=False):
+    _, state = setup(tmp_path, standalone=standalone, legacy=True)
+    return LegacyLifecycleController(tmp_path, 'root', host.installed_adapter('codex')), state
 
 
 @pytest.mark.parametrize("bad", ["future", "before_run", "before_checkpoint", "naive", "presentation"])
@@ -85,11 +104,11 @@ def event(workspace, call="call-1", **extra):
             "call_id": call, **extra}
 
 
-def test_admitted_call_keeps_original_run_through_replacement_and_restart(tmp_path):
-    controller, first = setup(tmp_path)
+def test_legacy_admitted_call_keeps_original_run_through_replacement_and_restart(tmp_path):
+    controller, first = legacy_lifecycle(tmp_path)
     before = event(tmp_path)
     controller.guard(before, first["run"])
-    second = controller.start({"scope": first["scope"], "request_reference": "user/restart",
+    second = seed_legacy_run(controller, {"scope": first["scope"], "request_reference": "user/restart",
                                "replace_run": first["run"], "expected_revision": first["revision"]})
     restarted = host.Controller(tmp_path, "root", host.installed_adapter("codex"))
     post = {**before, "hook_event_name": "PostToolUse", "tool_response": {"content": "ok"}}
@@ -140,7 +159,7 @@ def test_hook_pair_attribution_survives_finish_and_records_followup(tmp_path):
     import shlex
     import sys
     from pathlib import Path
-    controller, state = setup(tmp_path, standalone=True)
+    controller, state = legacy_lifecycle(tmp_path, standalone=True)
     local.Harness(tmp_path, 'root').bind(state)
     state = decide(controller, submit(controller, state))
     flow.append(tmp_path, dict(kind='start', run=state['run'], session='root', phase='product'))
@@ -189,9 +208,9 @@ def test_claude_cli_cannot_claim_child_from_inherited_root_environment(tmp_path,
 
 
 @pytest.mark.parametrize('action', ['finish', 'replacement_select', 'replacement_bind', 'next_start_bind'])
-def test_post_commit_harness_failure_preserves_closure_and_success(tmp_path, monkeypatch, capsys, action):
+def test_legacy_post_commit_harness_failure_preserves_closure_and_success(tmp_path, monkeypatch, capsys, action):
     from taskplane import flow_telemetry
-    controller, state = setup(tmp_path, standalone=True)
+    controller, state = legacy_lifecycle(tmp_path, standalone=True)
     local.Harness(tmp_path, 'root').bind(state)
     state = decide(controller, submit(controller, state))
     monkeypatch.setenv('CODEX_THREAD_ID', 'root')
@@ -229,9 +248,9 @@ def test_post_commit_harness_failure_preserves_closure_and_success(tmp_path, mon
 
 @pytest.mark.parametrize('action', ['finish', 'replacement', 'next_start'])
 @pytest.mark.parametrize('failure', ['io', 'json', 'identity'])
-def test_readiness_projection_cannot_fail_committed_lifecycle(tmp_path, monkeypatch, capsys, action, failure):
+def test_legacy_readiness_projection_cannot_fail_committed_lifecycle(tmp_path, monkeypatch, capsys, action, failure):
     from taskplane import flow_telemetry
-    controller, state = setup(tmp_path, standalone=True)
+    controller, state = legacy_lifecycle(tmp_path, standalone=True)
     local.Harness(tmp_path, 'root').bind(state)
     state = decide(controller, submit(controller, state))
     monkeypatch.setenv('CODEX_THREAD_ID', 'root')
