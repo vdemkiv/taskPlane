@@ -951,6 +951,8 @@ def test_inline_request_rejects_invalid_data_without_state(tmp_path, capsys, pay
 @requires_binding_runtime
 @pytest.mark.usefixtures("onboarding_environment")
 def test_selected_folder_inline_bind_then_standalone_engineering(tmp_path, monkeypatch, capsys):
+    from taskplane.tests.test_workflow_evidence import ensure_native_worktree
+    ensure_native_worktree(tmp_path)
     from taskplane.tests.test_native_workflow_cli import cli
     monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
     req = request(tmp_path)
@@ -1159,6 +1161,8 @@ def test_unknown_lineage_cannot_restore_state(tmp_path, monkeypatch, capsys):
 @pytest.mark.usefixtures('onboarding_environment')
 @pytest.mark.parametrize('lineage', ['unknown', 'root', 'child'])
 def test_fresh_native_start_requires_root_identity(tmp_path, monkeypatch, capsys, lineage):
+    from taskplane.tests.test_workflow_evidence import ensure_native_worktree
+    ensure_native_worktree(tmp_path)
     from taskplane.tests.test_flow_integration import native
     b.bind(tmp_path, request(tmp_path))
     home = tmp_path / 'native'

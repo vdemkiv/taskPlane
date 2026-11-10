@@ -252,7 +252,7 @@ def test_conflicting_start_does_not_silently_return_previous_run(tmp_path):
     c, old = setup(tmp_path)
     request = restart_request(old)
     request.pop("replace_run")
-    with pytest.raises(w.Refusal, match="replace-run"): start_native(c, request)
+    with pytest.raises(w.Refusal, match="fresh linked Git worktree"): start_native(c, request)
     assert c.report()["run"] == old["run"]
 
 

@@ -141,7 +141,7 @@ def request():
             'request_reference': 'user/first-start'}
 
 
-@pytest.mark.parametrize('write_number', range(1, 7))
+@pytest.mark.parametrize('write_number', range(1, 9))
 @pytest.mark.parametrize('after', [False, True])
 def test_first_creation_recovers_each_write_interruption_without_read_repair(root, monkeypatch, write_number, after):
     controller = h.Controller(root, 'root', h.installed_adapter('codex'))
@@ -157,7 +157,7 @@ def test_first_creation_recovers_each_write_interruption_without_read_repair(roo
             raise OSError('injected after publication/directory sync')
         return result
     monkeypatch.setattr(primitives, 'atomic_json', interrupted)
-    if write_number == 6:  # The run is durable before the advisory harness binding.
+    if write_number == 7:  # The run is durable before the derived harness binding.
         committed = start_native(controller, request())
         assert committed['start_observation_errors']
         assert controller.report()['run'] == committed['run']
@@ -191,6 +191,13 @@ def test_pending_initialization_resumes_through_hook_and_flow_cli(root, monkeypa
     with pytest.raises(OSError):
         start_native(controller, request())
     monkeypatch.setattr(primitives, 'atomic_json', original)
+    # Equivalent CLI defaults may resume; a different request still cannot claim the tree.
+    from taskplane import run_worktree
+    _, private = run_worktree.identity(root)
+    ownership = (private / 'taskplane-run.json').read_bytes()
+    with pytest.raises(w.Refusal, match='already assigned'):
+        start_native(controller, {**request(), 'request_reference': 'user/different-request'})
+    assert (private / 'taskplane-run.json').read_bytes() == ownership
     monkeypatch.setattr(flow, 'observed_parent', lambda *args: None)
     local.Harness(root, 'root').select('tp-go', 'user/first-start', {})
     (root / 'scope.json').write_text(json.dumps(request()['scope']))
@@ -270,8 +277,16 @@ def test_setup_handle_survives_first_start_and_only_accepts_safe_input(root):
     harness.select('tp-go', 'user/new-request', controller.report())
     with pytest.raises(w.Refusal):
         flow.hook(stdin(root, 4100), governor=controller)
-    fresh = start_native(controller, {**request(), 'request_reference': 'user/new-request'})
+    with pytest.raises(w.Refusal, match='fresh linked Git worktree'):
+        start_native(controller, {**request(), 'request_reference': 'user/new-request'})
+    from taskplane import run_worktree
+    destination = root.parent / (root.name + '-next')
+    run_worktree.create(root, destination)
+    new = h.Controller(destination, 'root', h.installed_adapter('codex'))
+    fresh = start_native(new, {**request(), 'request_reference': 'user/new-request'})
     assert fresh['observed_handles'] == {}
+    with pytest.raises(w.Refusal):
+        flow.hook(stdin(destination, 4100), governor=new)
 
 
 def test_active_control_handle_is_observed_at_sealed_checkpoint(root):

@@ -1302,7 +1302,7 @@ def _main(argv: list[str] | None = None, *, compact: bool = False,
     assessments.add_argument("--assessment", help="Assessment JSON file for auto-decide (at most 64 KiB)")
     assessments.add_argument("--assessment-json", help="Inline assessment JSON for auto-decide (at most 64 KiB)")
     parser.add_argument("--expected-revision", type=int)
-    parser.add_argument("--replace-run", help="Explicitly replace this active native run, preserving its evidence; start only")
+    parser.add_argument("--replace-run", help="Legacy option: native in-place replacement is refused; create a fresh worktree instead")
     parser.add_argument("--recover-from", help="Exact adjacent numbered workflow copy; recover only")
     parser.add_argument("--expected-sha256", help="Expected recovery copy SHA-256; recover only")
     parser.add_argument("--evidence", action="append", default=[])

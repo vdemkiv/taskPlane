@@ -141,7 +141,7 @@ def diagnose(workspace: Path) -> dict[str, Any]:
             "issues": issues, "source_limit_exceeded": True if total > MAX_SOURCE_BYTES else None if not complete or issues else False,
             "recovery": "Inspect the reported paths. Create a native clean HEAD worktree if appropriate; "
                         "uncommitted changes remain in the original checkout. Initialize an exact scope there. "
-                        "For an active run use explicit --replace-run/--expected-revision to preserve history. "
+                        "Preserve an active run in its original tree and explicitly retire it when authorized. "
                         "Do not delete user files, ignore source, or disable hooks to recover."}
 
 

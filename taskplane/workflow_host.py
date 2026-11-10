@@ -462,11 +462,13 @@ class Controller:
                 w.require(not db['runs'] and not db.get('archives'), 'run_isolation', run_worktree.GUIDANCE)
             # Reject invalid bootstrap input before reserving the worktree.
             authorized = adapter.verify_start(self.workspace, self.root, request)
-            self._initial_tasks(request, authorized['scope'])
+            initial_tasks = self._initial_tasks(request, authorized['scope'])
             w.new_state(str(self.workspace), self.root, 'validate', authorized['scope'],
                         entry=authorized['entry'], standalone=authorized['standalone'],
                         phase_contract=phase_contract)
-            with run_worktree.reserve(self.workspace, self.root, request, target) as reservation:
+            # Bind semantic request data, not CLI-only transport/default fields.
+            reservation_request = {**authorized, 'initial_tasks': initial_tasks}
+            with run_worktree.reserve(self.workspace, self.root, reservation_request, target) as reservation:
                 result = self._start(request, phase_contract=phase_contract,
                                      isolation=reservation['owner'])
                 run_worktree.commit(reservation, result['run'])
@@ -525,8 +527,8 @@ class Controller:
                 w.require((not request.get("request_reference") or request["request_reference"] ==
                            active.get("request_provenance", {}).get("reference"))
                           and (not request.get("scope") or request["scope"] == active["scope"]),
-                          "approval_required", "Another run is active. To start a new scope, explicitly use "
-                          "--replace-run and --expected-revision with the new user request reference.")
+                          "approval_required", "Another run is active. Start the new scope in a fresh linked Git worktree; "
+                          "preserve and explicitly retire the old run when authorized.")
                 self._check_start_tasks(active, request)
                 return self._started_result(active)
             authorized = authorized or self.adapter.verify_start(self.workspace, self.root, request)
